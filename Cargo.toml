@@ -1,0 +1,11 @@
+[package]
+name = "egui_pie_menu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+egui = "0.31.1"  # Core dependency
+num-traits = "0.2.19"
+
+[dev-dependencies]
+eframe = "0.31.1"  # Only for tests
