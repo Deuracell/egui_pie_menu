@@ -1,4 +1,5 @@
 use egui::{Stroke, Color32, FontDefinitions, Key};
+use std::f32::consts::TAU;
 use std::f32::NAN;
 //use std::{array, default,option};
 use std::time::Duration;
@@ -134,7 +135,7 @@ impl Default for PieMenuCenterIndicatorSettings {
             highlight_stroke: Stroke::new(5.0, Color32::WHITE),            
             highlight_fill_color: Color32::PURPLE,
             highlight_gradient: false,
-            highlight_angle: 45.0,
+            highlight_angle: TAU / 8.0, // 45 degrees
         }
     }
 }
@@ -296,7 +297,7 @@ impl Default for PieMenuAnimations {
 
             center_highlight_snapping: false,
             center_highlight_show: true,
-            center_highlight_duration: Duration::from_millis(50),
+            center_highlight_duration: Duration::from_millis(5000),
             center_highlight_grow: true,
             center_highlight_alpha: true,
         }
