@@ -1,7 +1,7 @@
 use egui::{Stroke, Color32, FontDefinitions, Key};
 use std::f32::NAN;
 //use std::{array, default,option};
-use std::{time::Duration};
+use std::time::Duration;
 use crate::utils::common_utils::{BoundedVec, SmartFloat};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -67,13 +67,6 @@ impl Default for PieMenuButtonLayout {
     }
 }
 
-fn testfn() {
-    let testfloat = SmartFloat::new(10.4);
-    println!("testfloat: {}", testfloat.get());
-}
-
-
-
 /// ### Highlight Shape
 ///
 /// Defines the shape of the center ring highlight.
@@ -81,8 +74,12 @@ fn testfn() {
 /// - `Arc` - A curved stroke highlighting part of the ring.
 /// - `Slice` - A pie-slice-shaped highlight.
 /// - `Circle` - A full circular highlight.
-/// - `ArcWithCircle` - A combination of `Arc` and `Circle`.
-/// - `SliceWithCircle` - A combination of `Slice` and `Circle`.
+/// - `ArcSlice` - A combination of `Arc` and `Slice`.
+/// - `ArcCircle` - A combination of `Arc` and `Circle`.
+/// - `ArcSliceCircle` - A combination of `Arc`, `Slice`, and `Circle`.
+/// - `SliceCircle` - A combination of `Slice` and `Circle`.
+/// - `None` - No highlight.
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PieMenuHighlightShape {
     Arc,
     Slice,
@@ -91,6 +88,7 @@ pub enum PieMenuHighlightShape {
     ArcCircle,
     ArcSliceCircle,
     SliceCircle,
+    None,
 }
 /// ### Center Indicator Settings
 ///
@@ -132,9 +130,9 @@ impl Default for PieMenuCenterIndicatorSettings {
             background_fill_color: Color32::DARK_GRAY,
 
             highlight_radius: SmartFloat::new(15.0),
-            highlight_shape: PieMenuHighlightShape::Arc,
+            highlight_shape: PieMenuHighlightShape::Slice,
             highlight_stroke: Stroke::new(5.0, Color32::WHITE),            
-            highlight_fill_color: Color32::TRANSPARENT,
+            highlight_fill_color: Color32::PURPLE,
             highlight_gradient: false,
             highlight_angle: 45.0,
         }
@@ -296,7 +294,7 @@ impl Default for PieMenuAnimations {
             open_animation: true,
             open_duration: Duration::from_millis(6),
 
-            center_highlight_snapping: true,
+            center_highlight_snapping: false,
             center_highlight_show: true,
             center_highlight_duration: Duration::from_millis(50),
             center_highlight_grow: true,

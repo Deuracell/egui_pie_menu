@@ -1,6 +1,8 @@
+//use eframe::glow::FILL;
 //use egui::introspection::font_id_ui;
-use egui::{Color32, Key, Pos2, Rect, Ui, Vec2};
-use utils::common_utils::SmartFloat; //FontDefinitions,
+use egui::{Color32, Key, Pos2, Rect, Resize, Stroke, Ui, Vec2};
+use utils::common_utils::SmartFloat; use std::collections::btree_map::Range;
+//FontDefinitions,
 use std::collections::HashMap;
 use std::f32::consts::{SQRT_2, TAU};
 use std::time::Instant; //Duration,
@@ -9,6 +11,9 @@ mod utils {
 }
 pub mod settings;
 pub use settings::*;
+
+pub mod highlight_shapes;
+pub use highlight_shapes::*;
 
 pub struct PieMenuButton {
     pub label: String,
@@ -186,8 +191,7 @@ impl PieMenu {
                         return PieMenuResponse::Selected(dir.clone());
                     }
                 }
-
-            }   {
+            } else {
                 return PieMenuResponse::Dismissed;
             }
         }
@@ -212,8 +216,8 @@ impl PieMenu {
             }
         }    
         
-        // Draw selection indicator arc with animated growth and fade-in.
-        if let Some(_) = self.selected_index {
+        // Draw selection indicator arc with animated growth and fade-in. 
+        if self.selected_index.is_some() && self.settings.center_indicator.highlight_shape != PieMenuHighlightShape::None {
             let mouse_inside_threshold = current_mouse_pos
                 .map(|p| (p - center).length() <= self.settings.mouse_trigger_threshold)
                 .unwrap_or(false);
@@ -224,37 +228,146 @@ impl PieMenu {
                 let duration = self.settings.animations.center_highlight_duration.as_secs_f32();
                 let progress = (elapsed / duration).min(1.0);
                 
-                // Animate from 0 to full arc (360/8 radians).
-                let full_arc_angle = std::f32::consts::PI * 2.0 / 8.0;
+                // Animate from 0 to full arc.
+                let full_arc_angle = std::f32::consts::TAU / 4.0;
                 let arc_angle = full_arc_angle * progress;
                 
                 // Animate alpha from 0 to full (using progress).
                 let alpha = progress;
                 
                 // Determine the base angle (snapped or following mouse).
-                let base_angle = if self.settings.animations.center_highlight_snapping {
-                    if let Some(selected) = &self.selected_index {
-                        self.buttons.get(selected)
-                            .map(|button| button.direction.y.atan2(button.direction.x))
-                            .unwrap_or(0.0)
+                let base_angle = 
+                    if self.settings.animations.center_highlight_snapping {
+                        if let Some(selected) = &self.selected_index {
+                            self.buttons.get(selected)
+                                .map(|button| button.direction.y.atan2(button.direction.x))
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        }
+                    } else if let Some(mouse_pos) = current_mouse_pos {
+                        (mouse_pos - center).y.atan2((mouse_pos - center).x)
                     } else {
                         0.0
-                    }
-                } else if let Some(mouse_pos) = current_mouse_pos {
-                    (mouse_pos - center).y.atan2((mouse_pos - center).x)
-                } else {
-                    0.0
-                };
+                    };
                 
                 let start_angle = base_angle - arc_angle / 2.0;
                 // Multiply the highlight color by the computed alpha.
-                let highlight_color = self.settings.center_indicator.highlight_fill_color.linear_multiply(alpha);
+                //let highlight_color = self.settings.center_indicator.highlight_fill_color.linear_multiply(alpha);
+                let highlight_color = Color32::BLUE;
+                let colored_stroke = Stroke::new(self.settings.center_indicator.highlight_stroke.width, highlight_color);
                 
-                ui.painter().arc(
-                    center,
-                    self.settings.center_indicator.highlight_radius.get(),
-                    start_angle..(start_angle + arc_angle),
-                    egui::Stroke::new(3.0, highlight_color),
+
+                let arc_values = || -> ArcValues {
+                    ArcValues {
+                        angle_range: start_angle..(start_angle + arc_angle),
+                        center,
+                        radius: self.settings.center_indicator.highlight_radius.get(),
+                        resolution: 10.0,
+                        stroke: colored_stroke,
+                    }
+                };
+
+                let arc_slice_values = || -> SliceValues {
+                    SliceValues {
+                        arc_values: None,
+                        stroke: None,
+                        fill_color: highlight_color,
+                    }
+                };
+                
+                let slice_values = || -> SliceValues {
+                    SliceValues {
+                        arc_values: Some(arc_values()),
+                        stroke: Some(self.settings.center_indicator.highlight_stroke),
+                        fill_color: self.settings.center_indicator.highlight_fill_color,
+                    }
+                };
+
+                let circle_values = || -> CircleValues {
+                    CircleValues {
+                        offset_angle: start_angle,
+                        offset_radius: self.settings.center_indicator.highlight_radius.get(),
+                        offset_center: center,
+                        circle_radius: 5.0, // Adjust as needed -- this is the radius of the circle, should have a setting!
+                        stroke: colored_stroke,
+                        fill_color: highlight_color,
+                    }
+                };
+                /* 
+                match self.settings.center_indicator.highlight_shape {
+                    PieMenuHighlightShape::Arc => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::Arc,
+                            Some(arc_values()),
+                            None,
+                            None,
+                        );
+                    }
+                    PieMenuHighlightShape::Slice => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::Slice,
+                            None,
+                            Some(slice_values()),
+                            None,
+                        );
+                    }
+                    PieMenuHighlightShape::Circle => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::Circle,
+                            None,
+                            None,
+                            Some(circle_values()),
+                        );
+                    }
+                    PieMenuHighlightShape::ArcSlice => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::ArcSlice,
+                            Some(arc_values()),
+                            Some(arc_slice_values()),
+                            None,
+                        );
+                    }
+                    PieMenuHighlightShape::ArcCircle => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::ArcCircle,
+                            Some(arc_values()),
+                            None,
+                            Some(circle_values()),
+                        );
+                    }                    
+                    PieMenuHighlightShape::ArcSliceCircle => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::ArcSliceCircle,
+                            Some(arc_values()),
+                            Some(arc_slice_values()),
+                            Some(circle_values()),
+                        );
+                    }
+
+                    PieMenuHighlightShape::SliceCircle => {
+                        ui.painter().highlight_shape(
+                            PieMenuHighlightShape::SliceCircle,
+                            None,
+                            Some(slice_values()),
+                            Some(circle_values()),
+                        );
+                    } 
+                }*/
+                let shape = self.settings.center_indicator.highlight_shape;
+                ui.painter().highlight_shape(
+                    shape,
+                    if shape == PieMenuHighlightShape::Arc || shape == PieMenuHighlightShape::ArcSlice || shape == PieMenuHighlightShape::ArcCircle || shape == PieMenuHighlightShape::ArcSliceCircle {
+                        Some(arc_values())} 
+                        else {None},
+                    if shape == PieMenuHighlightShape::Slice || shape == PieMenuHighlightShape::SliceCircle {
+                        Some(slice_values())} 
+                        else if shape == PieMenuHighlightShape::ArcSlice || shape == PieMenuHighlightShape::ArcSliceCircle 
+                        {Some(arc_slice_values())} 
+                        else {None},
+                    if shape == PieMenuHighlightShape::Circle || shape == PieMenuHighlightShape::ArcCircle || shape == PieMenuHighlightShape::SliceCircle || shape == PieMenuHighlightShape::ArcSliceCircle {
+                        Some(circle_values())} 
+                        else {None},
                 );
             }
         }
@@ -296,31 +409,3 @@ impl PieMenu {
         PieMenuResponse::None
     }
 }
-
-// Extension trait to add an arc drawing method to egui::Painter
-pub trait ArcPainter {
-    fn arc(&self, center: Pos2, radius: f32, angle_range: std::ops::Range<f32>, stroke: egui::Stroke);
-}
-print!ln
-impl ArcPainter for egui::Painter {
-    fn arc(&self, 
-        center: Pos2, 
-        radius: f32,
-        resolution: f32,
-        width_angle_radians: f32,
-        stroke: egui::Stroke) {
-        
-        let start_angle = width_angle_radians / -2;
-        let arc_length = width_angle_radians * radius;
-        let n_points = (arc_length / resolution).ceil() as usize;
-        let step = width_angle_radians / n_points as f32;
-        let points: Vec<Pos2> = (0..=n_points)
-            .map(|i| {
-                let angle = start_angle + i as f32 * step;
-                center + egui::vec2(angle.cos(), angle.sin()) * radius
-            })
-            .collect();
-        self.add(egui::epaint::Shape::line(points, stroke));
-    }
-}
-
