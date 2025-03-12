@@ -1,10 +1,11 @@
+use egui::ecolor::gamma_from_linear;
 //use eframe::glow::FILL;
 //use egui::introspection::font_id_ui;
 use egui::{Color32, Key, Pos2, Rect, Resize, Stroke, Ui, Vec2};
 use utils::common_utils::SmartFloat; use std::collections::btree_map::Range;
 //FontDefinitions,
 use std::collections::HashMap;
-use std::f32::consts::{SQRT_2, TAU};
+use std::f32::consts::{E, SQRT_2, TAU};
 use std::time::Instant; //Duration,
 mod utils {
     pub mod common_utils;
@@ -216,160 +217,120 @@ impl PieMenu {
             }
         }    
         
-        // Draw selection indicator arc with animated growth and fade-in. 
-        if self.selected_index.is_some() && self.settings.center_indicator.highlight_shape != PieMenuHighlightShape::None {
-            let mouse_inside_threshold = current_mouse_pos
+        // Draw selection indicator with animated growth and fade-in. 
+        if self.settings.center_indicator.highlight_shape != PieMenuHighlightShape::None {
+            // Compute progress from 0.0 to 1.0 based on elapsed time.
+            let elapsed: f32 = 
+            if self.selected_index.is_none() {
+                self.open_time = std::time::Instant::now();
+                0.0
+            } else {
+                self.open_time.elapsed().as_secs_f32()
+
+            };
+                let mouse_inside_threshold = current_mouse_pos
                 .map(|p| (p - center).length() <= self.settings.mouse_trigger_threshold)
                 .unwrap_or(false);
                 
-            if !mouse_inside_threshold {
-                // Compute progress from 0.0 to 1.0 based on elapsed time.
-                let elapsed = self.open_time.elapsed().as_secs_f32();
-                let duration = self.settings.animations.center_highlight_duration.as_secs_f32();
-                let progress = (elapsed / duration).min(1.0);
-                
-                // Animate from 0 to full arc.
-                let full_arc_angle = std::f32::consts::TAU / 4.0;
-                let arc_angle = full_arc_angle * progress;
-                
-                // Animate alpha from 0 to full (using progress).
-                let alpha = progress;
-                
-                // Determine the base angle (snapped or following mouse).
-                let base_angle = 
-                    if self.settings.animations.center_highlight_snapping {
-                        if let Some(selected) = &self.selected_index {
-                            self.buttons.get(selected)
-                                .map(|button| button.direction.y.atan2(button.direction.x))
-                                .unwrap_or(0.0)
+                if self.settings.animations.center_highlight_show == true{
+                    let duration = self.settings.animations.center_highlight_duration.as_secs_f32();
+                    let progress = (elapsed / duration).min(1.0);
+                    // Determine the base angle (snapped or following mouse).
+                    let base_angle = || -> f32 {
+                        if self.settings.animations.center_highlight_snapping {
+                            if let Some(selected) = &self.selected_index {
+                                self.buttons.get(selected)
+                                    .map(|button| button.direction.y.atan2(button.direction.x))
+                                    .unwrap_or(0.0)
+                            } else {
+                                0.0
+                            }
+                        } else if let Some(mouse_pos) = current_mouse_pos {
+                            (mouse_pos - center).y.atan2((mouse_pos - center).x)
                         } else {
                             0.0
                         }
-                    } else if let Some(mouse_pos) = current_mouse_pos {
-                        (mouse_pos - center).y.atan2((mouse_pos - center).x)
-                    } else {
-                        0.0
                     };
-                
-                let start_angle = base_angle - arc_angle / 2.0;
-                // Multiply the highlight color by the computed alpha.
-                //let highlight_color = self.settings.center_indicator.highlight_fill_color.linear_multiply(alpha);
-                let highlight_color = Color32::BLUE;
-                let colored_stroke = Stroke::new(self.settings.center_indicator.highlight_stroke.width, highlight_color);
-                
 
-                let arc_values = || -> ArcValues {
-                    ArcValues {
-                        angle_range: start_angle..(start_angle + arc_angle),
-                        center,
-                        radius: self.settings.center_indicator.highlight_radius.get(),
-                        resolution: 10.0,
-                        stroke: colored_stroke,
-                    }
-                };
+                    let angle_range = || -> std::ops::Range<f32> {
+                        let full_arc_angle = self.settings.center_indicator.highlight_angle;
+                        let arc_angle = full_arc_angle * progress;
+                        let base_angle = base_angle();
+                        let start_angle = base_angle - arc_angle / 2.0;
+                        start_angle..(start_angle + arc_angle)
+                    };
 
-                let arc_slice_values = || -> SliceValues {
-                    SliceValues {
-                        arc_values: None,
-                        stroke: None,
-                        fill_color: highlight_color,
-                    }
-                };
-                
-                let slice_values = || -> SliceValues {
-                    SliceValues {
-                        arc_values: Some(arc_values()),
-                        stroke: Some(self.settings.center_indicator.highlight_stroke),
-                        fill_color: self.settings.center_indicator.highlight_fill_color,
-                    }
-                };
+                    let stroke_color  = || -> Color32 {
+                        let color = self.settings.center_indicator.highlight_stroke.color;
+                        color.gamma_multiply(progress)
+                    };
 
-                let circle_values = || -> CircleValues {
-                    CircleValues {
-                        offset_angle: start_angle,
-                        offset_radius: self.settings.center_indicator.highlight_radius.get(),
-                        offset_center: center,
-                        circle_radius: 5.0, // Adjust as needed -- this is the radius of the circle, should have a setting!
-                        stroke: colored_stroke,
-                        fill_color: highlight_color,
-                    }
-                };
-                /* 
-                match self.settings.center_indicator.highlight_shape {
-                    PieMenuHighlightShape::Arc => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::Arc,
-                            Some(arc_values()),
-                            None,
-                            None,
-                        );
-                    }
-                    PieMenuHighlightShape::Slice => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::Slice,
-                            None,
-                            Some(slice_values()),
-                            None,
-                        );
-                    }
-                    PieMenuHighlightShape::Circle => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::Circle,
-                            None,
-                            None,
-                            Some(circle_values()),
-                        );
-                    }
-                    PieMenuHighlightShape::ArcSlice => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::ArcSlice,
-                            Some(arc_values()),
-                            Some(arc_slice_values()),
-                            None,
-                        );
-                    }
-                    PieMenuHighlightShape::ArcCircle => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::ArcCircle,
-                            Some(arc_values()),
-                            None,
-                            Some(circle_values()),
-                        );
-                    }                    
-                    PieMenuHighlightShape::ArcSliceCircle => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::ArcSliceCircle,
-                            Some(arc_values()),
-                            Some(arc_slice_values()),
-                            Some(circle_values()),
-                        );
-                    }
+                    let fill_color = || -> Color32 {
+                        let color = self.settings.center_indicator.highlight_fill_color;
+                        color.gamma_multiply(progress)
+                    };
 
-                    PieMenuHighlightShape::SliceCircle => {
-                        ui.painter().highlight_shape(
-                            PieMenuHighlightShape::SliceCircle,
-                            None,
-                            Some(slice_values()),
-                            Some(circle_values()),
-                        );
-                    } 
-                }*/
-                let shape = self.settings.center_indicator.highlight_shape;
-                ui.painter().highlight_shape(
-                    shape,
-                    if shape == PieMenuHighlightShape::Arc || shape == PieMenuHighlightShape::ArcSlice || shape == PieMenuHighlightShape::ArcCircle || shape == PieMenuHighlightShape::ArcSliceCircle {
-                        Some(arc_values())} 
-                        else {None},
-                    if shape == PieMenuHighlightShape::Slice || shape == PieMenuHighlightShape::SliceCircle {
-                        Some(slice_values())} 
-                        else if shape == PieMenuHighlightShape::ArcSlice || shape == PieMenuHighlightShape::ArcSliceCircle 
-                        {Some(arc_slice_values())} 
-                        else {None},
-                    if shape == PieMenuHighlightShape::Circle || shape == PieMenuHighlightShape::ArcCircle || shape == PieMenuHighlightShape::SliceCircle || shape == PieMenuHighlightShape::ArcSliceCircle {
-                        Some(circle_values())} 
-                        else {None},
-                );
-            }
+                    let colored_stroke = || -> Stroke {
+                        Stroke::new(self.settings.center_indicator.highlight_stroke.width, stroke_color())
+                    };               
+
+                    //radius function
+
+                    //cirecle radius function     
+
+                    let arc_values = || -> ArcValues {
+                        ArcValues {
+                            angle_range: angle_range(),
+                            center,
+                            radius: self.settings.center_indicator.highlight_radius.get(),
+                            resolution: 10.0,
+                            stroke: colored_stroke(),
+                        }
+                    };
+
+                    let arc_slice_values = || -> SliceValues {
+                        SliceValues {
+                            arc_values: None,
+                            stroke: None, // Looks incredibly ugly 
+                            fill_color: fill_color(),
+                        }
+                    };
+                    
+                    let slice_values = || -> SliceValues {
+                        SliceValues {
+                            arc_values: Some(arc_values()),
+                            stroke: None, // Some(self.settings.center_indicator.highlight_stroke),
+                            fill_color: self.settings.center_indicator.highlight_fill_color,
+                        }
+                    };
+
+                    let circle_values = || -> CircleValues {
+                        CircleValues {
+                            offset_angle: base_angle(),
+                            offset_radius: self.settings.center_indicator.highlight_radius.get(),
+                            offset_center: center,
+                            circle_radius: 5.0, // Adjust as needed -- this is the radius of the circle, should have a setting!
+                            stroke: colored_stroke(),
+                            fill_color: fill_color(),
+                        }
+                    };
+                    let shape = self.settings.center_indicator.highlight_shape;
+                    ui.painter().highlight_shape(
+                        shape,
+                        if shape == PieMenuHighlightShape::Arc || shape == PieMenuHighlightShape::ArcSlice || shape == PieMenuHighlightShape::ArcCircle || shape == PieMenuHighlightShape::ArcSliceCircle {
+                            Some(arc_values())} 
+                            else {None},
+                        if shape == PieMenuHighlightShape::Slice || shape == PieMenuHighlightShape::SliceCircle {
+                            Some(slice_values())} 
+                            else if shape == PieMenuHighlightShape::ArcSlice || shape == PieMenuHighlightShape::ArcSliceCircle 
+                            {Some(arc_slice_values())} 
+                            else {None},
+                        if shape == PieMenuHighlightShape::Circle || shape == PieMenuHighlightShape::ArcCircle || shape == PieMenuHighlightShape::SliceCircle || shape == PieMenuHighlightShape::ArcSliceCircle {
+                            Some(circle_values())} 
+                            else {None},
+                    );
+                }
+            
         }
     
         // Draw buttons
@@ -407,5 +368,6 @@ impl PieMenu {
         }
     
         PieMenuResponse::None
+
     }
 }
