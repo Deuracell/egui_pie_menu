@@ -1,0 +1,11 @@
+[env]
+#setx CARGO_TARGET_DIR "C:\Your\Custom\Path"
+TARGET_PATH = "${CARGO_TARGET_ROOT}/${CARGO_MAKE_PROJECT_NAME}"
+
+[tasks.build]
+command = "cargo"
+args = ["build", "--target-dir", "${TARGET_PATH}/target"]
+
+[tasks.run]
+command = "cargo"
+args = ["run", "--target-dir", "${TARGET_PATH}/target"]
