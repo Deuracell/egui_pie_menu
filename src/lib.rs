@@ -138,7 +138,7 @@ impl PieMenu {
                 egui::Align2::LEFT_CENTER,
                 c.to_string(),
                 egui::FontId::default(),
-                Color32::BLACK,
+                Color32::GRAY,
             );
             
             if mnemonic.map_or(false, |m| m == c) {
@@ -235,6 +235,11 @@ impl PieMenu {
                 if self.settings.animations.center_highlight_show == true{
                     let duration = self.settings.animations.center_highlight_duration.as_secs_f32();
                     let progress = (elapsed / duration).min(1.0);
+                    
+                    
+                    
+                    
+                    
                     // Determine the base angle (snapped or following mouse).
                     let base_angle = || -> f32 {
                         if self.settings.animations.center_highlight_snapping {
