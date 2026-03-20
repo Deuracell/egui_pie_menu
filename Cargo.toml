@@ -2,6 +2,12 @@
 name = "egui_pie_menu"
 version = "0.1.0"
 edition = "2024"
+description = "A radial (pie) menu widget for egui, inspired by Blender's pie menus"
+license = "MIT"
+repository = "https://github.com/Deuracell/egui_pie_menu"
+readme = "README.md"
+keywords = ["egui", "gui", "menu", "pie-menu", "radial"]
+categories = ["gui"]
 
 [dependencies]
 egui = "0.33.3"
