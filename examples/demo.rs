@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
-use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat};
+use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat, TextFormat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -247,7 +247,15 @@ impl eframe::App for Demo {
                             .corner_radius(6.0)
                             .inner_margin(Vec2::new(10.0, 5.0))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(label).color(fg));
+                                if let Some(mnemonic) = self.buttons[idx].mnemonic {
+                                    ui.label(mnemonic_text(label, mnemonic, TextFormat {
+                                        color: fg,
+                                        font_id: ui.style().text_styles[&egui::TextStyle::Body].clone(),
+                                        ..Default::default()
+                                    }));
+                                } else {
+                                    ui.label(RichText::new(label).color(fg));
+                                }
                             });
                     })
                 {
