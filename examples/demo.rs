@@ -216,6 +216,7 @@ impl eframe::App for Demo {
                 ui.heading("Misc");
                 ui.separator();
                 ui.checkbox(&mut self.pinned, "Pin menu at center");
+                ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new(&self.last_action).size(13.0));
@@ -272,6 +273,7 @@ impl eframe::App for Demo {
 
                         // South slot (idx 4): icon button — verify egui::Button works inside an Area
                         if idx == 4 {
+                            ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
                             let btn = egui::Button::new(
                                 RichText::new(format!("🗑  {label}")).color(fg)
                             ).fill(bg).corner_radius(6.0);
