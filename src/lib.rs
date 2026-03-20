@@ -277,6 +277,24 @@ impl PieMenu {
 
         // Mnemonic key selection — consume matched events so other handlers never see them.
         if self.settings.input.use_mnemonic_keys {
+            #[cfg(debug_assertions)]
+            {
+                let mut seen = std::collections::HashMap::new();
+                for button in buttons {
+                    if let Some(c) = button.mnemonic {
+                        let key = c.to_ascii_lowercase();
+                        let prev: &mut Vec<PieDirection> = seen.entry(key).or_default();
+                        prev.push(button.direction.clone());
+                        if prev.len() == 2 {
+                            eprintln!(
+                                "egui_pie_menu: duplicate mnemonic '{key}' on {:?}",
+                                prev
+                            );
+                        }
+                    }
+                }
+            }
+
             for (idx, button) in buttons.iter().enumerate() {
                 if let Some(key) = button.mnemonic.and_then(char_to_key) {
                     let pressed = ctx.input_mut(|i| {
