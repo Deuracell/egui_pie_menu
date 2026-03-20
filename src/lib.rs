@@ -473,7 +473,7 @@ impl PieMenu {
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)
         // receive the click event before we consume it.
-        if ctx.input(|i| i.pointer.primary_clicked()) {
+        if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked()) {
             return match current_mouse_pos {
                 Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => {
                     self.selected_index
