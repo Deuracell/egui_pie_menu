@@ -1,22 +1,22 @@
 /// A wrapper around a floating-point number that provides additional functionality.
-///
-/// A wrapper around a floating-point number that provides additional functionality.
-/// When the value is NaN, it is considered "disabled" or "turned off". This provides
-/// an easy way to toggle settings without needing a separate boolean flag.
-///
-/// For example, instead of having both a value and an enabled flag:
-/// 
-/// struct Setting {
-///     value: f32,
-///     enabled: bool,
-/// }
-/// 
-/// You can simply use `SmartFloat` and set it to NaN when disabled:
-/// 
-/// struct Setting {
-///     value: SmartFloat<f32>,
-/// }
-/// 
+    ///
+    /// A wrapper around a floating-point number that provides additional functionality.
+    /// When the value is NaN, it is considered "disabled" or "turned off". This provides
+    /// an easy way to toggle settings without needing a separate boolean flag.
+    ///
+    /// For example, instead of having both a value and an enabled flag:
+    /// 
+    /// struct Setting {
+    ///     value: f32,
+    ///     enabled: bool,
+    /// }
+    /// 
+    /// You can simply use `SmartFloat` and set it to NaN when disabled:
+    /// 
+    /// struct Setting {
+    ///     value: SmartFloat<f32>,
+    /// }
+    /// 
 use num_traits::Float;
 
 pub struct SmartFloat<T: Float>(T);

@@ -121,8 +121,9 @@ impl HighlightPainter for egui::Painter {
         let center = circle.offset_center + circle.offset_radius * egui::vec2(circle.offset_angle.cos(), circle.offset_angle.sin());
         assert!(circle.circle_radius > 0.0, "Highlight circles `circle_radius` must be greater than 0.0");
         
-        if (circle.stroke.color == egui::Color32::TRANSPARENT) && circle.fill_color == egui::Color32::TRANSPARENT {
-            println!("Fill and stroke color are both TRANSPARENT, won't draw circle");
+        if circle.stroke.color == egui::Color32::TRANSPARENT
+            && circle.fill_color == egui::Color32::TRANSPARENT
+        {
             return;
         }
         
@@ -145,7 +146,6 @@ impl HighlightPainter for egui::Painter {
     fn draw_arc(&self, arc_values: ArcValues) {
         assert!(arc_values.stroke != egui::Stroke::NONE, "Stroke must not be NONE");
         if arc_values.stroke.color == egui::Color32::TRANSPARENT {
-            println!("Stroke color is transparent, won't draw arc");
             return;
         }
         let arc = arc_values;
