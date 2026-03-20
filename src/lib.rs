@@ -11,30 +11,19 @@ pub use settings::*;
 pub mod highlight_shapes;
 pub use highlight_shapes::*;
 
-/// A single button passed to the pie menu each frame.
+/// A single button slot in the pie menu.
 ///
-/// The pie menu owns rendering; the caller owns the button definitions and passes
-/// them to [`PieMenu::show`] every frame.
+/// Only defines *where* the button sits (`direction`) and an optional keyboard
+/// mnemonic. All visual content is rendered by the caller via the closure
+/// passed to [`PieMenu::show`].
 pub struct PieButton {
-    pub label: String,
     pub direction: PieDirection,
-    pub color: Color32,
     pub mnemonic: Option<char>,
 }
 
 impl PieButton {
-    pub fn new(direction: PieDirection, label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            direction,
-            color: Color32::from_rgb(80, 80, 80),
-            mnemonic: None,
-        }
-    }
-
-    pub fn with_color(mut self, color: Color32) -> Self {
-        self.color = color;
-        self
+    pub fn new(direction: PieDirection) -> Self {
+        Self { direction, mnemonic: None }
     }
 
     pub fn with_mnemonic(mut self, c: char) -> Self {
@@ -49,20 +38,33 @@ pub enum PieMenuResponse {
     Selected(usize),
     /// The menu was dismissed without a selection.
     Dismissed,
+    /// Key was tapped quickly without moving the mouse past the threshold.
+    /// The caller decides what default action to perform.
+    QuickTap,
+    /// Two quick taps within [`PieMenuInput::double_tap_window`].
+    /// The caller decides what alternate action to perform.
+    DoubleTap,
     /// No action this frame.
     None,
 }
 
 /// Radial (pie) menu widget.
 ///
-/// Owns interaction state but not button definitions. Construct once, then call
-/// [`PieMenu::show`] every frame with the buttons relevant to the current context.
+/// Owns interaction state but not button content. Construct once, then call
+/// [`PieMenu::show`] every frame with the buttons for the current context.
 pub struct PieMenu {
+    pub id: egui::Id,
     open_time: Instant,
     selected_index: Option<usize>,
     pub position: Pos2,
     pub settings: PieMenuSettings,
     release_handled: bool,
+    /// Whether the mouse has crossed `show_threshold` since `open()` was called.
+    mouse_shown: bool,
+    /// Timestamp of the last QuickTap, used for double-tap detection.
+    last_quick_tap: Option<Instant>,
+    /// Cached button sizes from the previous frame, used to centre each Area.
+    button_sizes: Vec<Vec2>,
 }
 
 impl Default for PieMenu {
@@ -74,16 +76,20 @@ impl Default for PieMenu {
 impl PieMenu {
     pub fn new() -> Self {
         Self {
+            id: egui::Id::new("pie_menu"),
             open_time: Instant::now(),
             selected_index: None,
             position: Pos2::ZERO,
             settings: PieMenuSettings::default(),
             release_handled: false,
+            mouse_shown: false,
+            last_quick_tap: None,
+            button_sizes: Vec::new(),
         }
     }
 
-    pub fn with_position(mut self, pos: Pos2) -> Self {
-        self.position = pos;
+    pub fn with_id(mut self, id: impl std::hash::Hash) -> Self {
+        self.id = egui::Id::new(id);
         self
     }
 
@@ -92,22 +98,21 @@ impl PieMenu {
         self
     }
 
-    /// Call this when the menu is opened to reset interaction state.
-    /// Sets the position and restarts the internal timer used for key-hold detection.
+    /// Call this when opening the menu. Resets interaction state and sets position.
     pub fn open(&mut self, pos: Pos2) {
         self.position = pos;
         self.open_time = Instant::now();
         self.release_handled = false;
         self.selected_index = None;
+        self.mouse_shown = false;
     }
 
-    /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying squarification
-    /// to diagonal directions.
+    /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying the shape factor.
     ///
     /// - `0.0`  → circle: all buttons equidistant (L2, unit vector)
     /// - `+1.0` → square: diagonals pushed out to the corners (L∞ norm)
     /// - `-1.0` → diamond: diagonals pulled in toward the centre (L1 norm)
-    fn direction_vec(dir: &PieDirection, squarification: f32) -> Vec2 {
+    fn direction_vec(dir: &PieDirection, shape_factor: f32) -> Vec2 {
         let fraction = match dir {
             PieDirection::North     => 0.75,
             PieDirection::NorthEast => 0.875,
@@ -119,21 +124,19 @@ impl PieMenu {
             PieDirection::NorthWest => 0.625,
         };
         let angle = TAU * fraction;
-        let circle = Vec2::new(angle.cos(), angle.sin()); // L2, magnitude = 1
+        let circle = Vec2::new(angle.cos(), angle.sin());
 
         match dir {
             PieDirection::NorthEast
             | PieDirection::SouthEast
             | PieDirection::SouthWest
             | PieDirection::NorthWest => {
-                if squarification > 0.0 {
-                    // Lerp toward L∞: divide by max component → (1, 1) for NE
+                if shape_factor > 0.0 {
                     let l_inf = circle / circle.x.abs().max(circle.y.abs());
-                    circle * (1.0 - squarification) + l_inf * squarification
-                } else if squarification < 0.0 {
-                    // Lerp toward L1: divide by sum of components → (0.5, 0.5) for NE
+                    circle * (1.0 - shape_factor) + l_inf * shape_factor
+                } else if shape_factor < 0.0 {
                     let l1 = circle / (circle.x.abs() + circle.y.abs());
-                    let t = -squarification;
+                    let t = -shape_factor;
                     circle * (1.0 - t) + l1 * t
                 } else {
                     circle
@@ -156,57 +159,58 @@ impl PieMenu {
         }
     }
 
-    fn button_width(painter: &egui::Painter, label: &str) -> f32 {
-        let side_margin = 5.0;
-        let galley = painter.layout_no_wrap(
-            label.to_string(),
-            egui::FontId::default(),
-            Color32::WHITE,
-        );
-        galley.size().x + side_margin * 2.0
-    }
-
-    fn draw_button_label(painter: &egui::Painter, pos: Pos2, label: &str, mnemonic: Option<char>) {
-        let galley = painter.layout_no_wrap(
-            label.to_string(),
-            egui::FontId::default(),
-            Color32::WHITE,
-        );
-
-        let origin = pos - galley.size() / 2.0;
-        painter.galley(origin, galley.clone(), Color32::WHITE);
-
-        if let Some(m) = mnemonic {
-            'outer: for row in &galley.rows {
-                for glyph in &row.glyphs {
-                    if glyph.chr == m {
-                        let x0 = origin.x + glyph.pos.x;
-                        let y  = origin.y + row.rect.max.y + 1.0;
-                        painter.line_segment(
-                            [Pos2::new(x0, y), Pos2::new(x0 + glyph.size().x, y)],
-                            Stroke::new(1.0, Color32::WHITE),
-                        );
-                        break 'outer;
-                    }
-                }
-            }
-        }
-    }
-
     /// Show the pie menu for this frame.
     ///
-    /// Pass the buttons relevant for the current context; the menu does not store them.
+    /// `render_button(ui, index, is_hovered)` is called once per button inside
+    /// a floating [`egui::Area`] centred at that button's position. Use it to
+    /// draw any egui content — labels, images, custom widgets, etc.
+    ///
     /// `key_down` should be `true` while the hotkey that opened the menu is held.
     pub fn show(
         &mut self,
-        ui: &mut Ui,
+        ctx: &egui::Context,
         buttons: &[PieButton],
         current_mouse_pos: Option<Pos2>,
         key_down: bool,
         title: Option<&str>,
+        mut render_button: impl FnMut(&mut Ui, usize, bool),
     ) -> PieMenuResponse {
+        // Ensure cached size vec is long enough
+        if self.button_sizes.len() < buttons.len() {
+            self.button_sizes.resize(buttons.len(), Vec2::new(50.0, 24.0));
+        }
+
+        let center = self.position;
+
+        // Update mouse_shown: once the mouse travels past show_threshold, latch it on.
+        if !self.mouse_shown {
+            if let Some(p) = current_mouse_pos {
+                if (p - center).length() > self.settings.show_threshold {
+                    self.mouse_shown = true;
+                }
+            }
+        }
+
+        // Before the menu is visible, handle key release as QuickTap/DoubleTap only.
+        if !self.mouse_shown {
+            if !key_down && !self.release_handled {
+                self.release_handled = true;
+                let is_double = self.last_quick_tap
+                    .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
+                    .unwrap_or(false);
+                if is_double {
+                    self.last_quick_tap = None;
+                    return PieMenuResponse::DoubleTap;
+                } else {
+                    self.last_quick_tap = Some(Instant::now());
+                    return PieMenuResponse::QuickTap;
+                }
+            }
+            return PieMenuResponse::None;
+        }
+
         // Early exit checks
-        if ui.input(|i| {
+        if ctx.input(|i| {
             (self.settings.input.dismiss_on_numpad_5 && i.key_pressed(Key::Num5))
                 || (self.settings.input.dismiss_on_escape_key && i.key_pressed(Key::Escape))
                 || (self.settings.input.dismiss_on_secondary_mouse_click
@@ -215,12 +219,39 @@ impl PieMenu {
             return PieMenuResponse::Dismissed;
         }
 
-        let center = self.position;
-        let squarification = self.settings.layout_squarification;
+        let shape_factor = self.settings.shape_factor;
 
-        // Top-level painter: draws above all panels, unclipped.
-        let painter = ui.ctx().layer_painter(
-            egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("pie_menu")),
+        // Compute the bounding box of all buttons (relative to self.position) and
+        // shift the whole menu so it stays within the screen rect with a margin.
+        let screen_rect = ctx.screen_rect();
+        let margin = self.settings.screen_margin;
+        let mut bb_min = Vec2::ZERO;
+        let mut bb_max = Vec2::ZERO;
+        for (idx, button) in buttons.iter().enumerate() {
+            let dv = Self::direction_vec(&button.direction, shape_factor);
+            let dn = dv.normalized();
+            let sz = self.button_sizes[idx];
+            let hw = sz.x / 2.0;
+            let hh = sz.y / 2.0;
+            let sx = if dn.x > 0.5 { 1.0 } else if dn.x < -0.5 { -1.0 } else { 0.0 };
+            let sy = if dn.y > 0.5 { 1.0 } else if dn.y < -0.5 { -1.0 } else { 0.0 };
+            let offset = dv * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
+            bb_min = bb_min.min(offset - sz / 2.0);
+            bb_max = bb_max.max(offset + sz / 2.0);
+        }
+        let center = Pos2::new(
+            center.x.clamp(
+                screen_rect.min.x + margin - bb_min.x,
+                screen_rect.max.x - margin - bb_max.x,
+            ),
+            center.y.clamp(
+                screen_rect.min.y + margin - bb_min.y,
+                screen_rect.max.y - margin - bb_max.y,
+            ),
+        );
+
+        let painter = ctx.layer_painter(
+            egui::LayerId::new(egui::Order::Tooltip, self.id),
         );
 
         // Center background circle
@@ -236,7 +267,7 @@ impl PieMenu {
         // Numpad key selection
         if self.settings.input.use_numpad_keys {
             for (idx, button) in buttons.iter().enumerate() {
-                if ui.input(|i| i.key_pressed(Self::direction_numpad(&button.direction))) {
+                if ctx.input(|i| i.key_pressed(Self::direction_numpad(&button.direction))) {
                     return PieMenuResponse::Selected(idx);
                 }
             }
@@ -246,7 +277,7 @@ impl PieMenu {
         if self.settings.input.use_mnemonic_keys {
             for (idx, button) in buttons.iter().enumerate() {
                 if let Some(key) = button.mnemonic.and_then(char_to_key) {
-                    if ui.input(|i| i.key_pressed(key)) {
+                    if ctx.input(|i| i.key_pressed(key)) {
                         return PieMenuResponse::Selected(idx);
                     }
                 }
@@ -254,7 +285,7 @@ impl PieMenu {
         }
 
         // Primary click selection
-        if ui.input(|i| i.pointer.primary_clicked()) {
+        if ctx.input(|i| i.pointer.primary_clicked()) {
             return match current_mouse_pos {
                 Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => {
                     self.selected_index
@@ -276,7 +307,7 @@ impl PieMenu {
                 .iter()
                 .enumerate()
                 .map(|(idx, button)| {
-                    let dir_vec = Self::direction_vec(&button.direction, squarification);
+                    let dir_vec = Self::direction_vec(&button.direction, shape_factor);
                     let button_angle = dir_vec.y.atan2(dir_vec.x);
                     let diff = ((angle - button_angle + PI) % TAU - PI).abs();
                     (idx, diff)
@@ -286,7 +317,6 @@ impl PieMenu {
         });
 
         // Center highlight — progress driven by mouse distance from center.
-        // 0.0 at the threshold edge, 1.0 at layout_radius (where buttons sit).
         if self.settings.center_indicator.highlight_shape != PieMenuHighlightShape::None
             && self.settings.animations.center_highlight_show
         {
@@ -304,7 +334,7 @@ impl PieMenu {
                 self.selected_index
                     .and_then(|idx| buttons.get(idx))
                     .map(|b| {
-                        let v = Self::direction_vec(&b.direction, squarification);
+                        let v = Self::direction_vec(&b.direction, shape_factor);
                         v.y.atan2(v.x)
                     })
                     .unwrap_or(0.0)
@@ -318,80 +348,39 @@ impl PieMenu {
             let start_angle = base_angle - arc_angle / 2.0;
             let angle_range = start_angle..(start_angle + arc_angle);
 
-            let stroke_color = self
-                .settings
-                .center_indicator
-                .highlight_stroke
-                .color
-                .gamma_multiply(progress);
-            let fill_color = self
-                .settings
-                .center_indicator
-                .highlight_fill_color
-                .gamma_multiply(progress);
-            let colored_stroke =
-                Stroke::new(self.settings.center_indicator.highlight_stroke.width, stroke_color);
+            let stroke_color = self.settings.center_indicator.highlight_stroke.color.gamma_multiply(progress);
+            let fill_color = self.settings.center_indicator.highlight_fill_color.gamma_multiply(progress);
+            let colored_stroke = Stroke::new(self.settings.center_indicator.highlight_stroke.width, stroke_color);
             let highlight_radius = self.settings.center_indicator.highlight_radius.get();
-
             let shape = self.settings.center_indicator.highlight_shape;
 
-            let needs_arc = matches!(
-                shape,
-                PieMenuHighlightShape::Arc
-                    | PieMenuHighlightShape::ArcSlice
-                    | PieMenuHighlightShape::ArcCircle
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-            let needs_slice = matches!(
-                shape,
-                PieMenuHighlightShape::Slice
-                    | PieMenuHighlightShape::SliceCircle
-                    | PieMenuHighlightShape::ArcSlice
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-            let needs_circle = matches!(
-                shape,
-                PieMenuHighlightShape::Circle
-                    | PieMenuHighlightShape::ArcCircle
-                    | PieMenuHighlightShape::SliceCircle
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
+            let needs_arc = matches!(shape,
+                PieMenuHighlightShape::Arc | PieMenuHighlightShape::ArcSlice |
+                PieMenuHighlightShape::ArcCircle | PieMenuHighlightShape::ArcSliceCircle);
+            let needs_slice = matches!(shape,
+                PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle |
+                PieMenuHighlightShape::ArcSlice | PieMenuHighlightShape::ArcSliceCircle);
+            let needs_circle = matches!(shape,
+                PieMenuHighlightShape::Circle | PieMenuHighlightShape::ArcCircle |
+                PieMenuHighlightShape::SliceCircle | PieMenuHighlightShape::ArcSliceCircle);
 
             let arc_arg = needs_arc.then(|| ArcValues {
-                angle_range: angle_range.clone(),
-                center,
-                radius: highlight_radius,
-                resolution: 10.0,
-                stroke: colored_stroke,
+                angle_range: angle_range.clone(), center,
+                radius: highlight_radius, resolution: 10.0, stroke: colored_stroke,
             });
-
             let slice_arg = needs_slice.then(|| {
-                // For ArcSlice/ArcSliceCircle the arc is drawn separately, so no arc inside slice.
-                let inner_arc = matches!(
-                    shape,
-                    PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle
-                )
-                .then(|| ArcValues {
-                    angle_range: angle_range.clone(),
-                    center,
-                    radius: highlight_radius,
-                    resolution: 10.0,
-                    stroke: colored_stroke,
-                });
-                SliceValues {
-                    arc_values: inner_arc,
-                    stroke: None,
-                    fill_color,
-                }
+                let inner_arc = matches!(shape, PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle)
+                    .then(|| ArcValues {
+                        angle_range: angle_range.clone(), center,
+                        radius: highlight_radius, resolution: 10.0, stroke: colored_stroke,
+                    });
+                SliceValues { arc_values: inner_arc, stroke: None, fill_color }
             });
-
             let circle_arg = needs_circle.then(|| CircleValues {
-                offset_angle: base_angle,
-                offset_radius: highlight_radius,
+                offset_angle: base_angle, offset_radius: highlight_radius,
                 offset_center: center,
                 circle_radius: self.settings.center_indicator.highlight_circle_radius,
-                stroke: colored_stroke,
-                fill_color,
+                stroke: colored_stroke, fill_color,
             });
 
             painter.highlight_shape(shape, arc_arg, slice_arg, circle_arg);
@@ -401,18 +390,14 @@ impl PieMenu {
         if self.settings.label.display {
             if let Some(label) = title {
                 let pad = &self.settings.label.padding;
-                let font = self.settings.label.text_font.clone();
-
-                // Measure text to size the background rect
                 let galley = painter.layout_no_wrap(
                     label.to_string(),
-                    font.clone(),
+                    self.settings.label.text_font.clone(),
                     self.settings.label.text_color,
                 );
                 let text_size = galley.size();
                 let bg_w = text_size.x + pad.left + pad.right;
                 let bg_h = text_size.y + pad.top + pad.bottom;
-
                 let above_offset = self.settings.center_indicator.background_radius.get() + bg_h / 2.0 + 4.0;
                 let label_center = center - Vec2::new(0.0, above_offset);
                 let bg_rect = Rect::from_center_size(label_center, Vec2::new(bg_w, bg_h));
@@ -425,43 +410,50 @@ impl PieMenu {
                 {
                     painter.rect_stroke(bg_rect, 3.0, self.settings.label.background_stroke, egui::StrokeKind::Outside);
                 }
-
-                let text_pos = bg_rect.min + Vec2::new(pad.left, pad.top);
-                painter.galley(text_pos, galley, self.settings.label.text_color);
+                painter.galley(bg_rect.min + Vec2::new(pad.left, pad.top), galley, self.settings.label.text_color);
             }
         }
 
-        // Draw buttons
+        // Draw buttons via caller-provided closure inside floating Areas
         for (idx, button) in buttons.iter().enumerate() {
-            let dir_vec = Self::direction_vec(&button.direction, squarification);
-            let button_pos = center + dir_vec * self.settings.layout_radius;
-            let button_rect = Rect::from_center_size(
-                button_pos,
-                Vec2::new(Self::button_width(&painter, &button.label), 30.0),
-            );
+            let dir_vec = Self::direction_vec(&button.direction, shape_factor);
+            let dir_norm = dir_vec.normalized();
 
-            let color = if self.selected_index == Some(idx) {
-                button.color.linear_multiply(0.5)
-            } else {
-                button.color
-            };
+            // Push the button outward so its inner face/corner sits on the layout circle.
+            // Each axis is offset independently: X by ±hw, Y by ±hh, based on the sign of
+            // the direction. This keeps NE/NW at the same Y and SE/SW at the same Y even
+            // when button widths differ, and the inner corner still lands exactly on the circle.
+            let cached_size = self.button_sizes[idx];
+            let hw = cached_size.x / 2.0;
+            let hh = cached_size.y / 2.0;
+            // Use 0.5 as threshold: diagonal components are ~0.707, cardinal near-zero
+            // components are floating-point noise (~1e-17) and must not contribute.
+            let sx = if dir_norm.x > 0.5 { 1.0 } else if dir_norm.x < -0.5 { -1.0 } else { 0.0 };
+            let sy = if dir_norm.y > 0.5 { 1.0 } else if dir_norm.y < -0.5 { -1.0 } else { 0.0 };
 
-            painter.rect_filled(button_rect, 5.0, color);
-            Self::draw_button_label(&painter, button_pos, &button.label, button.mnemonic);
+            let button_center = center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
+            let is_hovered = self.selected_index == Some(idx);
+
+            let area_pos = button_center - cached_size / 2.0;
+
+            let response = egui::Area::new(self.id.with(idx))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(area_pos)
+                .show(ctx, |ui| render_button(ui, idx, is_hovered));
+
+            self.button_sizes[idx] = response.response.rect.size();
         }
 
-        // Key-hold release: select hovered button or dismiss if center was held too long
+        // Key-hold release (mouse_shown is true here, so menu was visible)
         if !key_down && !self.release_handled {
+            self.release_handled = true;
             if let Some(mouse_pos) = current_mouse_pos {
                 if (mouse_pos - center).length() <= self.settings.mouse_trigger_threshold {
-                    if self.open_time.elapsed() > self.settings.input.key_timeout {
-                        return PieMenuResponse::Dismissed;
-                    }
+                    return PieMenuResponse::Dismissed;
                 } else if let Some(idx) = self.selected_index {
                     return PieMenuResponse::Selected(idx);
                 }
             }
-            self.release_handled = true;
         }
 
         PieMenuResponse::None
