@@ -11,7 +11,7 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 - Configurable layout shape: circle, square, or diamond via `shape_factor`
 - Center indicator with arc, slice, and/or dot highlight driven by mouse distance
 - Optional title label above the center indicator
-- Keyboard support: numpad 1–9 and per-button mnemonic keys
+- Keyboard support: numpad 1–9 and per-button mnemonic keys with underline rendering helper
 - Quick-tap and double-tap detection with no timer required from the caller
 
 ## Installation
@@ -25,7 +25,7 @@ egui_pie_menu = "0.1"
 
 ### 1. Define buttons once
 
-Buttons only carry a direction and an optional mnemonic key. Visual content is provided by a closure at render time.
+Buttons carry a direction and an optional mnemonic key. Visual content is provided by a closure at render time.
 
 ```rust
 use egui_pie_menu::{PieButton, PieDirection};
@@ -37,6 +37,8 @@ let buttons = vec![
     PieButton::new(PieDirection::West).with_mnemonic('u'),
 ];
 ```
+
+Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. Duplicate mnemonics produce a warning on stderr in debug builds.
 
 ### 2. Create a `PieMenu` and open it
 
@@ -63,7 +65,8 @@ if ctx.input(|i| i.pointer.secondary_pressed()) {
 ### 3. Call `show` every frame
 
 ```rust
-use egui_pie_menu::PieMenuResponse;
+use egui_pie_menu::{mnemonic_text, FontId, PieMenuResponse, TextFormat};
+use egui::Color32;
 
 if self.menu_open {
     let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
@@ -72,7 +75,17 @@ if self.menu_open {
     match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"),
         |ui, idx, hovered| {
             let label = ["Copy", "Redo", "Delete", "Undo"][idx];
-            ui.label(label);
+            let color = if hovered { Color32::WHITE } else { Color32::LIGHT_GRAY };
+            // mnemonic_text underlines the mnemonic character in the label
+            if let Some(c) = buttons[idx].mnemonic {
+                ui.label(mnemonic_text(label, c, TextFormat {
+                    color,
+                    font_id: FontId::default(),
+                    ..Default::default()
+                }));
+            } else {
+                ui.label(label);
+            }
         })
     {
         PieMenuResponse::Selected(idx) => {
@@ -113,6 +126,26 @@ pub fn show(
 | Escape or Numpad 5 | `Dismissed` |
 
 The menu is not drawn at all until the mouse crosses `show_threshold` (default 10 px), so a plain tap feels instant with no visual flicker.
+
+## Mnemonic labels
+
+`mnemonic_text` builds an egui `LayoutJob` that renders a string with the mnemonic character underlined. Pass it directly to `ui.label()`.
+
+```rust
+use egui_pie_menu::{mnemonic_text, FontId, TextFormat};
+use egui::Color32;
+
+// Renders "Copy" with the 'C' underlined
+ui.label(mnemonic_text("Copy", 'c', TextFormat {
+    color: Color32::WHITE,
+    font_id: FontId::default(),
+    ..Default::default()
+}));
+```
+
+- The match is **case-insensitive** — mnemonic `'c'` underlines `'C'` in `"Copy"`
+- If the character isn't found in the string, the text is rendered unstyled with no underline
+- `LayoutJob`, `TextFormat`, and `FontId` are re-exported from the crate root for convenience
 
 ## Settings
 
