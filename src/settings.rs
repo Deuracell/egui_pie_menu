@@ -1,4 +1,4 @@
-use egui::{Stroke, Color32, FontDefinitions, Key};
+use egui::{FontId, Stroke, Color32, Key};
 use std::f32::consts::TAU;
 use std::f32::NAN;
 //use std::{array, default,option};
@@ -7,7 +7,7 @@ use crate::utils::common_utils::{BoundedVec, SmartFloat};
 use std::collections::HashMap;
 use std::fmt::Debug;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PieMenuDirection {
+pub enum PieDirection {
     North,
     NorthEast,
     East,
@@ -27,23 +27,21 @@ pub enum PieMenuButtonContent {
 
 #[derive(Debug, Clone)]
 pub struct PieMenuButtonLayout {
-    pub overrides: HashMap<PieMenuDirection, BoundedVec<PieMenuButtonContent>>, // Stores only non-defaults
-    pub default: BoundedVec<PieMenuButtonContent>, // Default layout
+    pub overrides: HashMap<PieDirection, BoundedVec<PieMenuButtonContent>>,
+    pub default: BoundedVec<PieMenuButtonContent>,
 }
 
 impl PieMenuButtonLayout {
     /// Get the content for a given direction, using defaults if not overridden
-    pub fn get_content(&self, direction: PieMenuDirection) -> &[PieMenuButtonContent] {
+    pub fn get_content(&self, direction: PieDirection) -> &[PieMenuButtonContent] {
         self.overrides.get(&direction).unwrap_or(&self.default).get()
     }
 
-    /// Set a custom layout for a specific direction
-    pub fn set_override(&mut self, direction: PieMenuDirection, content: BoundedVec<PieMenuButtonContent>) {
+    pub fn set_override(&mut self, direction: PieDirection, content: BoundedVec<PieMenuButtonContent>) {
         self.overrides.insert(direction, content);
     }
 
-    /// Remove an override, making it inherit from `default`
-    pub fn remove_override(&mut self, direction: PieMenuDirection) {
+    pub fn remove_override(&mut self, direction: PieDirection) {
         self.overrides.remove(&direction);
     }
 }
@@ -120,7 +118,8 @@ pub struct PieMenuCenterIndicatorSettings {
     pub highlight_fill_color: Color32,
     pub highlight_gradient: bool,
     pub highlight_angle: f32,
-    
+    /// Radius of the dot/circle when the highlight shape includes a `Circle` component.
+    pub highlight_circle_radius: f32,
 }
 
 impl Default for PieMenuCenterIndicatorSettings {
@@ -136,6 +135,7 @@ impl Default for PieMenuCenterIndicatorSettings {
             highlight_fill_color: Color32::PURPLE,
             highlight_gradient: false,
             highlight_angle: TAU / 8.0, // 45 degrees
+            highlight_circle_radius: 5.0,
         }
     }
 }
@@ -147,16 +147,14 @@ impl Default for PieMenuCenterIndicatorSettings {
 ///
 /// - `background_color`: The background color of the label.
 /// - `text_color`: The color of the label text.
-/// - `text_font`: The font used for label text.
-/// - `text_size`: The size of the label text.
+/// - `text_font`: The font and size used for label text.
 pub struct PieMenuLabelSettings {
     pub display: bool,
     pub background_color: Color32,
     pub background_stroke: Stroke,
     pub padding: Padding,
     pub text_color: Color32,
-    pub text_font: FontDefinitions,
-    pub text_size: FontDefinitions,
+    pub text_font: FontId,
 }
 
 impl Default for PieMenuLabelSettings {
@@ -172,8 +170,7 @@ impl Default for PieMenuLabelSettings {
                 left: 5.0,
             },
             text_color: Color32::LIGHT_GRAY,
-            text_font: FontDefinitions::default(),
-            text_size: FontDefinitions::default(),
+            text_font: FontId::default(),
         }
     }
 }
@@ -193,8 +190,7 @@ pub struct Padding {
 /// - `false_background_color`: The background color when a button is not selected.
 /// - `true_text_color`: The text color when a button is selected.
 /// - `false_text_color`: The text color when a button is not selected.
-/// - `text_size`: The size of the button text.
-/// - `text_font`: The font used for button text.
+/// - `text_font`: The font and size used for button text.
 pub struct PieMenuButtonSettings {
     pub background_corner_radius: SmartFloat<f32>,
     pub background_stroke: Stroke,
@@ -205,9 +201,7 @@ pub struct PieMenuButtonSettings {
     pub false_background_color: Color32,
     pub true_text_color: Color32,
     pub false_text_color: Color32,
-    pub text_size: FontDefinitions,
-    pub text_font: FontDefinitions,
-
+    pub text_font: FontId,
 }
 
 impl Default for PieMenuButtonSettings {
@@ -227,11 +221,9 @@ impl Default for PieMenuButtonSettings {
             false_background_color: Color32::from_rgb(200, 200, 200),
             true_text_color: Color32::WHITE,
             false_text_color: Color32::BLACK,
-            text_size: FontDefinitions::default(),
-            text_font: FontDefinitions::default(),
+            text_font: FontId::default(),
         }
     }
-    
 }
 
 
