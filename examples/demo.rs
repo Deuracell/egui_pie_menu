@@ -264,7 +264,8 @@ impl eframe::App for Demo {
                                 .corner_radius(6.0)
                                 .inner_margin(Vec2::new(10.0, 5.0))
                                 .show(ui, |ui| {
-                                    ui.add_enabled(false, egui::Checkbox::new(&mut self.word_wrap, RichText::new(label).color(fg)));
+                                    let mut display = self.word_wrap;
+                                    ui.checkbox(&mut display, RichText::new(label).color(fg));
                                 });
                             return;
                         }
