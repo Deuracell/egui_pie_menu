@@ -1,4 +1,4 @@
-use egui::{FontId, Stroke, Color32};
+use egui::{FontId, Key, PointerButton, Stroke, Color32};
 use std::f32::consts::TAU;
 use std::f32::NAN;
 use std::time::Duration;
@@ -118,6 +118,15 @@ pub struct Padding {
     pub left: f32,
 }
 
+/// An input event that dismisses the pie menu.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PieMenuDismissInput {
+    /// A keyboard key press.
+    Key(Key),
+    /// A mouse button click.
+    PointerButton(PointerButton),
+}
+
 /// Input and dismissal behaviour.
 pub struct PieMenuInput {
     /// Allow numpad keys 1–9 to activate buttons by direction.
@@ -133,12 +142,12 @@ pub struct PieMenuInput {
     /// Set to `false` for Blender-style interaction, where selection is triggered
     /// by releasing the key that opened the menu rather than by a separate click.
     pub select_on_primary_click: bool,
-    /// Dismiss the menu when Numpad 5 is pressed.
-    pub dismiss_on_numpad_5: bool,
-    /// Dismiss the menu when the secondary mouse button is clicked.
-    pub dismiss_on_secondary_mouse_click: bool,
-    /// Dismiss the menu when Escape is pressed.
-    pub dismiss_on_escape_key: bool,
+    /// Inputs that dismiss the menu without selecting a button.
+    ///
+    /// Any [`PieMenuDismissInput::Key`] or [`PieMenuDismissInput::PointerButton`]
+    /// in this list will close the menu when triggered. Clear the vec to disable
+    /// all dismiss inputs.
+    pub dismiss_inputs: Vec<PieMenuDismissInput>,
 }
 
 impl Default for PieMenuInput {
@@ -148,9 +157,11 @@ impl Default for PieMenuInput {
             use_mnemonic_keys: true,
             double_tap_window: Duration::from_millis(400),
             select_on_primary_click: true,
-            dismiss_on_numpad_5: true,
-            dismiss_on_secondary_mouse_click: true,
-            dismiss_on_escape_key: true,
+            dismiss_inputs: vec![
+                PieMenuDismissInput::Key(Key::Escape),
+                PieMenuDismissInput::Key(Key::Num5),
+                PieMenuDismissInput::PointerButton(PointerButton::Secondary),
+            ],
         }
     }
 }
