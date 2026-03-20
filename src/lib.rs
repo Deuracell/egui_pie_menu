@@ -323,18 +323,6 @@ impl PieMenu {
             }
         }
 
-        // Primary click selection
-        if ctx.input(|i| i.pointer.primary_clicked()) {
-            return match current_mouse_pos {
-                Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => {
-                    self.selected_index
-                        .map_or(PieMenuResponse::None, PieMenuResponse::Selected)
-                }
-                Some(_) => PieMenuResponse::None,
-                None => PieMenuResponse::Dismissed,
-            };
-        }
-
         // Update hover selection from mouse angle
         self.selected_index = current_mouse_pos.and_then(|mouse_pos| {
             let mouse_vec = mouse_pos - center;
@@ -481,6 +469,19 @@ impl PieMenu {
                 .show(ctx, |ui| render_button(ui, idx, is_hovered));
 
             self.button_sizes[idx] = response.response.rect.size();
+        }
+
+        // Primary click selection — runs after render so closures (e.g. checkboxes)
+        // receive the click event before we consume it.
+        if ctx.input(|i| i.pointer.primary_clicked()) {
+            return match current_mouse_pos {
+                Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => {
+                    self.selected_index
+                        .map_or(PieMenuResponse::None, PieMenuResponse::Selected)
+                }
+                Some(_) => PieMenuResponse::None,
+                None => PieMenuResponse::Dismissed,
+            };
         }
 
         // Key-hold release (mouse_shown is true here, so menu was visible)
