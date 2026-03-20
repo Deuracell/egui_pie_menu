@@ -128,6 +128,11 @@ pub struct PieMenuInput {
     /// Maximum gap between two [`crate::PieMenuResponse::QuickTap`]s to produce a
     /// [`crate::PieMenuResponse::DoubleTap`].
     pub double_tap_window: Duration,
+    /// Select the hovered button when the primary mouse button (LMB) is clicked.
+    ///
+    /// Set to `false` for Blender-style interaction, where selection is triggered
+    /// by releasing the key that opened the menu rather than by a separate click.
+    pub select_on_primary_click: bool,
     /// Dismiss the menu when Numpad 5 is pressed.
     pub dismiss_on_numpad_5: bool,
     /// Dismiss the menu when the secondary mouse button is clicked.
@@ -142,6 +147,7 @@ impl Default for PieMenuInput {
             use_numpad_keys: true,
             use_mnemonic_keys: true,
             double_tap_window: Duration::from_millis(400),
+            select_on_primary_click: true,
             dismiss_on_numpad_5: true,
             dismiss_on_secondary_mouse_click: true,
             dismiss_on_escape_key: true,
