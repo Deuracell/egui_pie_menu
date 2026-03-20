@@ -5,13 +5,13 @@ use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
 mod utils;
-pub use utils::common_utils::{BoundedVec, SmartFloat};
+pub use utils::common_utils::SmartFloat;
 
 pub mod settings;
 pub use settings::*;
 
-pub mod highlight_shapes;
-pub use highlight_shapes::*;
+pub(crate) mod highlight_shapes;
+use highlight_shapes::{ArcValues, CircleValues, HighlightPainter, SliceValues};
 
 /// A single button slot in the pie menu.
 ///
