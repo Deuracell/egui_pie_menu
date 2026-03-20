@@ -28,11 +28,11 @@ impl Demo {
     fn new() -> Self {
         let buttons = vec![
             PieButton::new(PieDirection::North)    .with_mnemonic('c'),
-            PieButton::new(PieDirection::NorthEast).with_mnemonic('v'),
+            PieButton::new(PieDirection::NorthEast).with_mnemonic('p'),
             PieButton::new(PieDirection::East)     .with_mnemonic('r'),
             PieButton::new(PieDirection::SouthEast).with_mnemonic('s'),
             PieButton::new(PieDirection::South)    .with_mnemonic('d'),
-            PieButton::new(PieDirection::SouthWest).with_mnemonic('x'),
+            PieButton::new(PieDirection::SouthWest).with_mnemonic('t'),
             PieButton::new(PieDirection::West)     .with_mnemonic('u'),
             PieButton::new(PieDirection::NorthWest).with_mnemonic('o'),
         ];
