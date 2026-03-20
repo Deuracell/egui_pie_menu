@@ -223,12 +223,13 @@ impl PieMenu {
         }
 
         // Early exit checks
-        if ctx.input(|i| {
-            (self.settings.input.dismiss_on_numpad_5 && i.key_pressed(Key::Num5))
-                || (self.settings.input.dismiss_on_escape_key && i.key_pressed(Key::Escape))
-                || (self.settings.input.dismiss_on_secondary_mouse_click
-                    && i.pointer.secondary_clicked())
-        }) {
+        let dismissed = ctx.input(|i| {
+            self.settings.input.dismiss_inputs.iter().any(|d| match d {
+                PieMenuDismissInput::Key(k)            => i.key_pressed(*k),
+                PieMenuDismissInput::PointerButton(pb) => i.pointer.button_clicked(*pb),
+            })
+        });
+        if dismissed {
             return PieMenuResponse::Dismissed;
         }
 
