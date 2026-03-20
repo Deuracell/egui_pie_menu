@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::Color32;
+use egui::{Color32, RichText, Vec2};
 use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat};
 
 fn main() -> eframe::Result {
@@ -13,11 +13,10 @@ fn main() -> eframe::Result {
 struct Demo {
     menu: PieMenu,
     menu_open: bool,
-    hotkey_down: bool,
     last_action: String,
     pinned: bool,
 
-    // Locally mirrored f32 values for SmartFloat settings (sliders need plain f32)
+    // Mirrored f32 values for SmartFloat settings (sliders need plain f32)
     bg_radius: f32,
     highlight_radius: f32,
     highlight_angle_deg: f32,
@@ -28,14 +27,14 @@ struct Demo {
 impl Demo {
     fn new() -> Self {
         let buttons = vec![
-            PieButton::new(PieDirection::North,     "Copy")  .with_color(Color32::from_rgb(70, 130, 180)).with_mnemonic('c'),
-            PieButton::new(PieDirection::NorthEast, "Paste") .with_color(Color32::from_rgb(70, 130, 180)).with_mnemonic('v'),
-            PieButton::new(PieDirection::East,      "Redo")  .with_color(Color32::from_rgb(100, 160, 100)).with_mnemonic('r'),
-            PieButton::new(PieDirection::SouthEast, "Save")  .with_color(Color32::from_rgb(180, 140, 60)).with_mnemonic('s'),
-            PieButton::new(PieDirection::South,     "Delete").with_color(Color32::from_rgb(180, 70, 70)).with_mnemonic('d'),
-            PieButton::new(PieDirection::SouthWest, "Cut")   .with_color(Color32::from_rgb(180, 100, 60)).with_mnemonic('x'),
-            PieButton::new(PieDirection::West,      "Undo")  .with_color(Color32::from_rgb(100, 160, 100)).with_mnemonic('u'),
-            PieButton::new(PieDirection::NorthWest, "Open")  .with_color(Color32::from_rgb(130, 90, 180)).with_mnemonic('o'),
+            PieButton::new(PieDirection::North)    .with_mnemonic('c'),
+            PieButton::new(PieDirection::NorthEast).with_mnemonic('v'),
+            PieButton::new(PieDirection::East)     .with_mnemonic('r'),
+            PieButton::new(PieDirection::SouthEast).with_mnemonic('s'),
+            PieButton::new(PieDirection::South)    .with_mnemonic('d'),
+            PieButton::new(PieDirection::SouthWest).with_mnemonic('x'),
+            PieButton::new(PieDirection::West)     .with_mnemonic('u'),
+            PieButton::new(PieDirection::NorthWest).with_mnemonic('o'),
         ];
 
         let menu = PieMenu::new();
@@ -46,7 +45,6 @@ impl Demo {
         Self {
             menu,
             menu_open: false,
-            hotkey_down: false,
             last_action: "Right-click anywhere to open the menu.".to_string(),
             pinned: false,
             bg_radius,
@@ -56,6 +54,19 @@ impl Demo {
         }
     }
 }
+
+const LABELS: &[&str] = &["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Open"];
+
+const COLORS: &[Color32] = &[
+    Color32::from_rgb(70, 130, 180),
+    Color32::from_rgb(70, 130, 180),
+    Color32::from_rgb(100, 160, 100),
+    Color32::from_rgb(180, 140,  60),
+    Color32::from_rgb(180,  70,  70),
+    Color32::from_rgb(180, 100,  60),
+    Color32::from_rgb(100, 160, 100),
+    Color32::from_rgb(130,  90, 180),
+];
 
 const ALL_SHAPES: &[PieMenuHighlightShape] = &[
     PieMenuHighlightShape::None,
@@ -70,14 +81,14 @@ const ALL_SHAPES: &[PieMenuHighlightShape] = &[
 
 fn shape_label(s: PieMenuHighlightShape) -> &'static str {
     match s {
-        PieMenuHighlightShape::None          => "None",
-        PieMenuHighlightShape::Arc           => "Arc",
-        PieMenuHighlightShape::Slice         => "Slice",
-        PieMenuHighlightShape::Circle        => "Circle",
-        PieMenuHighlightShape::ArcSlice      => "Arc + Slice",
-        PieMenuHighlightShape::ArcCircle     => "Arc + Circle",
-        PieMenuHighlightShape::SliceCircle   => "Slice + Circle",
-        PieMenuHighlightShape::ArcSliceCircle=> "Arc + Slice + Circle",
+        PieMenuHighlightShape::None           => "None",
+        PieMenuHighlightShape::Arc            => "Arc",
+        PieMenuHighlightShape::Slice          => "Slice",
+        PieMenuHighlightShape::Circle         => "Circle",
+        PieMenuHighlightShape::ArcSlice       => "Arc + Slice",
+        PieMenuHighlightShape::ArcCircle      => "Arc + Circle",
+        PieMenuHighlightShape::SliceCircle    => "Slice + Circle",
+        PieMenuHighlightShape::ArcSliceCircle => "Arc + Slice + Circle",
     }
 }
 
@@ -89,16 +100,14 @@ impl eframe::App for Demo {
                 ui.heading("Layout");
                 ui.separator();
 
-                ui.label("Squarification  (−1 diamond · 0 circle · +1 square)");
+                ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
                 ui.add(egui::Slider::new(
-                    &mut self.menu.settings.layout_squarification,
-                    -1.0..=1.0,
+                    &mut self.menu.settings.shape_factor, -1.0..=1.0,
                 ).step_by(0.01));
 
                 ui.label("Radius");
                 ui.add(egui::Slider::new(
-                    &mut self.menu.settings.layout_radius,
-                    40.0..=200.0,
+                    &mut self.menu.settings.layout_radius, 40.0..=200.0,
                 ).step_by(1.0));
 
                 ui.add_space(8.0);
@@ -113,22 +122,15 @@ impl eframe::App for Demo {
                 }
 
                 ui.label("Fill color");
-                let mut fill = self.menu.settings.center_indicator.background_fill_color;
-                if ui.color_edit_button_srgba(&mut fill).changed() {
-                    self.menu.settings.center_indicator.background_fill_color = fill;
-                }
+                ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
 
                 ui.label("Stroke width");
                 ui.add(egui::Slider::new(
-                    &mut self.menu.settings.center_indicator.background_stroke.width,
-                    0.0..=10.0,
+                    &mut self.menu.settings.center_indicator.background_stroke.width, 0.0..=10.0,
                 ).step_by(0.5));
 
                 ui.label("Stroke color");
-                let mut stroke_color = self.menu.settings.center_indicator.background_stroke.color;
-                if ui.color_edit_button_srgba(&mut stroke_color).changed() {
-                    self.menu.settings.center_indicator.background_stroke.color = stroke_color;
-                }
+                ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_stroke.color);
 
                 ui.add_space(8.0);
 
@@ -144,8 +146,7 @@ impl eframe::App for Demo {
                         for &s in ALL_SHAPES {
                             ui.selectable_value(
                                 &mut self.menu.settings.center_indicator.highlight_shape,
-                                s,
-                                shape_label(s),
+                                s, shape_label(s),
                             );
                         }
                     });
@@ -162,29 +163,20 @@ impl eframe::App for Demo {
 
                 ui.label("Circle radius");
                 ui.add(egui::Slider::new(
-                    &mut self.menu.settings.center_indicator.highlight_circle_radius,
-                    1.0..=40.0,
+                    &mut self.menu.settings.center_indicator.highlight_circle_radius, 1.0..=40.0,
                 ).step_by(0.5));
 
                 ui.label("Fill color");
-                let mut fill = self.menu.settings.center_indicator.highlight_fill_color;
-                if ui.color_edit_button_srgba(&mut fill).changed() {
-                    self.menu.settings.center_indicator.highlight_fill_color = fill;
-                }
+                ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
 
                 ui.label("Stroke width");
                 ui.add(egui::Slider::new(
-                    &mut self.menu.settings.center_indicator.highlight_stroke.width,
-                    0.0..=10.0,
+                    &mut self.menu.settings.center_indicator.highlight_stroke.width, 0.0..=10.0,
                 ).step_by(0.5));
 
                 ui.label("Stroke color");
-                let mut stroke_color = self.menu.settings.center_indicator.highlight_stroke.color;
-                if ui.color_edit_button_srgba(&mut stroke_color).changed() {
-                    self.menu.settings.center_indicator.highlight_stroke.color = stroke_color;
-                }
+                ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_stroke.color);
 
-                ui.label("Snapping");
                 ui.checkbox(&mut self.menu.settings.animations.center_highlight_snapping, "Snap to button");
 
                 ui.add_space(8.0);
@@ -193,31 +185,17 @@ impl eframe::App for Demo {
                 ui.heading("Center label");
                 ui.separator();
 
-                ui.checkbox(&mut self.menu.settings.label.display, "Show hovered label");
-
+                ui.checkbox(&mut self.menu.settings.label.display, "Show title");
                 ui.label("Text color");
-                let mut text_color = self.menu.settings.label.text_color;
-                if ui.color_edit_button_srgba(&mut text_color).changed() {
-                    self.menu.settings.label.text_color = text_color;
-                }
-
+                ui.color_edit_button_srgba(&mut self.menu.settings.label.text_color);
                 ui.label("Background color");
-                let mut bg_color = self.menu.settings.label.background_color;
-                if ui.color_edit_button_srgba(&mut bg_color).changed() {
-                    self.menu.settings.label.background_color = bg_color;
-                }
-
+                ui.color_edit_button_srgba(&mut self.menu.settings.label.background_color);
                 ui.label("Stroke width");
                 ui.add(egui::Slider::new(
-                    &mut self.menu.settings.label.background_stroke.width,
-                    0.0..=4.0,
+                    &mut self.menu.settings.label.background_stroke.width, 0.0..=4.0,
                 ).step_by(0.5));
-
                 ui.label("Stroke color");
-                let mut stroke_color = self.menu.settings.label.background_stroke.color;
-                if ui.color_edit_button_srgba(&mut stroke_color).changed() {
-                    self.menu.settings.label.background_stroke.color = stroke_color;
-                }
+                ui.color_edit_button_srgba(&mut self.menu.settings.label.background_stroke.color);
 
                 ui.add_space(8.0);
 
@@ -227,12 +205,15 @@ impl eframe::App for Demo {
                 ui.checkbox(&mut self.pinned, "Pin menu at center");
                 ui.add_space(8.0);
                 ui.separator();
-                ui.label(egui::RichText::new(&self.last_action).size(13.0));
+                ui.label(RichText::new(&self.last_action).size(13.0));
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("Right-click to open  ·  Numpad 1–9 to pick  ·  Esc / Numpad 5 to dismiss");
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
+            });
 
             if self.pinned {
                 self.menu.position = ui.clip_rect().center();
@@ -251,9 +232,27 @@ impl eframe::App for Demo {
             if self.menu_open {
                 let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
 
-                match self.menu.show(ui, &self.buttons, mouse_pos, self.hotkey_down, Some("Edit")) {
+                let key_down = if self.pinned { true } else { ctx.input(|i| i.pointer.secondary_down()) };
+                match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
+                    |ui, idx, hovered| {
+                        let label = LABELS[idx];
+                        let color = COLORS[idx];
+                        let (bg, fg) = if hovered {
+                            (color, Color32::WHITE)
+                        } else {
+                            (color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
+                        };
+                        egui::Frame::new()
+                            .fill(bg)
+                            .corner_radius(6.0)
+                            .inner_margin(Vec2::new(10.0, 5.0))
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(label).color(fg));
+                            });
+                    })
+                {
                     PieMenuResponse::Selected(idx) => {
-                        self.last_action = format!("Selected: {}", self.buttons[idx].label);
+                        self.last_action = format!("Selected: {}", LABELS[idx]);
                         if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::Dismissed => {
@@ -261,6 +260,14 @@ impl eframe::App for Demo {
                             self.last_action = "Dismissed.".to_string();
                             self.menu_open = false;
                         }
+                    }
+                    PieMenuResponse::QuickTap => {
+                        self.last_action = "Quick tap — default action.".to_string();
+                        if !self.pinned { self.menu_open = false; }
+                    }
+                    PieMenuResponse::DoubleTap => {
+                        self.last_action = "Double tap — alternate action.".to_string();
+                        if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::None => {}
                 }
