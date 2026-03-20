@@ -22,6 +22,9 @@ struct Demo {
     highlight_angle_deg: f32,
 
     buttons: Vec<PieButton>,
+
+    // State for the checkbox button slot
+    word_wrap: bool,
 }
 
 impl Demo {
@@ -34,7 +37,7 @@ impl Demo {
             PieButton::new(PieDirection::South)    .with_mnemonic('d'),
             PieButton::new(PieDirection::SouthWest).with_mnemonic('t'),
             PieButton::new(PieDirection::West)     .with_mnemonic('u'),
-            PieButton::new(PieDirection::NorthWest).with_mnemonic('o'),
+            PieButton::new(PieDirection::NorthWest),
         ];
 
         let menu = PieMenu::new();
@@ -51,21 +54,31 @@ impl Demo {
             highlight_radius,
             highlight_angle_deg,
             buttons,
+            word_wrap: false,
         }
     }
 }
 
-const LABELS: &[&str] = &["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Open"];
+const LABELS: &[&str] = &[
+    "Copy", "Paste Special", "Redo", "Save As…",
+    "Delete Permanently", "Cut", "Undo Last Change", "Word wrap",
+];
 
 const COLORS: &[Color32] = &[
-    Color32::from_rgb(70, 130, 180),
-    Color32::from_rgb(70, 130, 180),
+    Color32::from_rgb( 70, 130, 180),
+    Color32::from_rgb( 70, 130, 180),
     Color32::from_rgb(100, 160, 100),
     Color32::from_rgb(180, 140,  60),
     Color32::from_rgb(180,  70,  70),
     Color32::from_rgb(180, 100,  60),
     Color32::from_rgb(100, 160, 100),
     Color32::from_rgb(130,  90, 180),
+];
+
+// Keyboard shortcut hints shown in tooltips
+const TOOLTIPS: &[&str] = &[
+    "Ctrl+C", "Ctrl+Shift+V", "Ctrl+Y", "Ctrl+Shift+S",
+    "Del", "Ctrl+X", "Ctrl+Z", "",
 ];
 
 const ALL_SHAPES: &[PieMenuHighlightShape] = &[
@@ -231,8 +244,8 @@ impl eframe::App for Demo {
 
             if self.menu_open {
                 let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
+                let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
 
-                let key_down = if self.pinned { true } else { ctx.input(|i| i.pointer.secondary_down()) };
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, idx, hovered| {
                         let label = LABELS[idx];
@@ -242,7 +255,32 @@ impl eframe::App for Demo {
                         } else {
                             (color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
                         };
-                        egui::Frame::new()
+
+                        // NW slot (idx 7): checkbox widget
+                        if idx == 7 {
+                            egui::Frame::new()
+                                .fill(bg)
+                                .corner_radius(6.0)
+                                .inner_margin(Vec2::new(10.0, 5.0))
+                                .show(ui, |ui| {
+                                    ui.visuals_mut().widgets.inactive.fg_stroke.color = fg;
+                                    ui.visuals_mut().widgets.hovered.fg_stroke.color  = fg;
+                                    ui.checkbox(&mut self.word_wrap, RichText::new(label).color(fg));
+                                });
+                            return;
+                        }
+
+                        // South slot (idx 4): icon button — verify egui::Button works inside an Area
+                        if idx == 4 {
+                            let btn = egui::Button::new(
+                                RichText::new(format!("🗑  {label}")).color(fg)
+                            ).fill(bg).corner_radius(6.0);
+                            ui.add(btn).on_hover_text(TOOLTIPS[idx]);
+                            return;
+                        }
+
+                        // All other slots: mnemonic label with tooltip
+                        let frame_resp = egui::Frame::new()
                             .fill(bg)
                             .corner_radius(6.0)
                             .inner_margin(Vec2::new(10.0, 5.0))
@@ -257,6 +295,9 @@ impl eframe::App for Demo {
                                     ui.label(RichText::new(label).color(fg));
                                 }
                             });
+                        if !TOOLTIPS[idx].is_empty() {
+                            frame_resp.response.on_hover_text(TOOLTIPS[idx]);
+                        }
                     })
                 {
                     PieMenuResponse::Selected(idx) => {
