@@ -19,15 +19,21 @@ use highlight_shapes::{ArcValues, CircleValues, HighlightPainter, SliceValues};
 /// mnemonic. All visual content is rendered by the caller via the closure
 /// passed to [`PieMenu::show`].
 pub struct PieButton {
+    /// Which of the eight directions this button occupies.
     pub direction: PieDirection,
+    /// Optional single-character keyboard shortcut. Case-insensitive.
+    /// When set, pressing this key while the menu is open activates the button.
+    /// Use [`mnemonic_text`] to render the character underlined in the label.
     pub mnemonic: Option<char>,
 }
 
 impl PieButton {
+    /// Creates a button at `direction` with no mnemonic.
     pub fn new(direction: PieDirection) -> Self {
         Self { direction, mnemonic: None }
     }
 
+    /// Sets the mnemonic key for this button. Case-insensitive.
     pub fn with_mnemonic(mut self, c: char) -> Self {
         self.mnemonic = Some(c);
         self
@@ -76,6 +82,8 @@ impl Default for PieMenu {
 }
 
 impl PieMenu {
+    /// Creates a pie menu with default settings and a stable id.
+    /// If you have more than one pie menu in the same app use [`PieMenu::with_id`].
     pub fn new() -> Self {
         Self {
             id: egui::Id::new("pie_menu"),
@@ -90,11 +98,14 @@ impl PieMenu {
         }
     }
 
+    /// Override the egui [`egui::Id`] used for this menu's layer and Areas.
+    /// Required when multiple pie menus coexist in the same app.
     pub fn with_id(mut self, id: impl std::hash::Hash) -> Self {
         self.id = egui::Id::new(id);
         self
     }
 
+    /// Override the default [`PieMenuSettings`] at construction time.
     pub fn with_settings(mut self, settings: PieMenuSettings) -> Self {
         self.settings = settings;
         self
