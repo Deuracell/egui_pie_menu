@@ -223,7 +223,7 @@ impl PieMenu {
 
         // Compute the bounding box of all buttons (relative to self.position) and
         // shift the whole menu so it stays within the screen rect with a margin.
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let margin = self.settings.screen_margin;
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
