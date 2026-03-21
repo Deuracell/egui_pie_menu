@@ -1,6 +1,6 @@
-use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
-pub use egui::text::{LayoutJob, TextFormat};
 pub use egui::FontId;
+pub use egui::text::{LayoutJob, TextFormat};
+use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
@@ -30,7 +30,10 @@ pub struct PieButton {
 impl PieButton {
     /// Creates a button at `direction` with no mnemonic.
     pub fn new(direction: PieDirection) -> Self {
-        Self { direction, mnemonic: None }
+        Self {
+            direction,
+            mnemonic: None,
+        }
     }
 
     /// Sets the mnemonic key for this button. Case-insensitive.
@@ -127,13 +130,13 @@ impl PieMenu {
     /// - `-1.0` → diamond: diagonals pulled in toward the centre (L1 norm)
     fn direction_vec(dir: &PieDirection, shape_factor: f32) -> Vec2 {
         let fraction = match dir {
-            PieDirection::North     => 0.75,
+            PieDirection::North => 0.75,
             PieDirection::NorthEast => 0.875,
-            PieDirection::East      => 1.0,
+            PieDirection::East => 1.0,
             PieDirection::SouthEast => 0.125,
-            PieDirection::South     => 0.25,
+            PieDirection::South => 0.25,
             PieDirection::SouthWest => 0.375,
-            PieDirection::West      => 0.5,
+            PieDirection::West => 0.5,
             PieDirection::NorthWest => 0.625,
         };
         let angle = TAU * fraction;
@@ -161,13 +164,13 @@ impl PieMenu {
 
     fn direction_numpad(dir: &PieDirection) -> Key {
         match dir {
-            PieDirection::North     => Key::Num8,
+            PieDirection::North => Key::Num8,
             PieDirection::NorthEast => Key::Num9,
-            PieDirection::East      => Key::Num6,
+            PieDirection::East => Key::Num6,
             PieDirection::SouthEast => Key::Num3,
-            PieDirection::South     => Key::Num2,
+            PieDirection::South => Key::Num2,
             PieDirection::SouthWest => Key::Num1,
-            PieDirection::West      => Key::Num4,
+            PieDirection::West => Key::Num4,
             PieDirection::NorthWest => Key::Num7,
         }
     }
@@ -190,7 +193,8 @@ impl PieMenu {
     ) -> PieMenuResponse {
         // Ensure cached size vec is long enough
         if self.button_sizes.len() < buttons.len() {
-            self.button_sizes.resize(buttons.len(), Vec2::new(50.0, 24.0));
+            self.button_sizes
+                .resize(buttons.len(), Vec2::new(50.0, 24.0));
         }
 
         let center = self.position;
@@ -208,7 +212,8 @@ impl PieMenu {
         if !self.mouse_shown {
             if !key_down && !self.release_handled {
                 self.release_handled = true;
-                let is_double = self.last_quick_tap
+                let is_double = self
+                    .last_quick_tap
                     .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
                     .unwrap_or(false);
                 if is_double {
@@ -225,7 +230,7 @@ impl PieMenu {
         // Early exit checks
         let dismissed = ctx.input(|i| {
             self.settings.input.dismiss_inputs.iter().any(|d| match d {
-                PieMenuDismissInput::Key(k)            => i.key_pressed(*k),
+                PieMenuDismissInput::Key(k) => i.key_pressed(*k),
                 PieMenuDismissInput::PointerButton(pb) => i.pointer.button_clicked(*pb),
             })
         });
@@ -247,8 +252,20 @@ impl PieMenu {
             let sz = self.button_sizes[idx];
             let hw = sz.x / 2.0;
             let hh = sz.y / 2.0;
-            let sx = if dn.x > 0.5 { 1.0 } else if dn.x < -0.5 { -1.0 } else { 0.0 };
-            let sy = if dn.y > 0.5 { 1.0 } else if dn.y < -0.5 { -1.0 } else { 0.0 };
+            let sx = if dn.x > 0.5 {
+                1.0
+            } else if dn.x < -0.5 {
+                -1.0
+            } else {
+                0.0
+            };
+            let sy = if dn.y > 0.5 {
+                1.0
+            } else if dn.y < -0.5 {
+                -1.0
+            } else {
+                0.0
+            };
             let offset = dv * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
             bb_min = bb_min.min(offset - sz / 2.0);
             bb_max = bb_max.max(offset + sz / 2.0);
@@ -264,12 +281,25 @@ impl PieMenu {
             ),
         );
 
-        let painter = ctx.layer_painter(
-            egui::LayerId::new(egui::Order::Tooltip, self.id),
-        );
+        // Block hover/interaction on background widgets while the menu is open.
+        // Sits on Foreground (above panels, below Tooltip where buttons live) so
+        // nothing underneath highlights as the mouse moves over it.
+        egui::Area::new(self.id.with("_blocker"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.allocate_rect(egui::Rect::EVERYTHING, egui::Sense::hover());
+            });
+
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
 
         // Center background circle
-        if self.settings.center_indicator.background_radius.is_enabled() {
+        if self
+            .settings
+            .center_indicator
+            .background_radius
+            .is_enabled()
+        {
             painter.circle(
                 center,
                 self.settings.center_indicator.background_radius.get(),
@@ -298,10 +328,7 @@ impl PieMenu {
                         let prev: &mut Vec<PieDirection> = seen.entry(key).or_default();
                         prev.push(button.direction.clone());
                         if prev.len() == 2 {
-                            eprintln!(
-                                "egui_pie_menu: duplicate mnemonic '{key}' on {:?}",
-                                prev
-                            );
+                            eprintln!("egui_pie_menu: duplicate mnemonic '{key}' on {:?}", prev);
                         }
                     }
                 }
@@ -368,7 +395,10 @@ impl PieMenu {
                     .unwrap_or(0.0)
             } else {
                 current_mouse_pos
-                    .map(|p| { let v = p - center; v.y.atan2(v.x) })
+                    .map(|p| {
+                        let v = p - center;
+                        v.y.atan2(v.x)
+                    })
                     .unwrap_or(0.0)
             };
 
@@ -376,39 +406,78 @@ impl PieMenu {
             let start_angle = base_angle - arc_angle / 2.0;
             let angle_range = start_angle..(start_angle + arc_angle);
 
-            let stroke_color = self.settings.center_indicator.highlight_stroke.color.gamma_multiply(progress);
-            let fill_color = self.settings.center_indicator.highlight_fill_color.gamma_multiply(progress);
-            let colored_stroke = Stroke::new(self.settings.center_indicator.highlight_stroke.width, stroke_color);
+            let stroke_color = self
+                .settings
+                .center_indicator
+                .highlight_stroke
+                .color
+                .gamma_multiply(progress);
+            let fill_color = self
+                .settings
+                .center_indicator
+                .highlight_fill_color
+                .gamma_multiply(progress);
+            let colored_stroke = Stroke::new(
+                self.settings.center_indicator.highlight_stroke.width,
+                stroke_color,
+            );
             let highlight_radius = self.settings.center_indicator.highlight_radius.get();
             let shape = self.settings.center_indicator.highlight_shape;
 
-            let needs_arc = matches!(shape,
-                PieMenuHighlightShape::Arc | PieMenuHighlightShape::ArcSlice |
-                PieMenuHighlightShape::ArcCircle | PieMenuHighlightShape::ArcSliceCircle);
-            let needs_slice = matches!(shape,
-                PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle |
-                PieMenuHighlightShape::ArcSlice | PieMenuHighlightShape::ArcSliceCircle);
-            let needs_circle = matches!(shape,
-                PieMenuHighlightShape::Circle | PieMenuHighlightShape::ArcCircle |
-                PieMenuHighlightShape::SliceCircle | PieMenuHighlightShape::ArcSliceCircle);
+            let needs_arc = matches!(
+                shape,
+                PieMenuHighlightShape::Arc
+                    | PieMenuHighlightShape::ArcSlice
+                    | PieMenuHighlightShape::ArcCircle
+                    | PieMenuHighlightShape::ArcSliceCircle
+            );
+            let needs_slice = matches!(
+                shape,
+                PieMenuHighlightShape::Slice
+                    | PieMenuHighlightShape::SliceCircle
+                    | PieMenuHighlightShape::ArcSlice
+                    | PieMenuHighlightShape::ArcSliceCircle
+            );
+            let needs_circle = matches!(
+                shape,
+                PieMenuHighlightShape::Circle
+                    | PieMenuHighlightShape::ArcCircle
+                    | PieMenuHighlightShape::SliceCircle
+                    | PieMenuHighlightShape::ArcSliceCircle
+            );
 
             let arc_arg = needs_arc.then(|| ArcValues {
-                angle_range: angle_range.clone(), center,
-                radius: highlight_radius, resolution: 10.0, stroke: colored_stroke,
+                angle_range: angle_range.clone(),
+                center,
+                radius: highlight_radius,
+                resolution: 10.0,
+                stroke: colored_stroke,
             });
             let slice_arg = needs_slice.then(|| {
-                let inner_arc = matches!(shape, PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle)
-                    .then(|| ArcValues {
-                        angle_range: angle_range.clone(), center,
-                        radius: highlight_radius, resolution: 10.0, stroke: colored_stroke,
-                    });
-                SliceValues { arc_values: inner_arc, stroke: None, fill_color }
+                let inner_arc = matches!(
+                    shape,
+                    PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle
+                )
+                .then(|| ArcValues {
+                    angle_range: angle_range.clone(),
+                    center,
+                    radius: highlight_radius,
+                    resolution: 10.0,
+                    stroke: colored_stroke,
+                });
+                SliceValues {
+                    arc_values: inner_arc,
+                    stroke: None,
+                    fill_color,
+                }
             });
             let circle_arg = needs_circle.then(|| CircleValues {
-                offset_angle: base_angle, offset_radius: highlight_radius,
+                offset_angle: base_angle,
+                offset_radius: highlight_radius,
                 offset_center: center,
                 circle_radius: self.settings.center_indicator.highlight_circle_radius,
-                stroke: colored_stroke, fill_color,
+                stroke: colored_stroke,
+                fill_color,
             });
 
             painter.highlight_shape(shape, arc_arg, slice_arg, circle_arg);
@@ -426,7 +495,8 @@ impl PieMenu {
                 let text_size = galley.size();
                 let bg_w = text_size.x + pad.left + pad.right;
                 let bg_h = text_size.y + pad.top + pad.bottom;
-                let above_offset = self.settings.center_indicator.background_radius.get() + bg_h / 2.0 + 4.0;
+                let above_offset =
+                    self.settings.center_indicator.background_radius.get() + bg_h / 2.0 + 4.0;
                 let label_center = center - Vec2::new(0.0, above_offset);
                 let bg_rect = Rect::from_center_size(label_center, Vec2::new(bg_w, bg_h));
 
@@ -436,9 +506,18 @@ impl PieMenu {
                 if self.settings.label.background_stroke.width > 0.0
                     && self.settings.label.background_stroke.color != Color32::TRANSPARENT
                 {
-                    painter.rect_stroke(bg_rect, 3.0, self.settings.label.background_stroke, egui::StrokeKind::Outside);
+                    painter.rect_stroke(
+                        bg_rect,
+                        3.0,
+                        self.settings.label.background_stroke,
+                        egui::StrokeKind::Outside,
+                    );
                 }
-                painter.galley(bg_rect.min + Vec2::new(pad.left, pad.top), galley, self.settings.label.text_color);
+                painter.galley(
+                    bg_rect.min + Vec2::new(pad.left, pad.top),
+                    galley,
+                    self.settings.label.text_color,
+                );
             }
         }
 
@@ -456,10 +535,23 @@ impl PieMenu {
             let hh = cached_size.y / 2.0;
             // Use 0.5 as threshold: diagonal components are ~0.707, cardinal near-zero
             // components are floating-point noise (~1e-17) and must not contribute.
-            let sx = if dir_norm.x > 0.5 { 1.0 } else if dir_norm.x < -0.5 { -1.0 } else { 0.0 };
-            let sy = if dir_norm.y > 0.5 { 1.0 } else if dir_norm.y < -0.5 { -1.0 } else { 0.0 };
+            let sx = if dir_norm.x > 0.5 {
+                1.0
+            } else if dir_norm.x < -0.5 {
+                -1.0
+            } else {
+                0.0
+            };
+            let sy = if dir_norm.y > 0.5 {
+                1.0
+            } else if dir_norm.y < -0.5 {
+                -1.0
+            } else {
+                0.0
+            };
 
-            let button_center = center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
+            let button_center =
+                center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
             let is_hovered = self.selected_index == Some(idx);
 
             let area_pos = button_center - cached_size / 2.0;
@@ -474,12 +566,12 @@ impl PieMenu {
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)
         // receive the click event before we consume it.
-        if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked()) {
+        if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked())
+        {
             return match current_mouse_pos {
-                Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => {
-                    self.selected_index
-                        .map_or(PieMenuResponse::None, PieMenuResponse::Selected)
-                }
+                Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => self
+                    .selected_index
+                    .map_or(PieMenuResponse::None, PieMenuResponse::Selected),
                 Some(_) => PieMenuResponse::None,
                 None => PieMenuResponse::Dismissed,
             };
@@ -505,7 +597,7 @@ impl PieMenu {
 /// occurrence of `mnemonic` underlined — suitable for use as a pie menu button
 /// label when you want to surface keyboard shortcuts visually.
 ///
-/// The rest of the text uses `format` unchanged. The underline colour is
+/// The rest of the text uses `format` unchanged. The underline color is
 /// derived from `format.color`.  If `mnemonic` does not appear in `text`
 /// the whole string is rendered with `format` and no underline.
 ///
@@ -519,7 +611,9 @@ impl PieMenu {
 /// ```
 pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJob {
     let mnemonic_lower = mnemonic.to_ascii_lowercase();
-    let split = text.char_indices().find(|(_, c)| c.to_ascii_lowercase() == mnemonic_lower);
+    let split = text
+        .char_indices()
+        .find(|(_, c)| c.to_ascii_lowercase() == mnemonic_lower);
 
     let mut job = LayoutJob::default();
 
@@ -529,7 +623,7 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
         }
         Some((byte_idx, c)) => {
             let before = &text[..byte_idx];
-            let after  = &text[byte_idx + c.len_utf8()..];
+            let after = &text[byte_idx + c.len_utf8()..];
             let ch_str = &text[byte_idx..byte_idx + c.len_utf8()];
 
             let underline_format = TextFormat {
@@ -537,9 +631,13 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
                 ..format.clone()
             };
 
-            if !before.is_empty() { job.append(before, 0.0, format.clone()); }
+            if !before.is_empty() {
+                job.append(before, 0.0, format.clone());
+            }
             job.append(ch_str, 0.0, underline_format);
-            if !after.is_empty()  { job.append(after,  0.0, format); }
+            if !after.is_empty() {
+                job.append(after, 0.0, format);
+            }
         }
     }
 
@@ -548,15 +646,32 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
 
 fn char_to_key(c: char) -> Option<Key> {
     match c.to_ascii_lowercase() {
-        'a' => Some(Key::A), 'b' => Some(Key::B), 'c' => Some(Key::C),
-        'd' => Some(Key::D), 'e' => Some(Key::E), 'f' => Some(Key::F),
-        'g' => Some(Key::G), 'h' => Some(Key::H), 'i' => Some(Key::I),
-        'j' => Some(Key::J), 'k' => Some(Key::K), 'l' => Some(Key::L),
-        'm' => Some(Key::M), 'n' => Some(Key::N), 'o' => Some(Key::O),
-        'p' => Some(Key::P), 'q' => Some(Key::Q), 'r' => Some(Key::R),
-        's' => Some(Key::S), 't' => Some(Key::T), 'u' => Some(Key::U),
-        'v' => Some(Key::V), 'w' => Some(Key::W), 'x' => Some(Key::X),
-        'y' => Some(Key::Y), 'z' => Some(Key::Z),
+        'a' => Some(Key::A),
+        'b' => Some(Key::B),
+        'c' => Some(Key::C),
+        'd' => Some(Key::D),
+        'e' => Some(Key::E),
+        'f' => Some(Key::F),
+        'g' => Some(Key::G),
+        'h' => Some(Key::H),
+        'i' => Some(Key::I),
+        'j' => Some(Key::J),
+        'k' => Some(Key::K),
+        'l' => Some(Key::L),
+        'm' => Some(Key::M),
+        'n' => Some(Key::N),
+        'o' => Some(Key::O),
+        'p' => Some(Key::P),
+        'q' => Some(Key::Q),
+        'r' => Some(Key::R),
+        's' => Some(Key::S),
+        't' => Some(Key::T),
+        'u' => Some(Key::U),
+        'v' => Some(Key::V),
+        'w' => Some(Key::W),
+        'x' => Some(Key::X),
+        'y' => Some(Key::Y),
+        'z' => Some(Key::Z),
         _ => None,
     }
 }
