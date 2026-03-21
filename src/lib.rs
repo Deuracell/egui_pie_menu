@@ -288,7 +288,7 @@ impl PieMenu {
             .order(egui::Order::Foreground)
             .fixed_pos(egui::Pos2::ZERO)
             .show(ctx, |ui| {
-                ui.allocate_rect(screen_rect, egui::Sense::hover());
+                ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
             });
 
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
