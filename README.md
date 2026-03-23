@@ -193,7 +193,7 @@ menu.settings.input.double_tap_window  = Duration::from_millis(400);
 cargo run --example demo
 ```
 
-Right-click anywhere in the window to open the menu. The left panel exposes all settings as live sliders and colour pickers.
+  Right-click anywhere in the window to open the menu. The left panel exposes all settings as live sliders and color pickers.
 
 ## License
 
