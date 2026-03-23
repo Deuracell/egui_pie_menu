@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
-use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat};
+use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat, TextFormat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -28,11 +28,11 @@ impl Demo {
     fn new() -> Self {
         let buttons = vec![
             PieButton::new(PieDirection::North)    .with_mnemonic('c'),
-            PieButton::new(PieDirection::NorthEast).with_mnemonic('v'),
+            PieButton::new(PieDirection::NorthEast).with_mnemonic('p'),
             PieButton::new(PieDirection::East)     .with_mnemonic('r'),
             PieButton::new(PieDirection::SouthEast).with_mnemonic('s'),
             PieButton::new(PieDirection::South)    .with_mnemonic('d'),
-            PieButton::new(PieDirection::SouthWest).with_mnemonic('x'),
+            PieButton::new(PieDirection::SouthWest).with_mnemonic('t'),
             PieButton::new(PieDirection::West)     .with_mnemonic('u'),
             PieButton::new(PieDirection::NorthWest).with_mnemonic('o'),
         ];
@@ -247,7 +247,15 @@ impl eframe::App for Demo {
                             .corner_radius(6.0)
                             .inner_margin(Vec2::new(10.0, 5.0))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(label).color(fg));
+                                if let Some(mnemonic) = self.buttons[idx].mnemonic {
+                                    ui.label(mnemonic_text(label, mnemonic, TextFormat {
+                                        color: fg,
+                                        font_id: ui.style().text_styles[&egui::TextStyle::Body].clone(),
+                                        ..Default::default()
+                                    }));
+                                } else {
+                                    ui.label(RichText::new(label).color(fg));
+                                }
                             });
                     })
                 {
