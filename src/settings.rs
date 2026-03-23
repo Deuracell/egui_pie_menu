@@ -1,8 +1,8 @@
-use egui::{FontId, Key, PointerButton, Stroke, Color32};
-use std::f32::consts::TAU;
-use std::f32::NAN;
-use std::time::Duration;
 use crate::utils::common_utils::SmartFloat;
+use egui::{Color32, FontId, Key, PointerButton, Stroke};
+use std::f32::NAN;
+use std::f32::consts::TAU;
+use std::time::Duration;
 
 /// The eight directions a button can occupy in the pie menu.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,7 +47,7 @@ pub struct PieMenuCenterIndicatorSettings {
     pub background_radius: SmartFloat<f32>,
     /// Stroke of the background circle border.
     pub background_stroke: Stroke,
-    /// Fill colour of the background circle.
+    /// Fill color of the background circle.
     pub background_fill_color: Color32,
 
     /// Radius of the highlight arc/slice/circle. Set to [`f32::NAN`] to disable.
@@ -56,7 +56,7 @@ pub struct PieMenuCenterIndicatorSettings {
     pub highlight_shape: PieMenuHighlightShape,
     /// Stroke applied to arc and circle components of the highlight.
     pub highlight_stroke: Stroke,
-    /// Fill colour applied to slice and circle components of the highlight.
+    /// Fill color applied to slice and circle components of the highlight.
     pub highlight_fill_color: Color32,
     /// Angular width of the arc/slice highlight in radians.
     pub highlight_angle: f32,
@@ -91,7 +91,7 @@ pub struct PieMenuLabelSettings {
     pub background_stroke: Stroke,
     /// Inner padding around the label text.
     pub padding: Padding,
-    /// Text colour.
+    /// Text color.
     pub text_color: Color32,
     /// Font used to render the title.
     pub text_font: FontId,
@@ -103,7 +103,12 @@ impl Default for PieMenuLabelSettings {
             display: true,
             background_color: Color32::TRANSPARENT,
             background_stroke: Stroke::new(NAN, Color32::GRAY),
-            padding: Padding { top: 5.0, right: 5.0, bottom: 5.0, left: 5.0 },
+            padding: Padding {
+                top: 5.0,
+                right: 5.0,
+                bottom: 5.0,
+                left: 5.0,
+            },
             text_color: Color32::LIGHT_GRAY,
             text_font: FontId::default(),
         }

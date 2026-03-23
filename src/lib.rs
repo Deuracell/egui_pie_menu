@@ -197,6 +197,11 @@ impl PieMenu {
                 .resize(buttons.len(), Vec2::new(50.0, 24.0));
         }
 
+        // Always restore selectable labels. If the menu is visible we disable them below,
+        // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
+        // restored so labels are selectable again the frame after the menu closes.
+        ctx.style_mut(|s| s.interaction.selectable_labels = true);
+
         let center = self.position;
 
         // Update mouse_shown: once the mouse travels past show_threshold, latch it on.
@@ -588,6 +593,11 @@ impl PieMenu {
                 }
             }
         }
+
+        // Disable label text selection for the next frame. Placed after all rendering
+        // so buttons in this frame see the restored style (set at the top of show()).
+        // Restored at the top of show() on the closing frame.
+        ctx.style_mut(|s| s.interaction.selectable_labels = false);
 
         PieMenuResponse::None
     }
