@@ -1,4 +1,6 @@
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
+pub use egui::text::{LayoutJob, TextFormat};
+pub use egui::FontId;
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
@@ -273,11 +275,37 @@ impl PieMenu {
             }
         }
 
-        // Mnemonic key selection
+        // Mnemonic key selection — consume matched events so other handlers never see them.
         if self.settings.input.use_mnemonic_keys {
+            #[cfg(debug_assertions)]
+            {
+                let mut seen = std::collections::HashMap::new();
+                for button in buttons {
+                    if let Some(c) = button.mnemonic {
+                        let key = c.to_ascii_lowercase();
+                        let prev: &mut Vec<PieDirection> = seen.entry(key).or_default();
+                        prev.push(button.direction.clone());
+                        if prev.len() == 2 {
+                            eprintln!(
+                                "egui_pie_menu: duplicate mnemonic '{key}' on {:?}",
+                                prev
+                            );
+                        }
+                    }
+                }
+            }
+
             for (idx, button) in buttons.iter().enumerate() {
                 if let Some(key) = button.mnemonic.and_then(char_to_key) {
-                    if ctx.input(|i| i.key_pressed(key)) {
+                    let pressed = ctx.input_mut(|i| {
+                        if i.key_pressed(key) {
+                            i.consume_key(egui::Modifiers::NONE, key);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if pressed {
                         return PieMenuResponse::Selected(idx);
                     }
                 }
@@ -458,6 +486,51 @@ impl PieMenu {
 
         PieMenuResponse::None
     }
+}
+
+/// Build a [`LayoutJob`] that renders `text` with the first case-insensitive
+/// occurrence of `mnemonic` underlined — suitable for use as a pie menu button
+/// label when you want to surface keyboard shortcuts visually.
+///
+/// The rest of the text uses `format` unchanged. The underline colour is
+/// derived from `format.color`.  If `mnemonic` does not appear in `text`
+/// the whole string is rendered with `format` and no underline.
+///
+/// # Example
+/// ```ignore
+/// ui.label(mnemonic_text("Copy", 'c', TextFormat {
+///     color: Color32::WHITE,
+///     font_id: FontId::default(),
+///     ..Default::default()
+/// }));
+/// ```
+pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJob {
+    let mnemonic_lower = mnemonic.to_ascii_lowercase();
+    let split = text.char_indices().find(|(_, c)| c.to_ascii_lowercase() == mnemonic_lower);
+
+    let mut job = LayoutJob::default();
+
+    match split {
+        None => {
+            job.append(text, 0.0, format);
+        }
+        Some((byte_idx, c)) => {
+            let before = &text[..byte_idx];
+            let after  = &text[byte_idx + c.len_utf8()..];
+            let ch_str = &text[byte_idx..byte_idx + c.len_utf8()];
+
+            let underline_format = TextFormat {
+                underline: Stroke::new(1.0, format.color),
+                ..format.clone()
+            };
+
+            if !before.is_empty() { job.append(before, 0.0, format.clone()); }
+            job.append(ch_str, 0.0, underline_format);
+            if !after.is_empty()  { job.append(after,  0.0, format); }
+        }
+    }
+
+    job
 }
 
 fn char_to_key(c: char) -> Option<Key> {
