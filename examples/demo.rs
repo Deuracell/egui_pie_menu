@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
-use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat, TextFormat};
+use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, ShowBehavior, SmartFloat, TextFormat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -25,6 +25,9 @@ struct Demo {
 
     // State for the checkbox button slot
     word_wrap: bool,
+
+    // Mirror for show threshold slider (only active in OnMovement mode)
+    show_threshold: f32,
 }
 
 impl Demo {
@@ -55,6 +58,7 @@ impl Demo {
             highlight_angle_deg,
             buttons,
             word_wrap: false,
+            show_threshold: 10.0,
         }
     }
 }
@@ -209,6 +213,36 @@ impl eframe::App for Demo {
                 ).step_by(0.5));
                 ui.label("Stroke color");
                 ui.color_edit_button_srgba(&mut self.menu.settings.label.background_stroke.color);
+
+                ui.add_space(8.0);
+
+                // ── Show behaviour ───────────────────────────────────
+                ui.heading("Show behaviour");
+                ui.separator();
+
+                let is_instant = matches!(self.menu.settings.show_behavior, ShowBehavior::Instant);
+                egui::ComboBox::from_id_salt("show_behavior")
+                    .selected_text(if is_instant { "Instant" } else { "On movement" })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(is_instant, "Instant").clicked() {
+                            self.menu.settings.show_behavior = ShowBehavior::Instant;
+                        }
+                        if ui.selectable_label(!is_instant, "On movement").clicked() {
+                            self.menu.settings.show_behavior =
+                                ShowBehavior::OnMovement { threshold: self.show_threshold };
+                        }
+                    });
+
+                if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
+                    ui.label("Threshold (px)");
+                    if ui.add(egui::Slider::new(threshold, 0.0..=50.0).step_by(0.5)).changed() {
+                        self.show_threshold = *threshold;
+                    }
+                }
+
+                if is_instant {
+                    ui.label("QuickTap / DoubleTap not available.");
+                }
 
                 ui.add_space(8.0);
 

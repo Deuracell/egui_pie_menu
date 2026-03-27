@@ -132,6 +132,21 @@ pub enum PieMenuDismissInput {
     PointerButton(PointerButton),
 }
 
+/// Controls when the pie menu becomes visible after the trigger is held.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShowBehavior {
+    /// Show the menu immediately on key hold.
+    ///
+    /// [`crate::PieMenuResponse::QuickTap`] and [`crate::PieMenuResponse::DoubleTap`]
+    /// are never returned in this mode.
+    Instant,
+    /// Wait until the mouse moves at least `threshold` pixels from the open position.
+    ///
+    /// Releasing before crossing the threshold returns
+    /// [`crate::PieMenuResponse::QuickTap`] or [`crate::PieMenuResponse::DoubleTap`].
+    OnMovement { threshold: f32 },
+}
+
 /// Input and dismissal behaviour.
 pub struct PieMenuInput {
     /// Allow numpad keys 1–9 to activate buttons by direction.
@@ -196,9 +211,9 @@ pub struct PieMenuSettings {
     ///
     /// Cardinal buttons (N/S/E/W) are unaffected; only the diagonal positions change.
     pub shape_factor: f32,
-    /// Mouse must move at least this far from the open position before the menu
-    /// is drawn. Releasing before this distance is reached counts as a [`crate::PieMenuResponse::QuickTap`].
-    pub show_threshold: f32,
+    /// Controls when the menu becomes visible and whether tap responses are possible.
+    /// See [`ShowBehavior`].
+    pub show_behavior: ShowBehavior,
     /// Minimum gap between the outermost button edge and the screen border.
     /// The whole menu shifts to maintain this margin instead of clipping buttons.
     pub screen_margin: f32,
@@ -219,7 +234,7 @@ impl Default for PieMenuSettings {
         Self {
             layout_radius: 100.0,
             shape_factor: 0.0,
-            show_threshold: 10.0,
+            show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
             screen_margin: 8.0,
             mouse_trigger_threshold: 12.0,
             input: PieMenuInput::default(),

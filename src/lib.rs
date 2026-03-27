@@ -70,7 +70,7 @@ pub struct PieMenu {
     pub position: Pos2,
     pub settings: PieMenuSettings,
     release_handled: bool,
-    /// Whether the mouse has crossed `show_threshold` since `open()` was called.
+    /// Whether the show condition has been met since `open()` was called.
     mouse_shown: bool,
     /// Timestamp of the last QuickTap, used for double-tap detection.
     last_quick_tap: Option<Instant>,
@@ -204,11 +204,16 @@ impl PieMenu {
 
         let center = self.position;
 
-        // Update mouse_shown: once the mouse travels past show_threshold, latch it on.
+        // Update mouse_shown: latch on once the show condition is met.
         if !self.mouse_shown {
-            if let Some(p) = current_mouse_pos {
-                if (p - center).length() > self.settings.show_threshold {
-                    self.mouse_shown = true;
+            match self.settings.show_behavior {
+                ShowBehavior::Instant => self.mouse_shown = true,
+                ShowBehavior::OnMovement { threshold } => {
+                    if let Some(p) = current_mouse_pos {
+                        if (p - center).length() > threshold {
+                            self.mouse_shown = true;
+                        }
+                    }
                 }
             }
         }
