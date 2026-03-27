@@ -120,12 +120,15 @@ pub fn show(
 |---|---|
 | Hold key/button, move mouse, release over a button | `Selected(idx)` |
 | Hold key/button, move mouse to centre, release | `Dismissed` |
-| Tap and release before crossing `show_threshold` | `QuickTap` |
-| Two quick taps within `double_tap_window` | `DoubleTap` |
+| Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
+| Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
 | Numpad 1–9 or mnemonic key | `Selected(idx)` |
 | Escape or Numpad 5 | `Dismissed` |
 
-The menu is not drawn at all until the mouse crosses `show_threshold` (default 10 px), so a plain tap feels instant with no visual flicker.
+`show_behavior` (default `OnMovement { threshold: 10.0 }`) controls when the menu first appears:
+
+- **`ShowBehavior::OnMovement { threshold }`** — the menu is not drawn until the mouse moves `threshold` pixels from the open position. Releasing before crossing that distance returns `QuickTap` or `DoubleTap`, so a plain tap feels instant with no visual flicker.
+- **`ShowBehavior::Instant`** — the menu appears immediately on key hold. `QuickTap` and `DoubleTap` are never returned in this mode.
 
 ## Mnemonic labels
 
@@ -152,10 +155,17 @@ ui.label(mnemonic_text("Copy", 'c', TextFormat {
 All settings live on `PieMenu::settings: PieMenuSettings` and can be changed at any time.
 
 ```rust
-menu.settings.layout_radius  = 120.0;
-menu.settings.shape_factor   = 0.0;   // -1 diamond · 0 circle · +1 square
-menu.settings.screen_margin  = 8.0;   // minimum gap from screen edge in px
-menu.settings.show_threshold = 10.0;  // px the mouse must move before the menu appears
+use egui_pie_menu::ShowBehavior;
+
+menu.settings.layout_radius = 120.0;
+menu.settings.shape_factor  = 0.0;   // -1 diamond · 0 circle · +1 square
+menu.settings.screen_margin = 8.0;   // minimum gap from screen edge in px
+
+// Show immediately — QuickTap/DoubleTap are never returned
+menu.settings.show_behavior = ShowBehavior::Instant;
+
+// Or wait for mouse movement (default, enables tap detection)
+menu.settings.show_behavior = ShowBehavior::OnMovement { threshold: 10.0 };
 
 // Center background circle
 menu.settings.center_indicator.background_radius     = SmartFloat::new(15.0);
