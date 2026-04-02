@@ -200,7 +200,7 @@ impl PieMenu {
         // Always restore selectable labels. If the menu is visible we disable them below,
         // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
         // restored so labels are selectable again the frame after the menu closes.
-        ctx.style_mut(|s| s.interaction.selectable_labels = true);
+        ctx.global_style_mut(|s| s.interaction.selectable_labels = true);
 
         let center = self.position;
 
@@ -602,7 +602,7 @@ impl PieMenu {
         // Disable label text selection for the next frame. Placed after all rendering
         // so buttons in this frame see the restored style (set at the top of show()).
         // Restored at the top of show() on the closing frame.
-        ctx.style_mut(|s| s.interaction.selectable_labels = false);
+        ctx.global_style_mut(|s| s.interaction.selectable_labels = false);
 
         PieMenuResponse::None
     }
