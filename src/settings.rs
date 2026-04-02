@@ -1,6 +1,5 @@
 use crate::utils::common_utils::SmartFloat;
 use egui::{Color32, FontId, Key, PointerButton, Stroke};
-use std::f32::NAN;
 use std::f32::consts::TAU;
 use std::time::Duration;
 
@@ -87,7 +86,7 @@ pub struct PieMenuLabelSettings {
     pub display: bool,
     /// Background fill of the label box. Use [`Color32::TRANSPARENT`] for no background.
     pub background_color: Color32,
-    /// Border of the label box. Set `width` to `0` or `NAN` to disable.
+    /// Border of the label box. Set `width` to `0` or `f32::NAN` to disable.
     pub background_stroke: Stroke,
     /// Inner padding around the label text.
     pub padding: Padding,
@@ -102,7 +101,7 @@ impl Default for PieMenuLabelSettings {
         Self {
             display: true,
             background_color: Color32::TRANSPARENT,
-            background_stroke: Stroke::new(NAN, Color32::GRAY),
+            background_stroke: Stroke::new(f32::NAN, Color32::GRAY),
             padding: Padding {
                 top: 5.0,
                 right: 5.0,

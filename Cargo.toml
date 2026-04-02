@@ -10,8 +10,8 @@ keywords = ["egui", "gui", "menu", "pie-menu", "radial"]
 categories = ["gui"]
 
 [dependencies]
-egui = "0.33.3"
+egui = "0.34.1"
 num-traits = "0.2.19"
 
 [dev-dependencies]
-eframe = "0.33.3"
+eframe = "0.34.1"

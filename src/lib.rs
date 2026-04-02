@@ -1,3 +1,4 @@
+// #![warn(clippy::pedantic)]
 pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
@@ -72,7 +73,7 @@ pub struct PieMenu {
     release_handled: bool,
     /// Whether the show condition has been met since `open()` was called.
     mouse_shown: bool,
-    /// Timestamp of the last QuickTap, used for double-tap detection.
+    /// Timestamp of the last [`QuickTap`], used for double-tap detection.
     last_quick_tap: Option<Instant>,
     /// Cached button sizes from the previous frame, used to centre each Area.
     button_sizes: Vec<Vec2>,
@@ -200,7 +201,7 @@ impl PieMenu {
         // Always restore selectable labels. If the menu is visible we disable them below,
         // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
         // restored so labels are selectable again the frame after the menu closes.
-        ctx.style_mut(|s| s.interaction.selectable_labels = true);
+        ctx.global_style_mut(|s| s.interaction.selectable_labels = true);
 
         let center = self.position;
 
@@ -209,11 +210,10 @@ impl PieMenu {
             match self.settings.show_behavior {
                 ShowBehavior::Instant => self.mouse_shown = true,
                 ShowBehavior::OnMovement { threshold } => {
-                    if let Some(p) = current_mouse_pos {
-                        if (p - center).length() > threshold {
+                    if let Some(p) = current_mouse_pos
+                        && (p - center).length() > threshold {
                             self.mouse_shown = true;
                         }
-                    }
                 }
             }
         }
@@ -224,15 +224,13 @@ impl PieMenu {
                 self.release_handled = true;
                 let is_double = self
                     .last_quick_tap
-                    .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
-                    .unwrap_or(false);
+                    .is_some_and(|t| t.elapsed() <= self.settings.input.double_tap_window);
                 if is_double {
                     self.last_quick_tap = None;
                     return PieMenuResponse::DoubleTap;
-                } else {
-                    self.last_quick_tap = Some(Instant::now());
-                    return PieMenuResponse::QuickTap;
                 }
+                self.last_quick_tap = Some(Instant::now());
+                return PieMenuResponse::QuickTap;
             }
             return PieMenuResponse::None;
         }
@@ -387,29 +385,26 @@ impl PieMenu {
         {
             let progress = current_mouse_pos
                 .filter(|_| self.selected_index.is_some())
-                .map(|p| {
+                .map_or(0.0, |p| {
                     let distance = (p - center).length();
                     let threshold = self.settings.mouse_trigger_threshold;
                     let max_dist = self.settings.layout_radius;
                     ((distance - threshold) / (max_dist - threshold)).clamp(0.0, 1.0)
-                })
-                .unwrap_or(0.0);
+                });
 
             let base_angle = if self.settings.animations.center_highlight_snapping {
                 self.selected_index
                     .and_then(|idx| buttons.get(idx))
-                    .map(|b| {
+                    .map_or(0.0, |b| {
                         let v = Self::direction_vec(&b.direction, shape_factor);
                         v.y.atan2(v.x)
                     })
-                    .unwrap_or(0.0)
             } else {
                 current_mouse_pos
-                    .map(|p| {
+                    .map_or(0.0, |p| {
                         let v = p - center;
                         v.y.atan2(v.x)
                     })
-                    .unwrap_or(0.0)
             };
 
             let arc_angle = self.settings.center_indicator.highlight_angle * progress;
@@ -481,7 +476,7 @@ impl PieMenu {
                     fill_color,
                 }
             });
-            let circle_arg = needs_circle.then(|| CircleValues {
+            let circle_arg = needs_circle.then_some(CircleValues {
                 offset_angle: base_angle,
                 offset_radius: highlight_radius,
                 offset_center: center,
@@ -494,8 +489,8 @@ impl PieMenu {
         }
 
         // Draw menu title above the center indicator
-        if self.settings.label.display {
-            if let Some(label) = title {
+        if self.settings.label.display
+            && let Some(label) = title {
                 let pad = &self.settings.label.padding;
                 let galley = painter.layout_no_wrap(
                     label.to_string(),
@@ -529,7 +524,6 @@ impl PieMenu {
                     self.settings.label.text_color,
                 );
             }
-        }
 
         // Draw buttons via caller-provided closure inside floating Areas
         for (idx, button) in buttons.iter().enumerate() {
@@ -602,7 +596,7 @@ impl PieMenu {
         // Disable label text selection for the next frame. Placed after all rendering
         // so buttons in this frame see the restored style (set at the top of show()).
         // Restored at the top of show() on the closing frame.
-        ctx.style_mut(|s| s.interaction.selectable_labels = false);
+        ctx.global_style_mut(|s| s.interaction.selectable_labels = false);
 
         PieMenuResponse::None
     }
