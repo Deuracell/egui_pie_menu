@@ -111,7 +111,7 @@ fn shape_label(s: PieMenuHighlightShape) -> &'static str {
 
 impl eframe::App for Demo {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("settings").min_width(220.0).show(ui, |ui| {
+        egui::Panel::left("settings").min_size(220.0).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // ── Layout ───────────────────────────────────────────
                 ui.heading("Layout");
@@ -257,7 +257,7 @@ impl eframe::App for Demo {
             });
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.label("Right-click to open  ·  Numpad 1–9 to pick  ·  Esc / Numpad 5 to dismiss");
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
@@ -268,14 +268,13 @@ impl eframe::App for Demo {
                 self.menu_open = true;
             }
 
-            if !self.pinned && !self.menu_open {
-                if let Some(pos) = ui.ctx().input(|i| {
+            if !self.pinned && !self.menu_open
+                && let Some(pos) = ui.ctx().input(|i| {
                     i.pointer.secondary_pressed().then(|| i.pointer.latest_pos()).flatten()
                 }) {
                     self.menu.open(pos);
                     self.menu_open = true;
                 }
-            }
 
             if self.menu_open {
                 let mouse_pos = if self.pinned { None } else { ui.ctx().input(|i| i.pointer.latest_pos()) };
