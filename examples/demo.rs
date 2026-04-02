@@ -110,8 +110,8 @@ fn shape_label(s: PieMenuHighlightShape) -> &'static str {
 }
 
 impl eframe::App for Demo {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("settings").min_width(220.0).show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::SidePanel::left("settings").min_width(220.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // ── Layout ───────────────────────────────────────────
                 ui.heading("Layout");
@@ -257,7 +257,7 @@ impl eframe::App for Demo {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.label("Right-click to open  ·  Numpad 1–9 to pick  ·  Esc / Numpad 5 to dismiss");
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
@@ -269,7 +269,7 @@ impl eframe::App for Demo {
             }
 
             if !self.pinned && !self.menu_open {
-                if let Some(pos) = ctx.input(|i| {
+                if let Some(pos) = ui.ctx().input(|i| {
                     i.pointer.secondary_pressed().then(|| i.pointer.latest_pos()).flatten()
                 }) {
                     self.menu.open(pos);
@@ -278,10 +278,10 @@ impl eframe::App for Demo {
             }
 
             if self.menu_open {
-                let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
-                let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
+                let mouse_pos = if self.pinned { None } else { ui.ctx().input(|i| i.pointer.latest_pos()) };
+                let key_down  = if self.pinned { true  } else { ui.ctx().input(|i| i.pointer.secondary_down()) };
 
-                match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
+                match self.menu.show(ui, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, idx, hovered| {
                         let label = LABELS[idx];
                         let color = COLORS[idx];
