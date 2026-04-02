@@ -15,7 +15,7 @@ impl<T: Float> SmartFloat<T> {
 
     /// Returns `true` when the inner value is not `NaN`.
     pub fn is_enabled(&self) -> bool {
-        self.0 == self.0
+      !self.0.is_nan()
     }
 
     /// Returns the inner value.

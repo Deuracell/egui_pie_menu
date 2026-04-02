@@ -209,11 +209,10 @@ impl PieMenu {
             match self.settings.show_behavior {
                 ShowBehavior::Instant => self.mouse_shown = true,
                 ShowBehavior::OnMovement { threshold } => {
-                    if let Some(p) = current_mouse_pos {
-                        if (p - center).length() > threshold {
+                    if let Some(p) = current_mouse_pos
+                        && (p - center).length() > threshold {
                             self.mouse_shown = true;
                         }
-                    }
                 }
             }
         }
@@ -481,7 +480,7 @@ impl PieMenu {
                     fill_color,
                 }
             });
-            let circle_arg = needs_circle.then(|| CircleValues {
+            let circle_arg = needs_circle.then_some(CircleValues {
                 offset_angle: base_angle,
                 offset_radius: highlight_radius,
                 offset_center: center,
@@ -494,8 +493,8 @@ impl PieMenu {
         }
 
         // Draw menu title above the center indicator
-        if self.settings.label.display {
-            if let Some(label) = title {
+        if self.settings.label.display
+            && let Some(label) = title {
                 let pad = &self.settings.label.padding;
                 let galley = painter.layout_no_wrap(
                     label.to_string(),
@@ -529,7 +528,6 @@ impl PieMenu {
                     self.settings.label.text_color,
                 );
             }
-        }
 
         // Draw buttons via caller-provided closure inside floating Areas
         for (idx, button) in buttons.iter().enumerate() {
