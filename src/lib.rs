@@ -1,3 +1,4 @@
+// #![warn(clippy::pedantic)]
 pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
@@ -72,7 +73,7 @@ pub struct PieMenu {
     release_handled: bool,
     /// Whether the show condition has been met since `open()` was called.
     mouse_shown: bool,
-    /// Timestamp of the last QuickTap, used for double-tap detection.
+    /// Timestamp of the last [`QuickTap`], used for double-tap detection.
     last_quick_tap: Option<Instant>,
     /// Cached button sizes from the previous frame, used to centre each Area.
     button_sizes: Vec<Vec2>,
@@ -223,15 +224,13 @@ impl PieMenu {
                 self.release_handled = true;
                 let is_double = self
                     .last_quick_tap
-                    .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
-                    .unwrap_or(false);
+                    .is_some_and(|t| t.elapsed() <= self.settings.input.double_tap_window);
                 if is_double {
                     self.last_quick_tap = None;
                     return PieMenuResponse::DoubleTap;
-                } else {
-                    self.last_quick_tap = Some(Instant::now());
-                    return PieMenuResponse::QuickTap;
                 }
+                self.last_quick_tap = Some(Instant::now());
+                return PieMenuResponse::QuickTap;
             }
             return PieMenuResponse::None;
         }
@@ -386,29 +385,26 @@ impl PieMenu {
         {
             let progress = current_mouse_pos
                 .filter(|_| self.selected_index.is_some())
-                .map(|p| {
+                .map_or(0.0, |p| {
                     let distance = (p - center).length();
                     let threshold = self.settings.mouse_trigger_threshold;
                     let max_dist = self.settings.layout_radius;
                     ((distance - threshold) / (max_dist - threshold)).clamp(0.0, 1.0)
-                })
-                .unwrap_or(0.0);
+                });
 
             let base_angle = if self.settings.animations.center_highlight_snapping {
                 self.selected_index
                     .and_then(|idx| buttons.get(idx))
-                    .map(|b| {
+                    .map_or(0.0, |b| {
                         let v = Self::direction_vec(&b.direction, shape_factor);
                         v.y.atan2(v.x)
                     })
-                    .unwrap_or(0.0)
             } else {
                 current_mouse_pos
-                    .map(|p| {
+                    .map_or(0.0, |p| {
                         let v = p - center;
                         v.y.atan2(v.x)
                     })
-                    .unwrap_or(0.0)
             };
 
             let arc_angle = self.settings.center_indicator.highlight_angle * progress;

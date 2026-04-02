@@ -25,8 +25,8 @@ pub struct ArcValues {
 /// ### Holds the necessary parameters for drawing a slice shape.
 ///
 /// The `arc_values` field contains the parameters for drawing the arc that forms the outline of the slice.
-/// - Optional if shape is [PieMenuHighlightShape::ArcSlice] or [PieMenuHighlightShape::ArcSliceCircle]
-/// - Required if shape is [PieMenuHighlightShape::Slice] or [PieMenuHighlightShape::SliceCircle]
+/// - Optional if shape is [`PieMenuHighlightShape::ArcSlice`] or [`PieMenuHighlightShape::ArcSliceCircle`]
+/// - Required if shape is [`PieMenuHighlightShape::Slice`] or [`PieMenuHighlightShape::SliceCircle`]
 ///
 /// The `stroke` field holds the stroke settings for the slice outline. `[optional]`
 ///
@@ -56,7 +56,7 @@ pub struct CircleValues {
     pub fill_color: Color32,
 }
 
-/// ### Extension trait for egui::Painter
+/// ### Extension trait for [`egui::Painter`]
 /// A trait that provides methods for painting various highlighting shapes for `pie menu`.
 ///
 /// The `highlight_shape` method is used to paint a specific shape, such as an arc, slice, or circle, based on the provided parameters.
@@ -127,7 +127,7 @@ impl HighlightPainter for egui::Painter {
     /// The `circle_values` parameter contains information about the circle to be drawn, including its `center`, `radius`, `fill_color`, and `stroke`.
     ///
     /// - This function first performs assertions to ensure that the circle radius is greater than 0.0, and that either the fill color or stroke is provided. \
-    /// - If the stroke and fill colors are both [egui::Color32::TRANSPARENT], the function returns without drawing anything and prints a message to the console.
+    /// - If the stroke and fill colors are both [`egui::Color32::TRANSPARENT`], the function returns without drawing anything and prints a message to the console.
     /// - Otherwise a circle is drawn, using the provided center, radius, and colors.
     fn draw_circle(&self, circle_values: CircleValues) {
         let circle = circle_values;

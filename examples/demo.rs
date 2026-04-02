@@ -1,3 +1,4 @@
+// #![warn(clippy::pedantic)]
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, ShowBehavior, SmartFloat, TextFormat};
