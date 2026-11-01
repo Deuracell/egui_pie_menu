@@ -110,8 +110,10 @@ fn shape_label(s: PieMenuHighlightShape) -> &'static str {
 }
 
 impl eframe::App for Demo {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("settings").min_width(220.0).show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // ── Layout ───────────────────────────────────────────
                 ui.heading("Layout");
@@ -257,7 +259,7 @@ impl eframe::App for Demo {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.label("Right-click to open  ·  Numpad 1–9 to pick  ·  Esc / Numpad 5 to dismiss");
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));

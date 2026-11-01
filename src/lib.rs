@@ -103,7 +103,7 @@ impl PieMenu {
 
     /// Override the egui [`egui::Id`] used for this menu's layer and Areas.
     /// Required when multiple pie menus coexist in the same app.
-    pub fn with_id(mut self, id: impl std::hash::Hash) -> Self {
+    pub fn with_id(mut self, id: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id = egui::Id::new(id);
         self
     }
@@ -200,7 +200,7 @@ impl PieMenu {
         // Always restore selectable labels. If the menu is visible we disable them below,
         // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
         // restored so labels are selectable again the frame after the menu closes.
-        ctx.style_mut(|s| s.interaction.selectable_labels = true);
+        ctx.all_styles_mut(|s| s.interaction.selectable_labels = true);
 
         let center = self.position;
 
@@ -602,7 +602,7 @@ impl PieMenu {
         // Disable label text selection for the next frame. Placed after all rendering
         // so buttons in this frame see the restored style (set at the top of show()).
         // Restored at the top of show() on the closing frame.
-        ctx.style_mut(|s| s.interaction.selectable_labels = false);
+        ctx.all_styles_mut(|s| s.interaction.selectable_labels = false);
 
         PieMenuResponse::None
     }
