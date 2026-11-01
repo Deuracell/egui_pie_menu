@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
-use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, SmartFloat, TextFormat};
+use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, ShowBehavior, SmartFloat, TextFormat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -25,6 +25,9 @@ struct Demo {
 
     // State for the checkbox button slot
     word_wrap: bool,
+
+    // Mirror for show threshold slider (only active in OnMovement mode)
+    show_threshold: f32,
 }
 
 impl Demo {
@@ -55,6 +58,7 @@ impl Demo {
             highlight_angle_deg,
             buttons,
             word_wrap: false,
+            show_threshold: 10.0,
         }
     }
 }
@@ -106,8 +110,10 @@ fn shape_label(s: PieMenuHighlightShape) -> &'static str {
 }
 
 impl eframe::App for Demo {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("settings").min_width(220.0).show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // ── Layout ───────────────────────────────────────────
                 ui.heading("Layout");
@@ -212,6 +218,36 @@ impl eframe::App for Demo {
 
                 ui.add_space(8.0);
 
+                // ── Show behaviour ───────────────────────────────────
+                ui.heading("Show behaviour");
+                ui.separator();
+
+                let is_instant = matches!(self.menu.settings.show_behavior, ShowBehavior::Instant);
+                egui::ComboBox::from_id_salt("show_behavior")
+                    .selected_text(if is_instant { "Instant" } else { "On movement" })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(is_instant, "Instant").clicked() {
+                            self.menu.settings.show_behavior = ShowBehavior::Instant;
+                        }
+                        if ui.selectable_label(!is_instant, "On movement").clicked() {
+                            self.menu.settings.show_behavior =
+                                ShowBehavior::OnMovement { threshold: self.show_threshold };
+                        }
+                    });
+
+                if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
+                    ui.label("Threshold (px)");
+                    if ui.add(egui::Slider::new(threshold, 0.0..=50.0).step_by(0.5)).changed() {
+                        self.show_threshold = *threshold;
+                    }
+                }
+
+                if is_instant {
+                    ui.label("QuickTap / DoubleTap not available.");
+                }
+
+                ui.add_space(8.0);
+
                 // ── Misc ─────────────────────────────────────────────
                 ui.heading("Misc");
                 ui.separator();
@@ -223,7 +259,7 @@ impl eframe::App for Demo {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.label("Right-click to open  ·  Numpad 1–9 to pick  ·  Esc / Numpad 5 to dismiss");
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
