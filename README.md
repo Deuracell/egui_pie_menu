@@ -49,7 +49,7 @@ let buttons = vec![
 ];
 ```
 
-To generate mnemonics automatically (opt-in), call `assign_mnemonics(&mut buttons, &labels)` once, or whenever labels change. Explicit `with_mnemonic` keys are never altered and are reserved, so generated ones never duplicate them; each remaining button gets the first free letter of its label (word initials preferred). Buttons with no free letter get none.
+To generate mnemonics automatically (opt-in), call `assign_mnemonics(&mut buttons, &labels)` once, or whenever labels change. Explicit `with_mnemonic` keys are never altered and are reserved, so generated ones never duplicate them; all buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials. Only a button with no possible letter gets none.
 
 Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. Duplicate mnemonics produce a warning on stderr in debug builds.
 
