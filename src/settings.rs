@@ -149,7 +149,7 @@ pub enum ShowBehavior {
 
 /// Input and dismissal behaviour.
 pub struct PieMenuInput {
-    /// Allow numpad keys 1–9 to activate buttons by direction.
+    /// Allow number keys 1–9 (numpad or number row; egui does not distinguish them) to activate buttons by direction.
     pub use_numpad_keys: bool,
     /// Allow single-character mnemonic keys to activate buttons.
     /// Matched key events are consumed so they don't reach other handlers.

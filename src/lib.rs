@@ -74,6 +74,9 @@ pub struct PieMenu {
     mouse_shown: bool,
     /// Timestamp of the last QuickTap, used for double-tap detection.
     last_quick_tap: Option<Instant>,
+    /// Set by `open()` when this press follows a QuickTap within the double-tap window.
+    /// While set, the menu never becomes visible; releasing yields `DoubleTap`.
+    double_tap_pending: bool,
     /// Cached button sizes from the previous frame, used to centre each Area.
     button_sizes: Vec<Vec2>,
 }
@@ -97,6 +100,7 @@ impl PieMenu {
             release_handled: false,
             mouse_shown: false,
             last_quick_tap: None,
+            double_tap_pending: false,
             button_sizes: Vec::new(),
         }
     }
@@ -121,6 +125,10 @@ impl PieMenu {
         self.release_handled = false;
         self.selected_index = None;
         self.mouse_shown = false;
+        self.double_tap_pending = self
+            .last_quick_tap
+            .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
+            .unwrap_or(false);
     }
 
     /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying the shape factor.
@@ -205,7 +213,8 @@ impl PieMenu {
         let center = self.position;
 
         // Update mouse_shown: latch on once the show condition is met.
-        if !self.mouse_shown {
+        // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`).
+        if !self.mouse_shown && !self.double_tap_pending {
             match self.settings.show_behavior {
                 ShowBehavior::Instant => self.mouse_shown = true,
                 ShowBehavior::OnMovement { threshold } => {
@@ -222,11 +231,8 @@ impl PieMenu {
         if !self.mouse_shown {
             if !key_down && !self.release_handled {
                 self.release_handled = true;
-                let is_double = self
-                    .last_quick_tap
-                    .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
-                    .unwrap_or(false);
-                if is_double {
+                if self.double_tap_pending {
+                    self.double_tap_pending = false;
                     self.last_quick_tap = None;
                     return PieMenuResponse::DoubleTap;
                 } else {

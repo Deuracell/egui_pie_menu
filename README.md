@@ -11,7 +11,7 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 - Configurable layout shape: circle, square, or diamond via `shape_factor`
 - Center indicator with arc, slice, and/or dot highlight driven by mouse distance
 - Optional title label above the center indicator
-- Keyboard support: numpad 1–9 and per-button mnemonic keys with underline rendering helper
+- Keyboard support: number keys 1–9 (numpad or number row) and per-button mnemonic keys with underline rendering helper
 - Quick-tap and double-tap detection with no timer required from the caller
 
 ## Installation
@@ -133,8 +133,8 @@ pub fn show(
 | Hold key/button, move mouse to centre, release | `Dismissed` |
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
-| Numpad 1–9 or mnemonic key | `Selected(idx)` |
-| Escape or Numpad 5 | `Dismissed` |
+| Number key 1–9 or mnemonic key | `Selected(idx)` |
+| Escape or number key 5 | `Dismissed` |
 
 `show_behavior` (default `OnMovement { threshold: 10.0 }`) controls when the menu first appears:
 
