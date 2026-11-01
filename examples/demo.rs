@@ -252,6 +252,7 @@ impl eframe::App for Demo {
                 ui.heading("Misc");
                 ui.separator();
                 ui.checkbox(&mut self.pinned, "Pin menu at center");
+                ui.label("While pinned, press Esc to unpin.");
                 ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
                 ui.add_space(8.0);
                 ui.separator();
@@ -260,7 +261,7 @@ impl eframe::App for Demo {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.label("Right-click to open  ·  Numpad 1–9 to pick  ·  Esc / Numpad 5 to dismiss");
+            ui.label("Right-click to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss");
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
             });
@@ -339,10 +340,11 @@ impl eframe::App for Demo {
                         if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::Dismissed => {
-                        if !self.pinned {
-                            self.last_action = "Dismissed.".to_string();
-                            self.menu_open = false;
-                        }
+                        // Esc unpins: the full-screen input blocker would otherwise
+                        // make the "Pin menu at center" checkbox unreachable.
+                        self.pinned = false;
+                        self.last_action = "Dismissed.".to_string();
+                        self.menu_open = false;
                     }
                     PieMenuResponse::QuickTap => {
                         self.last_action = "Quick tap — default action.".to_string();
