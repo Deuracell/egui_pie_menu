@@ -70,7 +70,7 @@ pub struct PieMenu {
     pub position: Pos2,
     pub settings: PieMenuSettings,
     release_handled: bool,
-    /// Whether the mouse has crossed `show_threshold` since `open()` was called.
+    /// Whether the show condition has been met since `open()` was called.
     mouse_shown: bool,
     /// Timestamp of the last QuickTap, used for double-tap detection.
     last_quick_tap: Option<Instant>,
@@ -103,7 +103,7 @@ impl PieMenu {
 
     /// Override the egui [`egui::Id`] used for this menu's layer and Areas.
     /// Required when multiple pie menus coexist in the same app.
-    pub fn with_id(mut self, id: impl std::hash::Hash) -> Self {
+    pub fn with_id(mut self, id: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id = egui::Id::new(id);
         self
     }
@@ -197,13 +197,23 @@ impl PieMenu {
                 .resize(buttons.len(), Vec2::new(50.0, 24.0));
         }
 
+        // Always restore selectable labels. If the menu is visible we disable them below,
+        // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
+        // restored so labels are selectable again the frame after the menu closes.
+        ctx.all_styles_mut(|s| s.interaction.selectable_labels = true);
+
         let center = self.position;
 
-        // Update mouse_shown: once the mouse travels past show_threshold, latch it on.
+        // Update mouse_shown: latch on once the show condition is met.
         if !self.mouse_shown {
-            if let Some(p) = current_mouse_pos {
-                if (p - center).length() > self.settings.show_threshold {
-                    self.mouse_shown = true;
+            match self.settings.show_behavior {
+                ShowBehavior::Instant => self.mouse_shown = true,
+                ShowBehavior::OnMovement { threshold } => {
+                    if let Some(p) = current_mouse_pos {
+                        if (p - center).length() > threshold {
+                            self.mouse_shown = true;
+                        }
+                    }
                 }
             }
         }
@@ -588,6 +598,11 @@ impl PieMenu {
                 }
             }
         }
+
+        // Disable label text selection for the next frame. Placed after all rendering
+        // so buttons in this frame see the restored style (set at the top of show()).
+        // Restored at the top of show() on the closing frame.
+        ctx.all_styles_mut(|s| s.interaction.selectable_labels = false);
 
         PieMenuResponse::None
     }
