@@ -955,6 +955,26 @@ mod mnemonic_tests {
     }
 
     #[test]
+    fn preference_order_initials_then_remaining_letters_left_to_right() {
+        let pick = |reserved: &[char]| {
+            let mut b: Vec<PieButton> = reserved
+                .iter()
+                .map(|&c| PieButton::new(PieDirection::East).with_mnemonic(c))
+                .collect();
+            b.push(PieButton::new(PieDirection::North));
+            let mut labels = vec![""; reserved.len()];
+            labels.push("Select All Items");
+            assign_mnemonics(&mut b, &labels);
+            b.last().unwrap().mnemonic
+        };
+        assert_eq!(pick(&[]), Some('s')); // 1st word initial
+        assert_eq!(pick(&['s']), Some('a')); // 2nd word initial
+        assert_eq!(pick(&['s', 'a']), Some('i')); // 3rd word initial
+        assert_eq!(pick(&['s', 'a', 'i']), Some('e')); // then letters in order: s,e,l,...
+        assert_eq!(pick(&['s', 'a', 'i', 'e']), Some('l'));
+    }
+
+    #[test]
     fn exhausted_gets_none() {
         let mut b = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::East)];
         assign_mnemonics(&mut b, &["A", "A"]);
