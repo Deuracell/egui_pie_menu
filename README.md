@@ -16,10 +16,21 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 
 ## Installation
 
+The crate is not published on crates.io. Depend on it through git and pin a release tag:
+
 ```toml
 [dependencies]
-egui_pie_menu = "0.1"
+egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", tag = "v0.36.0" }
 ```
+
+Release tags mirror the egui version they target:
+
+| Tag | egui / eframe |
+|---|---|
+| `v0.36.0` (`main`) | 0.36 |
+| `v0.33.0` | 0.33 |
+
+`main` always targets the newest egui. Pin a tag if you are on an older egui.
 
 ## Usage
 
