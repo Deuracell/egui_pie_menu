@@ -52,15 +52,16 @@ impl PieButton {
 /// `labels[i]` is the text shown on `buttons[i]`. Rules:
 /// - Mnemonics set with [`PieButton::with_mnemonic`] are never changed, and their
 ///   keys are reserved, so an auto-generated mnemonic never duplicates one.
-/// - Each remaining button gets the first letter of its label (preferring word
-///   initials, then any letter) that is not already taken. If none is free, it
-///   gets no mnemonic.
-/// - Only `a`–`z` are generated. Assignment follows button order.
+/// - All buttons are considered together: a button whose letters are all claimed
+///   makes another button move to one of its alternative letters, so as many
+///   buttons as possible get a distinct mnemonic. Word initials are preferred.
+///   Only a button with no possible letter is left without one.
+/// - Only `a`–`z` are generated.
 ///
 /// Safe to call repeatedly (e.g. when labels change): previously auto-generated
 /// mnemonics are recomputed, explicit ones are kept.
 pub fn assign_mnemonics(buttons: &mut [PieButton], labels: &[&str]) {
-    let mut taken: Vec<char> = buttons
+    let taken: Vec<char> = buttons
         .iter()
         .filter(|b| !b.auto_mnemonic)
         .filter_map(|b| b.mnemonic)
@@ -70,24 +71,68 @@ pub fn assign_mnemonics(buttons: &mut [PieButton], labels: &[&str]) {
         button.mnemonic = None;
         button.auto_mnemonic = false;
     }
-    for (button, label) in buttons.iter_mut().zip(labels) {
-        if button.mnemonic.is_some() {
-            continue;
+    // Candidate letters per button, best first: word initials, then every other letter.
+    let candidates: Vec<Vec<char>> = buttons
+        .iter()
+        .zip(labels.iter().chain(std::iter::repeat(&"")))
+        .map(|(button, label)| {
+            let mut list: Vec<char> = Vec::new();
+            if button.mnemonic.is_none() {
+                let letters = |c: &char| c.is_ascii_alphabetic();
+                let initials = label
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter_map(|w| w.chars().next())
+                    .filter(letters);
+                for c in initials.chain(label.chars().filter(letters)) {
+                    let c = c.to_ascii_lowercase();
+                    if !taken.contains(&c) && !list.contains(&c) {
+                        list.push(c);
+                    }
+                }
+            }
+            list
+        })
+        .collect();
+
+    // Maximum bipartite matching (buttons <-> letters) via augmenting paths, so a
+    // button whose only letters are claimed can make an earlier button move to
+    // its alternative. Free letters are always preferred over displacing anyone.
+    fn place(
+        i: usize,
+        candidates: &[Vec<char>],
+        owner: &mut std::collections::HashMap<char, usize>,
+        visited: &mut Vec<char>,
+    ) -> bool {
+        for &c in &candidates[i] {
+            if !owner.contains_key(&c) {
+                owner.insert(c, i);
+                return true;
+            }
         }
-        let letters = |c: &char| c.is_ascii_alphabetic();
-        let initials = label
-            .split(|c: char| !c.is_alphanumeric())
-            .filter_map(|w| w.chars().next())
-            .filter(letters);
-        let pick = initials
-            .chain(label.chars().filter(letters))
-            .map(|c| c.to_ascii_lowercase())
-            .find(|c| !taken.contains(c));
-        if let Some(c) = pick {
-            taken.push(c);
-            button.mnemonic = Some(c);
-            button.auto_mnemonic = true;
+        for &c in &candidates[i] {
+            if visited.contains(&c) {
+                continue;
+            }
+            visited.push(c);
+            let other = owner[&c];
+            if place(other, candidates, owner, visited) {
+                owner.insert(c, i);
+                return true;
+            }
         }
+        false
+    }
+
+    // Most constrained buttons first, so they are settled before flexible ones.
+    let mut order: Vec<usize> = (0..buttons.len()).filter(|&i| !candidates[i].is_empty()).collect();
+    order.sort_by_key(|&i| candidates[i].len());
+    let mut owner = std::collections::HashMap::new();
+    for i in order {
+        place(i, &candidates, &mut owner, &mut Vec::new());
+    }
+    for (c, i) in owner {
+        buttons[i].mnemonic = Some(c);
+        buttons[i].auto_mnemonic = true;
     }
 }
 
@@ -898,6 +943,15 @@ mod mnemonic_tests {
         assert_eq!(b[2].mnemonic, Some('p'));
         assign_mnemonics(&mut b, &["Copy", "Cut", "Paste"]); // idempotent
         assert_eq!(b[0].mnemonic, Some('o'));
+    }
+
+    #[test]
+    fn reshuffles_so_everyone_gets_one() {
+        // Greedy would give "Ab" 'a' and leave "A" with nothing.
+        let mut b = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::East)];
+        assign_mnemonics(&mut b, &["Ab", "A"]);
+        assert_eq!(b[1].mnemonic, Some('a'));
+        assert_eq!(b[0].mnemonic, Some('b'));
     }
 
     #[test]
