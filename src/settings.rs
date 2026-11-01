@@ -1,8 +1,8 @@
-use egui::{FontId, Key, PointerButton, Stroke, Color32};
-use std::f32::consts::TAU;
-use std::f32::NAN;
-use std::time::Duration;
 use crate::utils::common_utils::SmartFloat;
+use egui::{Color32, FontId, Key, PointerButton, Stroke};
+
+use std::f32::consts::TAU;
+use std::time::Duration;
 
 /// The eight directions a button can occupy in the pie menu.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,7 +47,7 @@ pub struct PieMenuCenterIndicatorSettings {
     pub background_radius: SmartFloat<f32>,
     /// Stroke of the background circle border.
     pub background_stroke: Stroke,
-    /// Fill colour of the background circle.
+    /// Fill color of the background circle.
     pub background_fill_color: Color32,
 
     /// Radius of the highlight arc/slice/circle. Set to [`f32::NAN`] to disable.
@@ -56,7 +56,7 @@ pub struct PieMenuCenterIndicatorSettings {
     pub highlight_shape: PieMenuHighlightShape,
     /// Stroke applied to arc and circle components of the highlight.
     pub highlight_stroke: Stroke,
-    /// Fill colour applied to slice and circle components of the highlight.
+    /// Fill color applied to slice and circle components of the highlight.
     pub highlight_fill_color: Color32,
     /// Angular width of the arc/slice highlight in radians.
     pub highlight_angle: f32,
@@ -91,7 +91,7 @@ pub struct PieMenuLabelSettings {
     pub background_stroke: Stroke,
     /// Inner padding around the label text.
     pub padding: Padding,
-    /// Text colour.
+    /// Text color.
     pub text_color: Color32,
     /// Font used to render the title.
     pub text_font: FontId,
@@ -102,8 +102,13 @@ impl Default for PieMenuLabelSettings {
         Self {
             display: true,
             background_color: Color32::TRANSPARENT,
-            background_stroke: Stroke::new(NAN, Color32::GRAY),
-            padding: Padding { top: 5.0, right: 5.0, bottom: 5.0, left: 5.0 },
+            background_stroke: Stroke::new(f32::NAN, Color32::GRAY),
+            padding: Padding {
+                top: 5.0,
+                right: 5.0,
+                bottom: 5.0,
+                left: 5.0,
+            },
             text_color: Color32::LIGHT_GRAY,
             text_font: FontId::default(),
         }
@@ -125,6 +130,21 @@ pub enum PieMenuDismissInput {
     Key(Key),
     /// A mouse button click.
     PointerButton(PointerButton),
+}
+
+/// Controls when the pie menu becomes visible after the trigger is held.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShowBehavior {
+    /// Show the menu immediately on key hold.
+    ///
+    /// [`crate::PieMenuResponse::QuickTap`] and [`crate::PieMenuResponse::DoubleTap`]
+    /// are never returned in this mode.
+    Instant,
+    /// Wait until the mouse moves at least `threshold` pixels from the open position.
+    ///
+    /// Releasing before crossing the threshold returns
+    /// [`crate::PieMenuResponse::QuickTap`] or [`crate::PieMenuResponse::DoubleTap`].
+    OnMovement { threshold: f32 },
 }
 
 /// Input and dismissal behaviour.
@@ -191,9 +211,9 @@ pub struct PieMenuSettings {
     ///
     /// Cardinal buttons (N/S/E/W) are unaffected; only the diagonal positions change.
     pub shape_factor: f32,
-    /// Mouse must move at least this far from the open position before the menu
-    /// is drawn. Releasing before this distance is reached counts as a [`crate::PieMenuResponse::QuickTap`].
-    pub show_threshold: f32,
+    /// Controls when the menu becomes visible and whether tap responses are possible.
+    /// See [`ShowBehavior`].
+    pub show_behavior: ShowBehavior,
     /// Minimum gap between the outermost button edge and the screen border.
     /// The whole menu shifts to maintain this margin instead of clipping buttons.
     pub screen_margin: f32,
@@ -214,7 +234,7 @@ impl Default for PieMenuSettings {
         Self {
             layout_radius: 100.0,
             shape_factor: 0.0,
-            show_threshold: 10.0,
+            show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
             screen_margin: 8.0,
             mouse_trigger_threshold: 12.0,
             input: PieMenuInput::default(),
