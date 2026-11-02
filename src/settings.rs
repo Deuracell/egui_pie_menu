@@ -17,6 +17,22 @@ pub enum PieDirection {
     NorthWest,
 }
 
+impl PieDirection {
+    /// The direction reflected across the vertical axis (East↔West, NE↔NW, SE↔SW).
+    pub fn mirrored(&self) -> PieDirection {
+        match self {
+            PieDirection::North => PieDirection::North,
+            PieDirection::South => PieDirection::South,
+            PieDirection::East => PieDirection::West,
+            PieDirection::West => PieDirection::East,
+            PieDirection::NorthEast => PieDirection::NorthWest,
+            PieDirection::NorthWest => PieDirection::NorthEast,
+            PieDirection::SouthEast => PieDirection::SouthWest,
+            PieDirection::SouthWest => PieDirection::SouthEast,
+        }
+    }
+}
+
 /// Shape of the directional highlight drawn at the center indicator.
 ///
 /// Variants can be combined: `ArcSlice` draws both an arc and a filled wedge,
@@ -230,8 +246,8 @@ pub struct PieMenuNumberHints {
 /// Side of a button on which a number hint is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintSide {
-    /// After the label in reading order (default): right of the button for left-to-right
-    /// text, left of it for right-to-left text.
+    /// After the label in reading order (default): right of the button, or left of it
+    /// when [`PieMenuSettings::mirror_horizontal`] is on (right-to-left UIs).
     Trailing,
     /// The side facing away from the centre: right for eastern buttons, left for western
     /// ones, right for North/South. Based on the displayed position, so it follows a
@@ -318,6 +334,10 @@ pub struct PieMenuSettings {
     pub label: PieMenuLabelSettings,
     /// Highlight animation settings.
     pub animations: PieMenuAnimations,
+    /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
+    /// right-to-left UIs. Number keys and number hints follow the *displayed* positions,
+    /// and [`HintSide::Trailing`] hints move to the left. Off by default.
+    pub mirror_horizontal: bool,
     /// Optional number-key hints next to the buttons.
     pub number_hints: PieMenuNumberHints,
 }
@@ -334,6 +354,7 @@ impl Default for PieMenuSettings {
             center_indicator: PieMenuCenterIndicatorSettings::default(),
             label: PieMenuLabelSettings::default(),
             animations: PieMenuAnimations::default(),
+            mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
         }
     }

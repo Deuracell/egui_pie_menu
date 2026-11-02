@@ -80,12 +80,13 @@ impl PieButton {
 ///   another button move to one of its alternative letters, so as many buttons as
 ///   possible get a distinct mnemonic. Word initials are preferred, then the other
 ///   letters left to right. Only a button with no possible letter is left without one.
-///   Only `a`–`z` are generated.
+///   Any alphabetic letter of any script can be generated (combining marks are
+///   skipped; Hebrew final forms and Arabic alef variants are folded).
 fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
     let mut resolved: Vec<Option<char>> = buttons
         .iter()
         .map(|b| match b.mnemonic {
-            Mnemonic::Key(c) => Some(c.to_ascii_lowercase()),
+            Mnemonic::Key(c) => Some(fold_char(c)),
             Mnemonic::Auto | Mnemonic::None => None,
         })
         .collect();
@@ -101,13 +102,13 @@ fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
             let mut list: Vec<char> = Vec::new();
             if button.mnemonic == Mnemonic::Auto {
                 let label = &button.label;
-                let letters = |c: &char| c.is_ascii_alphabetic();
+                let letters = |c: &char| is_mnemonic_letter(*c);
                 let initials = label
                     .split(|c: char| !c.is_alphanumeric())
                     .filter_map(|w| w.chars().next())
                     .filter(letters);
                 for c in initials.chain(label.chars().filter(letters)) {
-                    let c = c.to_ascii_lowercase();
+                    let c = fold_char(c);
                     if !taken.contains(&c) && !list.contains(&c) {
                         list.push(c);
                     }
@@ -269,9 +270,19 @@ impl PieMenu {
         })
     }
 
-    /// The hint digit for a direction, honouring `arabic_indic_digits`.
+    /// The direction a button is displayed in, after [`PieMenuSettings::mirror_horizontal`].
+    fn displayed(&self, dir: &PieDirection) -> PieDirection {
+        Self::eff(dir, self.settings.mirror_horizontal)
+    }
+
+    fn eff(dir: &PieDirection, mirror: bool) -> PieDirection {
+        if mirror { dir.mirrored() } else { dir.clone() }
+    }
+
+    /// The hint digit for a button's (logical) direction: the number key of its
+    /// displayed position, honouring `arabic_indic_digits`.
     fn hint_digit(&self, dir: &PieDirection) -> char {
-        let digit = Self::direction_digit(dir);
+        let digit = Self::direction_digit(&self.displayed(dir));
         if self.settings.number_hints.arabic_indic_digits {
             char::from_u32('٠' as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
         } else {
@@ -281,14 +292,17 @@ impl PieMenu {
 
     /// Whether the hint goes on the right of the button, from [`PieMenuNumberHints::side`].
     fn hint_on_right(&self, dir: &PieDirection) -> bool {
+        let mirror = self.settings.mirror_horizontal;
         match self.settings.number_hints.side {
-            // Left-to-right only for now; right-to-left support comes with mirroring.
-            HintSide::Trailing => true,
-            // Away from the centre; North/South have no horizontal side, so use the right.
-            HintSide::Outside => !matches!(
-                dir,
-                PieDirection::West | PieDirection::NorthWest | PieDirection::SouthWest
-            ),
+            // After the label in reading order: left of it in a mirrored (RTL) layout.
+            HintSide::Trailing => !mirror,
+            // Away from the centre on screen; North/South have no horizontal side,
+            // so they use the trailing side.
+            HintSide::Outside => match self.displayed(dir) {
+                PieDirection::West | PieDirection::NorthWest | PieDirection::SouthWest => false,
+                PieDirection::East | PieDirection::NorthEast | PieDirection::SouthEast => true,
+                PieDirection::North | PieDirection::South => !mirror,
+            },
             HintSide::Left => false,
             HintSide::Right => true,
         }
@@ -450,6 +464,7 @@ impl PieMenu {
         }
 
         let shape_factor = self.settings.shape_factor;
+        let mirror = self.settings.mirror_horizontal;
 
         // Compute the bounding box of all buttons (relative to self.position) and
         // shift the whole menu so it stays within the screen rect with a margin.
@@ -458,7 +473,7 @@ impl PieMenu {
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
         for (idx, button) in buttons.iter().enumerate() {
-            let dv = Self::direction_vec(&button.direction, shape_factor);
+            let dv = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
             let dn = dv.normalized();
             let sz = self.button_sizes[idx];
             let hw = sz.x / 2.0;
@@ -522,7 +537,7 @@ impl PieMenu {
         // Numpad key selection
         if self.settings.input.use_numpad_keys {
             for (idx, button) in buttons.iter().enumerate() {
-                if ctx.input(|i| i.key_pressed(Self::direction_numpad(&button.direction))) {
+                if ctx.input(|i| i.key_pressed(Self::direction_numpad(&Self::eff(&button.direction, mirror)))) {
                     return PieMenuResponse::Selected(idx);
                 }
             }
@@ -536,7 +551,7 @@ impl PieMenu {
                 let mut seen = std::collections::HashMap::new();
                 for (button, mnemonic) in buttons.iter().zip(&mnemonics) {
                     if let Some(c) = *mnemonic {
-                        let key = c.to_ascii_lowercase();
+                        let key = fold_char(c);
                         let prev: &mut Vec<PieDirection> = seen.entry(key).or_default();
                         prev.push(button.direction.clone());
                         if prev.len() == 2 {
@@ -547,18 +562,34 @@ impl PieMenu {
             }
 
             for (idx, mnemonic) in mnemonics.iter().enumerate() {
-                if let Some(key) = mnemonic.and_then(char_to_key) {
-                    let pressed = ctx.input_mut(|i| {
-                        if i.key_pressed(key) {
-                            i.consume_key(egui::Modifiers::NONE, key);
-                            true
-                        } else {
+                let Some(m) = *mnemonic else { continue };
+                let target = fold_char(m);
+                let key = char_to_key(m);
+                let pressed = ctx.input_mut(|i| {
+                    let mut hit = false;
+                    // Typed characters work for any script / keyboard layout.
+                    i.events.retain(|e| match e {
+                        egui::Event::Text(t)
+                            if !hit
+                                && t.chars().count() == 1
+                                && t.chars().next().map(fold_char) == Some(target) =>
+                        {
+                            hit = true;
                             false
                         }
+                        _ => true,
                     });
-                    if pressed {
-                        return PieMenuResponse::Selected(idx);
+                    // Latin letters also match by key code.
+                    if let Some(key) = key {
+                        if i.key_pressed(key) {
+                            i.consume_key(egui::Modifiers::NONE, key);
+                            hit = true;
+                        }
                     }
+                    hit
+                });
+                if pressed {
+                    return PieMenuResponse::Selected(idx);
                 }
             }
         }
@@ -574,7 +605,7 @@ impl PieMenu {
                 .iter()
                 .enumerate()
                 .map(|(idx, button)| {
-                    let dir_vec = Self::direction_vec(&button.direction, shape_factor);
+                    let dir_vec = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
                     let button_angle = dir_vec.y.atan2(dir_vec.x);
                     let diff = ((angle - button_angle + PI) % TAU - PI).abs();
                     (idx, diff)
@@ -601,7 +632,7 @@ impl PieMenu {
                 self.selected_index
                     .and_then(|idx| buttons.get(idx))
                     .map(|b| {
-                        let v = Self::direction_vec(&b.direction, shape_factor);
+                        let v = Self::direction_vec(&Self::eff(&b.direction, mirror), shape_factor);
                         v.y.atan2(v.x)
                     })
                     .unwrap_or(0.0)
@@ -735,7 +766,7 @@ impl PieMenu {
 
         // Draw buttons via caller-provided closure inside floating Areas
         for (idx, button) in buttons.iter().enumerate() {
-            let dir_vec = Self::direction_vec(&button.direction, shape_factor);
+            let dir_vec = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
             let dir_norm = dir_vec.normalized();
 
             // Push the button outward so its inner face/corner sits on the layout circle.
@@ -793,7 +824,7 @@ impl PieMenu {
                 let start_sf = anim.slide_start_shape_factor.unwrap_or(shape_factor);
                 let sf = start_sf + (shape_factor - start_sf) * eased;
                 let scale = if end_radius > 0.0 { radius / end_radius } else { 1.0 };
-                let offset = Self::direction_vec(&button.direction, sf) * end_radius
+                let offset = Self::direction_vec(&Self::eff(&button.direction, mirror), sf) * end_radius
                     + Vec2::new(hw * sx, hh * sy);
                 center + offset * scale
             } else {
@@ -892,10 +923,10 @@ impl PieMenu {
 /// }));
 /// ```
 pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJob {
-    let mnemonic_lower = mnemonic.to_ascii_lowercase();
+    let mnemonic_folded = fold_char(mnemonic);
     let split = text
         .char_indices()
-        .find(|(_, c)| c.to_ascii_lowercase() == mnemonic_lower);
+        .find(|(_, c)| fold_char(*c) == mnemonic_folded);
 
     let mut job = LayoutJob::default();
 
@@ -924,6 +955,33 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
     }
 
     job
+}
+
+/// Case-folds `c` and normalises letter variants that share a key:
+/// Hebrew final forms (ך→כ …) and Arabic alef variants (أ إ آ ٱ → ا).
+fn fold_char(c: char) -> char {
+    let c = c.to_lowercase().next().unwrap_or(c);
+    match c {
+        'ך' => 'כ',
+        'ם' => 'מ',
+        'ן' => 'נ',
+        'ף' => 'פ',
+        'ץ' => 'צ',
+        'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
+        _ => c,
+    }
+}
+
+/// Combining marks (Arabic/Hebrew points, accents) are never mnemonic candidates.
+fn is_combining_mark(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
+        | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06DC | 0x06DF..=0x06E4
+        | 0x06E7..=0x06E8 | 0x06EA..=0x06ED)
+}
+
+fn is_mnemonic_letter(c: char) -> bool {
+    c.is_alphabetic() && !is_combining_mark(c)
 }
 
 fn char_to_key(c: char) -> Option<Key> {
@@ -1028,3 +1086,74 @@ mod mnemonic_tests {
     }
 }
 
+#[cfg(test)]
+mod unicode_tests {
+    use super::*;
+
+    /// The mnemonic generated for `label` with `explicit` keys already reserved.
+    fn one(label: &str, explicit: &[char]) -> Option<char> {
+        let mut b: Vec<PieButton> = explicit
+            .iter()
+            .map(|&c| PieButton::new(PieDirection::East).with_mnemonic(c))
+            .collect();
+        b.push(PieButton::new(PieDirection::North).with_label(label));
+        *resolve_mnemonics(&b, true).last().unwrap()
+    }
+
+    #[test]
+    fn other_scripts_get_mnemonics() {
+        assert_eq!(one("Копировать", &[]), Some('к'));
+        assert_eq!(one("نسخ ملف", &[]), Some('ن'));
+        assert_eq!(one("نسخ ملف", &['ن']), Some('م')); // next word initial
+        assert_eq!(one("העתק", &[]), Some('ה'));
+        assert_eq!(one("Ärger", &[]), Some('ä'));
+    }
+
+    #[test]
+    fn skips_combining_marks_and_folds_variants() {
+        assert_eq!(one("\u{064E}بيت", &[]), Some('ب')); // fatha is skipped
+        assert_eq!(fold_char('ך'), fold_char('כ'));
+        assert_eq!(fold_char('أ'), fold_char('ا'));
+        assert_eq!(fold_char('É'), 'é');
+    }
+
+    #[test]
+    fn explicit_key_is_folded_and_reserved() {
+        // An explicit capital is reserved in folded form, so auto can't reuse it.
+        assert_eq!(one("Copy", &['C']), Some('o'));
+    }
+
+    #[test]
+    fn mnemonic_text_unicode_underline() {
+        let job = mnemonic_text("Файл", 'Ф', TextFormat::default());
+        // Mnemonic is the first char: underlined "Ф" + remainder (no "before" section).
+        assert_eq!(job.sections.len(), 2);
+    }
+
+    #[test]
+    fn mirror_swaps_horizontal_only() {
+        assert_eq!(PieDirection::East.mirrored(), PieDirection::West);
+        assert_eq!(PieDirection::NorthWest.mirrored(), PieDirection::NorthEast);
+        assert_eq!(PieDirection::South.mirrored(), PieDirection::South);
+    }
+
+    #[test]
+    fn hints_follow_mirroring() {
+        let mut menu = PieMenu::new();
+        let east = PieButton::new(PieDirection::East);
+        let north = PieButton::new(PieDirection::North);
+        // Trailing: right of the label left-to-right, left of it when mirrored.
+        assert!(menu.number_hint(&east).unwrap().on_right);
+        assert_eq!(menu.number_hint(&east).unwrap().text, "6");
+        menu.settings.mirror_horizontal = true;
+        assert!(!menu.number_hint(&east).unwrap().on_right);
+        assert_eq!(menu.number_hint(&east).unwrap().text, "4"); // displayed on the West
+        // Outside: away from the centre on screen; North/South use the trailing side.
+        menu.settings.number_hints.side = HintSide::Outside;
+        assert!(!menu.number_hint(&east).unwrap().on_right);
+        assert!(!menu.number_hint(&north).unwrap().on_right);
+        menu.settings.mirror_horizontal = false;
+        assert!(menu.number_hint(&east).unwrap().on_right);
+        assert!(menu.number_hint(&north).unwrap().on_right);
+    }
+}

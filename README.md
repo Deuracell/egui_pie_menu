@@ -243,6 +243,13 @@ menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
+### Right-to-left and non-Latin scripts
+
+- `menu.settings.mirror_horizontal = true` flips the layout (East↔West, diagonals follow). Number keys and number hints follow the displayed positions. Off by default.
+- Number hints follow the reading direction by default (`HintSide::Trailing`: after the label, so on the left when mirrored). `menu.settings.number_hints.arabic_indic_digits = true` uses ٠١٢…
+- Mnemonics work for any alphabetic script: they match typed characters, so they work with the active keyboard layout, and auto mnemonics / `mnemonic_text` are Unicode-aware (case folded; Hebrew final forms and Arabic alef variants are treated as the same key; combining marks are skipped).
+- **Text rendering is egui's job.** As of egui 0.36 text is shaped (Arabic letters join), but there is **no bidi** support, so mixed left-to-right/right-to-left labels display in the wrong order, and egui's default fonts do not include Arabic or Hebrew glyphs — add a font via `ctx.set_fonts`. Keep each label single-script until egui gains bidi.
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
