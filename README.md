@@ -243,6 +243,14 @@ menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
+### Pinned / persistent menus
+
+```rust
+menu.open(center);
+menu.reveal();                              // visible immediately, regardless of ShowBehavior
+menu.settings.block_background = false;     // keep the rest of the UI clickable while it is open
+```
+
 Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN`/disabled radius, zero-width strokes or arcs) no longer panic.
 
 ### Highlight shapes

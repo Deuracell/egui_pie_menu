@@ -325,6 +325,10 @@ pub struct PieMenuSettings {
     pub label: PieMenuLabelSettings,
     /// Highlight animation settings.
     pub animations: PieMenuAnimations,
+    /// While the menu is visible, swallow pointer input meant for widgets behind it
+    /// (a full-screen blocker). Set to `false` for a pinned/persistent menu so the
+    /// rest of the UI stays usable. Default `true`.
+    pub block_background: bool,
     /// Optional number-key hints next to the buttons.
     pub number_hints: PieMenuNumberHints,
 }
@@ -341,6 +345,7 @@ impl Default for PieMenuSettings {
             center_indicator: PieMenuCenterIndicatorSettings::default(),
             label: PieMenuLabelSettings::default(),
             animations: PieMenuAnimations::default(),
+            block_background: true,
             number_hints: PieMenuNumberHints::default(),
         }
     }
