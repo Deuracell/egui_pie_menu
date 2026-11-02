@@ -92,26 +92,64 @@ impl PieButton {
 ///   possible get a distinct mnemonic. Word initials are preferred, then the other
 ///   letters left to right. Only a button with no possible letter is left without one.
 ///   Only `a`–`z` are generated.
+/// A problem with the buttons of one pie level, from [`PieMenu::check_buttons`].
+///
+/// Indices refer to the slice that was checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ButtonProblem {
+    /// Two buttons occupy the same direction.
+    SharedDirection { first: usize, second: usize, direction: PieDirection },
+    /// Two enabled buttons have the same mnemonic key.
+    DuplicateMnemonic { first: usize, second: usize, key: char },
+}
+
+impl ButtonProblem {
+    /// The two button indices involved.
+    pub fn buttons(&self) -> [usize; 2] {
+        match self {
+            ButtonProblem::SharedDirection { first, second, .. }
+            | ButtonProblem::DuplicateMnemonic { first, second, .. } => [*first, *second],
+        }
+    }
+}
+
+impl std::fmt::Display for ButtonProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ButtonProblem::SharedDirection { first, second, direction } => {
+                write!(f, "buttons {first} and {second} are both in direction {direction:?}")
+            }
+            ButtonProblem::DuplicateMnemonic { first, second, key } => {
+                write!(f, "buttons {first} and {second} share the mnemonic '{key}'")
+            }
+        }
+    }
+}
+
 /// Problems with the buttons of one pie level: several buttons in one direction, or
 /// the same mnemonic on several enabled buttons. Buttons in different (sub-)pie levels
 /// are never compared with each other, so they may reuse directions and keys.
-fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>]) -> Vec<String> {
+fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>]) -> Vec<ButtonProblem> {
     let mut problems = Vec::new();
-    let mut dirs: Vec<&PieDirection> = Vec::new();
-    for b in buttons {
-        if dirs.contains(&&b.direction) {
-            problems.push(format!("more than one button in direction {:?}", b.direction));
+    let mut dirs: Vec<(usize, &PieDirection)> = Vec::new();
+    for (i, b) in buttons.iter().enumerate() {
+        if let Some((first, _)) = dirs.iter().find(|(_, d)| **d == b.direction) {
+            problems.push(ButtonProblem::SharedDirection {
+                first: *first,
+                second: i,
+                direction: b.direction.clone(),
+            });
         } else {
-            dirs.push(&b.direction);
+            dirs.push((i, &b.direction));
         }
     }
-    let mut keys: Vec<(char, &PieDirection)> = Vec::new();
-    for (b, m) in buttons.iter().zip(mnemonics) {
+    let mut keys: Vec<(char, usize)> = Vec::new();
+    for (i, (b, m)) in buttons.iter().zip(mnemonics).enumerate() {
         let (true, Some(c)) = (b.enabled, *m) else { continue };
-        if let Some((_, other)) = keys.iter().find(|(k, _)| *k == c) {
-            problems.push(format!("duplicate mnemonic '{c}' on {:?} and {:?}", other, b.direction));
+        if let Some((_, first)) = keys.iter().find(|(k, _)| *k == c) {
+            problems.push(ButtonProblem::DuplicateMnemonic { first: *first, second: i, key: c });
         } else {
-            keys.push((c, &b.direction));
+            keys.push((c, i));
         }
     }
     problems
@@ -374,9 +412,16 @@ impl PieMenu {
         self
     }
 
+    /// Problems in one level's buttons: several in one direction, or the same mnemonic
+    /// on several enabled buttons. Debug builds assert on these when the menu opens;
+    /// call this to check (or show the problems) yourself, e.g. in an editor, in any
+    /// build. Pass the buttons of a single level.
+    pub fn check_buttons(&self, buttons: &[PieButton]) -> Vec<ButtonProblem> {
+        button_problems(buttons, &self.mnemonics(buttons))
+    }
+
     /// The mnemonic key in effect for each button (lower-case), from each button's
-    /// [`Mnemonic`] and [`PieMenuInput::auto_mnemonics`]. Use it in your render closure,
-    /// for use outside the render closure. Inside it, prefer [`ButtonView::mnemonic`] and
+    /// [`Mnemonic`] and [`PieMenuInput::auto_mnemonics`], for use outside the render closure. Inside it, prefer [`ButtonView::mnemonic`] and
     /// [`ButtonView::label_text`]. Cheap: a few microseconds for eight buttons.
     pub fn mnemonics(&self, buttons: &[PieButton]) -> Vec<Option<char>> {
         resolve_mnemonics(buttons, self.settings.input.auto_mnemonics)
@@ -684,11 +729,11 @@ impl PieMenu {
         #[cfg(debug_assertions)]
         if !self.checked_buttons {
             self.checked_buttons = true;
-            let problems = button_problems(buttons, &self.mnemonics(buttons));
+            let problems = self.check_buttons(buttons);
             debug_assert!(
                 problems.is_empty(),
                 "egui_pie_menu: {}",
-                problems.join("; ")
+                problems.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("; ")
             );
         }
 
@@ -1313,9 +1358,15 @@ mod selection_tests {
             lab(PieDirection::East, "Cat").with_mnemonic('c'),
         ];
         let p = button_problems(&b, &resolve_mnemonics(&b, true));
-        assert_eq!(p.len(), 2, "{p:?}");
-        assert!(p[0].contains("direction"));
-        assert!(p[1].contains("duplicate mnemonic 'c'"));
+        assert_eq!(
+            p,
+            vec![
+                ButtonProblem::SharedDirection { first: 0, second: 1, direction: PieDirection::North },
+                ButtonProblem::DuplicateMnemonic { first: 0, second: 2, key: 'c' },
+            ]
+        );
+        assert_eq!(p[1].buttons(), [0, 2]);
+        assert!(p[1].to_string().contains("mnemonic 'c'"));
     }
 
     #[test]
@@ -1332,7 +1383,7 @@ mod selection_tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "more than one button in direction")]
+    #[should_panic(expected = "are both in direction")]
     fn show_asserts_on_buttons_sharing_a_direction() {
         let ctx = egui::Context::default();
         let buttons = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
