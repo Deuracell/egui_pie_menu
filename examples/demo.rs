@@ -1,16 +1,75 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
-use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, ShowBehavior, SmartFloat, TextFormat};
+use egui_pie_menu::{assign_mnemonics, mnemonic_text, HintSide, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, ShowBehavior, SmartFloat, TextFormat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
         "egui_pie_menu demo",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(Demo::new()))),
+        Box::new(|cc| {
+            let font_note = load_system_fonts(&cc.egui_ctx);
+            let mut demo = Demo::new();
+            demo.font_note = font_note;
+            Ok(Box::new(demo))
+        }),
     )
 }
 
+/// egui's built-in fonts lack Arabic/Hebrew, so try to add a system font as a fallback.
+fn load_system_fonts(ctx: &egui::Context) -> String {
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ];
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = Vec::new();
+    for path in CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            let name = format!("fallback{}", loaded.len());
+            fonts.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(name.clone());
+            }
+            loaded.push(*path);
+        }
+    }
+    ctx.set_fonts(fonts);
+    if loaded.is_empty() {
+        "No system font with Arabic/Hebrew found: those labels may show as boxes.".to_string()
+    } else {
+        format!("Fallback fonts: {}", loaded.join(", "))
+    }
+}
+
+struct Lang {
+    name: &'static str,
+    title: &'static str,
+    rtl: bool,
+    arabic_digits: bool,
+    labels: [&'static str; 8],
+}
+
+const LANGS: &[Lang] = &[
+    Lang { name: "English", title: "Edit", rtl: false, arabic_digits: false,
+        labels: ["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Word wrap"] },
+    Lang { name: "Русский", title: "Правка", rtl: false, arabic_digits: false,
+        labels: ["Копировать", "Специальная вставка", "Повторить", "Сохранить как…", "Удалить навсегда", "Вырезать", "Отменить изменение", "Перенос слов"] },
+    Lang { name: "עברית", title: "עריכה", rtl: true, arabic_digits: false,
+        labels: ["העתק", "הדבק מיוחד", "בצע שוב", "שמור בשם…", "מחק לצמיתות", "גזור", "בטל שינוי", "גלישת שורות"] },
+    Lang { name: "العربية", title: "تحرير", rtl: true, arabic_digits: true,
+        labels: ["نسخ", "لصق خاص", "إعادة", "حفظ باسم…", "حذف نهائي", "قص", "تراجع", "التفاف النص"] },
+];
+
 struct Demo {
+    lang: usize,
+    auto_mnemonics: bool,
+    font_note: String,
     menu: PieMenu,
     menu_open: bool,
     last_action: String,
@@ -31,17 +90,41 @@ struct Demo {
 }
 
 impl Demo {
+    /// English without auto keeps hand-picked mnemonics. With auto (or any other
+    /// language) mnemonics are generated; English still pins 'c' on Copy to show
+    /// that explicit mnemonics are respected.
+    fn make_buttons(lang: usize, auto: bool) -> Vec<PieButton> {
+        use PieDirection::*;
+        let dirs = [North, NorthEast, East, SouthEast, South, SouthWest, West, NorthWest];
+        let manual = ['c', 'p', 'r', 's', 'd', 't', 'u'];
+        if lang == 0 && !auto {
+            let mut it = manual.into_iter();
+            return dirs
+                .into_iter()
+                .map(|d| match it.next() {
+                    Some(c) => PieButton::new(d).with_mnemonic(c),
+                    None => PieButton::new(d),
+                })
+                .collect();
+        }
+        let mut buttons: Vec<PieButton> = dirs.into_iter().map(PieButton::new).collect();
+        if lang == 0 {
+            buttons[0] = PieButton::new(North).with_mnemonic('c');
+        }
+        assign_mnemonics(&mut buttons, &LANGS[lang].labels);
+        buttons
+    }
+
+    fn apply_language(&mut self) {
+        let l = &LANGS[self.lang];
+        self.buttons = Self::make_buttons(self.lang, self.auto_mnemonics);
+        self.menu.settings.mirror_horizontal = l.rtl;
+        self.menu.settings.number_hints.side = if l.rtl { HintSide::Right } else { HintSide::Left };
+        self.menu.settings.number_hints.arabic_indic_digits = l.arabic_digits;
+    }
+
     fn new() -> Self {
-        let buttons = vec![
-            PieButton::new(PieDirection::North)    .with_mnemonic('c'),
-            PieButton::new(PieDirection::NorthEast).with_mnemonic('p'),
-            PieButton::new(PieDirection::East)     .with_mnemonic('r'),
-            PieButton::new(PieDirection::SouthEast).with_mnemonic('s'),
-            PieButton::new(PieDirection::South)    .with_mnemonic('d'),
-            PieButton::new(PieDirection::SouthWest).with_mnemonic('t'),
-            PieButton::new(PieDirection::West)     .with_mnemonic('u'),
-            PieButton::new(PieDirection::NorthWest),
-        ];
+        let buttons = Self::make_buttons(0, false);
 
         let menu = PieMenu::new();
         let bg_radius = menu.settings.center_indicator.background_radius.get();
@@ -49,6 +132,9 @@ impl Demo {
         let highlight_angle_deg = menu.settings.center_indicator.highlight_angle.to_degrees();
 
         Self {
+            lang: 0,
+            auto_mnemonics: false,
+            font_note: String::new(),
             menu,
             menu_open: false,
             last_action: "Right-click anywhere to open the menu.".to_string(),
@@ -62,11 +148,6 @@ impl Demo {
         }
     }
 }
-
-const LABELS: &[&str] = &[
-    "Copy", "Paste Special", "Redo", "Save As…",
-    "Delete Permanently", "Cut", "Undo Last Change", "Word wrap",
-];
 
 const COLORS: &[Color32] = &[
     Color32::from_rgb( 70, 130, 180),
@@ -251,7 +332,24 @@ impl eframe::App for Demo {
                 // ── Misc ─────────────────────────────────────────────
                 ui.heading("Misc");
                 ui.separator();
+                ui.heading("Language / RTL");
+                ui.separator();
+                let mut lang_changed = false;
+                egui::ComboBox::from_id_salt("lang")
+                    .selected_text(LANGS[self.lang].name)
+                    .show_ui(ui, |ui| {
+                        for (i, l) in LANGS.iter().enumerate() {
+                            lang_changed |= ui.selectable_value(&mut self.lang, i, l.name).changed();
+                        }
+                    });
+                lang_changed |= ui.checkbox(&mut self.auto_mnemonics, "Auto-generate mnemonics").changed();
+                if lang_changed { self.apply_language(); }
+                ui.checkbox(&mut self.menu.settings.mirror_horizontal, "Mirror layout (RTL)");
                 ui.checkbox(&mut self.menu.settings.number_hints.show, "Show number hints");
+                ui.label(RichText::new("egui has no bidi: keep labels single-script.").small());
+                if !self.font_note.is_empty() { ui.label(RichText::new(&self.font_note).small()); }
+                ui.add_space(8.0);
+
                 ui.checkbox(&mut self.pinned, "Pin menu at center");
                 ui.label("While pinned, press Esc to unpin.");
                 ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
@@ -285,9 +383,10 @@ impl eframe::App for Demo {
                 let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
                 let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
 
-                match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
+                let labels = LANGS[self.lang].labels;
+                match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some(LANGS[self.lang].title),
                     |ui, idx, hovered| {
-                        let label = LABELS[idx];
+                        let label = labels[idx];
                         let color = COLORS[idx];
                         let (bg, fg) = if hovered {
                             (color, Color32::WHITE)
@@ -337,7 +436,7 @@ impl eframe::App for Demo {
                 {
                     PieMenuResponse::Selected(idx) => {
                         if idx == 7 { self.word_wrap = !self.word_wrap; }
-                        self.last_action = format!("Selected: {}", LABELS[idx]);
+                        self.last_action = format!("Selected: {}", labels[idx]);
                         if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::Dismissed => {
