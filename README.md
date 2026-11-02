@@ -241,6 +241,14 @@ menu.hovered(); // Option<usize>: the currently highlighted button
 
 Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN`/disabled radius, zero-width strokes or arcs) no longer panic.
 
+### Pinned / persistent menus
+
+```rust
+menu.open(center);
+menu.reveal();                              // visible immediately, regardless of ShowBehavior
+menu.settings.block_background = false;     // keep the rest of the UI clickable while it is open
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:

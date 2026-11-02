@@ -266,6 +266,13 @@ impl PieMenu {
             .unwrap_or(false);
     }
 
+    /// Makes the menu visible immediately, regardless of [`ShowBehavior`].
+    /// Call right after [`PieMenu::open`] for a pinned/persistent menu.
+    pub fn reveal(&mut self) {
+        self.mouse_shown = true;
+        self.shown_at = Some(Instant::now());
+    }
+
     /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying the shape factor.
     ///
     /// - `0.0`  → circle: all buttons equidistant (L2, unit vector)
@@ -603,12 +610,14 @@ impl PieMenu {
         // Block hover/interaction on background widgets while the menu is open.
         // Sits on Foreground (above panels, below Tooltip where buttons live) so
         // nothing underneath highlights as the mouse moves over it.
-        egui::Area::new(self.id.with("_blocker"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::Pos2::ZERO)
-            .show(ctx, |ui| {
-                ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
-            });
+        if self.settings.block_background {
+            egui::Area::new(self.id.with("_blocker"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::Pos2::ZERO)
+                .show(ctx, |ui| {
+                    ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+                });
+        }
 
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
 
@@ -1301,5 +1310,40 @@ mod selection_tests {
         let mut b = vec![PieButton::new(PieDirection::North).with_enabled(false)];
         assign_mnemonics(&mut b, &["Copy"]);
         assert_eq!(b[0].mnemonic, None);
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn reveal_shows_menu_immediately_and_open_resets_it() {
+        let mut m = PieMenu::new();
+        m.open(Pos2::new(5.0, 5.0));
+        assert!(!m.mouse_shown);
+        m.reveal();
+        assert!(m.mouse_shown && m.shown_at.is_some());
+        m.open(Pos2::ZERO);
+        assert!(!m.mouse_shown);
+    }
+
+    #[test]
+    fn revealed_menu_stays_visible_without_key_or_mouse() {
+        let ctx = egui::Context::default();
+        let buttons = vec![PieButton::new(PieDirection::North)];
+        let mut m = PieMenu::new();
+        m.settings.block_background = false;
+        m.open(Pos2::new(100.0, 100.0));
+        m.reveal();
+        let mut resp = PieMenuResponse::None;
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            resp = m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |ui, _, _| {
+                ui.label("x");
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(resp, PieMenuResponse::None);
+        assert!(m.mouse_shown);
     }
 }

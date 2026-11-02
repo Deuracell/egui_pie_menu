@@ -308,6 +308,10 @@ pub struct PieMenuSettings {
     pub label: PieMenuLabelSettings,
     /// Highlight animation settings.
     pub animations: PieMenuAnimations,
+    /// While the menu is visible, swallow pointer input meant for widgets behind it
+    /// (a full-screen blocker). Set to `false` for a pinned/persistent menu so the
+    /// rest of the UI stays usable. Default `true`.
+    pub block_background: bool,
     /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
     /// right-to-left UIs. Number keys follow the *displayed* positions. Off by default.
     pub mirror_horizontal: bool,
@@ -327,6 +331,7 @@ impl Default for PieMenuSettings {
             center_indicator: PieMenuCenterIndicatorSettings::default(),
             label: PieMenuLabelSettings::default(),
             animations: PieMenuAnimations::default(),
+            block_background: true,
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
         }

@@ -74,6 +74,8 @@ struct Demo {
     menu_open: bool,
     last_action: String,
     pinned: bool,
+    /// True while the pinned menu is the open one.
+    pin_active: bool,
 
     // Mirrored f32 values for SmartFloat settings (sliders need plain f32)
     bg_radius: f32,
@@ -139,6 +141,7 @@ impl Demo {
             menu_open: false,
             last_action: "Right-click anywhere to open the menu.".to_string(),
             pinned: false,
+            pin_active: false,
             bg_radius,
             highlight_radius,
             highlight_angle_deg,
@@ -194,8 +197,12 @@ impl eframe::App for Demo {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
-        egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
+        let panel_rect = egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.checkbox(&mut self.pinned, "Pin menu at center");
+                ui.label(RichText::new("While pinned, press Esc to unpin.").small());
+                ui.add_space(8.0);
+
                 // ── Layout ───────────────────────────────────────────
                 ui.heading("Layout");
                 ui.separator();
@@ -355,14 +362,12 @@ impl eframe::App for Demo {
                 if !self.font_note.is_empty() { ui.label(RichText::new(&self.font_note).small()); }
                 ui.add_space(8.0);
 
-                ui.checkbox(&mut self.pinned, "Pin menu at center");
-                ui.label("While pinned, press Esc to unpin.");
                 ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new(&self.last_action).size(13.0));
             });
-        });
+        }).response.rect;
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.label("Right-click to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss");
@@ -370,9 +375,25 @@ impl eframe::App for Demo {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
             });
 
+            let pin_center = ui.clip_rect().center();
+            // Leaving pinned mode closes the pinned menu.
+            if !self.pinned && self.pin_active {
+                self.pin_active = false;
+                self.menu_open = false;
+            }
+            self.menu.settings.block_background = !self.pinned;
+            // Pinned: open once, centred and visible. Skip showing on the frame the
+            // checkbox was clicked so that click is not also seen by the menu.
+            let mut skip_show = false;
             if self.pinned {
-                self.menu.position = ui.clip_rect().center();
-                self.menu_open = true;
+                if !self.pin_active {
+                    self.pin_active = true;
+                    self.menu.open(pin_center);
+                    self.menu.reveal();
+                    self.menu_open = true;
+                    skip_show = true;
+                }
+                self.menu.position = pin_center;
             }
 
             if !self.pinned && !self.menu_open {
@@ -384,8 +405,12 @@ impl eframe::App for Demo {
                 }
             }
 
-            if self.menu_open {
-                let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
+            if self.menu_open && !skip_show {
+                // Pinned: use the real pointer, but treat the settings panel as "centre"
+                // so clicking its widgets never selects a pie button.
+                let mouse_pos = ctx.input(|i| i.pointer.latest_pos()).map(|p| {
+                    if self.pinned && panel_rect.contains(p) { pin_center } else { p }
+                });
                 let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
 
                 let labels = LANGS[self.lang].labels;
