@@ -17,6 +17,22 @@ pub enum PieDirection {
     NorthWest,
 }
 
+impl PieDirection {
+    /// The direction reflected across the vertical axis (East↔West, NE↔NW, SE↔SW).
+    pub fn mirrored(&self) -> PieDirection {
+        match self {
+            PieDirection::North => PieDirection::North,
+            PieDirection::South => PieDirection::South,
+            PieDirection::East => PieDirection::West,
+            PieDirection::West => PieDirection::East,
+            PieDirection::NorthEast => PieDirection::NorthWest,
+            PieDirection::NorthWest => PieDirection::NorthEast,
+            PieDirection::SouthEast => PieDirection::SouthWest,
+            PieDirection::SouthWest => PieDirection::SouthEast,
+        }
+    }
+}
+
 /// Shape of the directional highlight drawn at the center indicator.
 ///
 /// Variants can be combined: `ArcSlice` draws both an arc and a filled wedge,
@@ -329,6 +345,10 @@ pub struct PieMenuSettings {
     /// (a full-screen blocker). Set to `false` for a pinned/persistent menu so the
     /// rest of the UI stays usable. Default `true`.
     pub block_background: bool,
+    /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
+    /// right-to-left UIs. Number keys and number hints follow the *displayed* positions,
+    /// and [`HintSide::Trailing`] then means "left of the label". Off by default.
+    pub mirror_horizontal: bool,
     /// Optional number-key hints next to the buttons.
     pub number_hints: PieMenuNumberHints,
 }
@@ -346,6 +366,7 @@ impl Default for PieMenuSettings {
             label: PieMenuLabelSettings::default(),
             animations: PieMenuAnimations::default(),
             block_background: true,
+            mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
         }
     }
