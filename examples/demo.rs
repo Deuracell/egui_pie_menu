@@ -7,11 +7,70 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "egui_pie_menu demo",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(Demo::new()))),
+        Box::new(|cc| {
+            let font_note = load_system_fonts(&cc.egui_ctx);
+            let mut demo = Demo::new();
+            demo.font_note = font_note;
+            Ok(Box::new(demo))
+        }),
     )
 }
 
+/// egui's built-in fonts lack Arabic/Hebrew, so try to add system fonts as fallbacks.
+fn load_system_fonts(ctx: &egui::Context) -> String {
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ];
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = 0;
+    for path in CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            let name = format!("fallback{loaded}");
+            fonts.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(name.clone());
+            }
+            loaded += 1;
+        }
+    }
+    ctx.set_fonts(fonts);
+    if loaded == 0 {
+        "No system font with Arabic/Hebrew found: those labels may show as boxes.".to_string()
+    } else {
+        format!("{loaded} fallback font(s) loaded for non-Latin scripts.")
+    }
+}
+
+/// Demo languages: button labels for the eight directions (N clockwise to NW).
+struct Lang {
+    name: &'static str,
+    rtl: bool,
+    arabic_digits: bool,
+    labels: [&'static str; 8],
+}
+
+const LANGS: &[Lang] = &[
+    Lang { name: "English", rtl: false, arabic_digits: false,
+        labels: ["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Word wrap"] },
+    Lang { name: "Русский", rtl: false, arabic_digits: false,
+        labels: ["Копировать", "Специальная вставка", "Повторить", "Сохранить как…", "Удалить навсегда", "Вырезать", "Отменить изменение", "Перенос слов"] },
+    Lang { name: "עברית", rtl: true, arabic_digits: false,
+        labels: ["העתק", "הדבק מיוחד", "בצע שוב", "שמור בשם…", "מחק לצמיתות", "גזור", "בטל שינוי", "גלישת שורות"] },
+    Lang { name: "العربية", rtl: true, arabic_digits: true,
+        labels: ["نسخ", "لصق خاص", "إعادة", "حفظ باسم…", "حذف نهائي", "قص", "تراجع", "التفاف النص"] },
+];
+
 struct Demo {
+    /// Index into `LANGS`.
+    lang: usize,
+    font_note: String,
     menu: PieMenu,
     menu_open: bool,
     last_action: String,
@@ -44,6 +103,25 @@ struct Demo {
 }
 
 impl Demo {
+    /// Applies the selected language: labels, mirroring, digit style, and mnemonics.
+    /// English restores the hand-picked keys; other languages use generated ones.
+    fn apply_language(&mut self) {
+        let l = &LANGS[self.lang];
+        let defaults = default_button_configs();
+        for (i, cfg) in self.button_configs.iter_mut().enumerate() {
+            cfg.label = l.labels[i].to_string();
+            if self.lang == 0 {
+                cfg.mnemonic = defaults[i].mnemonic;
+                cfg.key = defaults[i].key.clone();
+            } else {
+                cfg.mnemonic = MnemonicMode::Auto;
+                cfg.key.clear();
+            }
+        }
+        self.menu.settings.mirror_horizontal = l.rtl;
+        self.menu.settings.number_hints.arabic_indic_digits = l.arabic_digits;
+    }
+
     fn new() -> Self {
         let button_configs = default_button_configs();
         let buttons = build_buttons(&button_configs);
@@ -55,6 +133,8 @@ impl Demo {
         let highlight_angle_deg = menu.settings.center_indicator.highlight_angle.to_degrees();
 
         Self {
+            lang: 0,
+            font_note: String::new(),
             menu,
             menu_open: false,
             last_action: "Right-click anywhere to open the menu.".to_string(),
@@ -603,6 +683,21 @@ impl eframe::App for Demo {
                                 });
                             });
                     }
+                });
+
+                section(ui, &query, &mut shown, "Language / RTL", "language rtl right to left mirror hebrew arabic russian unicode", |ui| {
+                    let mut changed = false;
+                    egui::ComboBox::from_id_salt("lang")
+                        .selected_text(LANGS[self.lang].name)
+                        .show_ui(ui, |ui| {
+                            for (i, l) in LANGS.iter().enumerate() {
+                                changed |= ui.selectable_value(&mut self.lang, i, l.name).changed();
+                            }
+                        });
+                    if changed { self.apply_language(); }
+                    ui.checkbox(&mut self.menu.settings.mirror_horizontal, "Mirror layout (RTL)");
+                    ui.label(RichText::new("egui has no bidi: keep each label single-script.").small());
+                    if !self.font_note.is_empty() { ui.label(RichText::new(&self.font_note).small()); }
                 });
 
                 section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc", |ui| {
