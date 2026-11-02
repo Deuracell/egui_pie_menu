@@ -189,11 +189,15 @@ impl Default for PieMenuInput {
 /// How the buttons appear when the menu is revealed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RevealAnimation {
-    /// No custom animation (egui's default area fade applies).
+    /// No animation: buttons appear instantly.
     None,
-    /// Buttons fade in over [`PieMenuAnimations::reveal_duration`].
+    /// Buttons fade in linearly over [`PieMenuAnimations::reveal_duration`]. The default;
+    /// with the default 200 ms it matches egui's own area fade.
     Fade,
-    /// Buttons slide out from the centre to their positions while fading in.
+    /// Buttons slide out to their positions over [`PieMenuAnimations::reveal_duration`].
+    /// Where they start is set by [`PieMenuAnimations::slide_start_radius`] and
+    /// [`PieMenuAnimations::slide_start_shape_factor`]; the fade while sliding by
+    /// [`PieMenuAnimations::slide_fade`].
     SlideOut,
 }
 
@@ -201,8 +205,20 @@ pub enum RevealAnimation {
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
     pub reveal: RevealAnimation,
-    /// Duration of the reveal animation.
+    /// Duration of the [`RevealAnimation::Fade`] and [`RevealAnimation::SlideOut`] animations.
     pub reveal_duration: Duration,
+    /// [`RevealAnimation::SlideOut`]: layout radius (px) the buttons start from.
+    /// `0.0` starts them at the centre; values above
+    /// [`PieMenuSettings::layout_radius`] make them slide inward.
+    pub slide_start_radius: f32,
+    /// [`RevealAnimation::SlideOut`]: shape factor the layout starts with, blended to
+    /// [`PieMenuSettings::shape_factor`] during the slide (e.g. `-1.0` slides a diamond
+    /// out into whatever the final shape is). `None` keeps the final shape throughout.
+    pub slide_start_shape_factor: Option<f32>,
+    /// [`RevealAnimation::SlideOut`]: fade the buttons in over this duration while they
+    /// slide (it may be shorter or longer than the slide). `None` keeps them fully
+    /// opaque from the start.
+    pub slide_fade: Option<Duration>,
     /// Snap the highlight to the nearest button direction instead of following the mouse.
     pub center_highlight_snapping: bool,
     /// Whether to draw the center highlight at all.
@@ -212,8 +228,11 @@ pub struct PieMenuAnimations {
 impl Default for PieMenuAnimations {
     fn default() -> Self {
         Self {
-            reveal: RevealAnimation::None,
-            reveal_duration: Duration::from_millis(150),
+            reveal: RevealAnimation::Fade,
+            reveal_duration: Duration::from_millis(200),
+            slide_start_radius: 0.0,
+            slide_start_shape_factor: None,
+            slide_fade: Some(Duration::from_millis(200)),
             center_highlight_snapping: false,
             center_highlight_show: true,
         }
