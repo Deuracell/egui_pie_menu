@@ -243,6 +243,16 @@ menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
+### Sub-pies
+
+```rust
+// Selecting a button with children opens them. Backspace or a click on the centre goes back.
+// Inside the render closure use `menu.current_buttons(&root)` for labels; after `Selected`,
+// `menu.selected_path()` is the full route to the leaf.
+// Mnemonics are computed per level: `menu.mnemonics(menu.current_buttons(&root))`.
+let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */])];
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
