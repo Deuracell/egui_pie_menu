@@ -151,12 +151,19 @@ fn default_button_configs() -> Vec<ButtonConfig> {
 
 /// Builds the menu's buttons from the editor. The menu resolves the mnemonics itself.
 fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
+    // The menu asserts (debug builds) on two buttons sharing a key, and the editor lets
+    // you type any letter, so a repeated explicit key falls back to Auto here.
+    let mut used: Vec<char> = Vec::new();
     configs.iter().enumerate()
         .map(|(i, c)| {
             let b = PieButton::new(direction(i)).with_label(c.label.clone()).with_enabled(c.enabled);
             match (c.mnemonic, c.key.chars().next()) {
                 (MnemonicMode::Auto, _)       => b,
-                (MnemonicMode::Key, Some(k))  => b.with_mnemonic(k),
+                (MnemonicMode::Key, Some(k)) if !used.contains(&k.to_ascii_lowercase()) => {
+                    used.push(k.to_ascii_lowercase());
+                    b.with_mnemonic(k)
+                }
+                (MnemonicMode::Key, Some(_))  => b, // duplicate key: Auto
                 // Key mode with no letter typed yet behaves like None.
                 (MnemonicMode::Key, None) | (MnemonicMode::None, _) => b.without_mnemonic(),
             }
@@ -584,11 +591,9 @@ impl eframe::App for Demo {
                     }
                 });
 
-                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc empty sectors", |ui| {
+                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc", |ui| {
                     ui.checkbox(&mut self.pinned, "Pin menu at center");
                     ui.label("While pinned, press Esc to unpin.");
-                    ui.checkbox(&mut self.menu.settings.input.ignore_empty_sectors, "Ignore empty sectors")
-                        .on_hover_text("Pointing at a direction with no button selects nothing");
                 });
 
                 if shown == 0 {

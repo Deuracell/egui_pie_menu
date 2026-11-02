@@ -242,18 +242,21 @@ menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
-### Disabled buttons, empty sectors, hover query
+### Disabled buttons and hover query
 
 ```rust
 PieButton::new(PieDirection::North).with_label("Cut").with_enabled(false)
 // skipped by mouse, number keys and mnemonics; no generated mnemonic.
 // In the render closure `b.enabled` tells you to grey it out.
 
-menu.settings.input.ignore_empty_sectors = true; // pointing at a direction with no button selects nothing
 menu.hovered(); // Option<usize>: the currently highlighted button
 ```
 
+Pointing at a direction with no (enabled) button snaps to the closest available one.
+
 Number keys are consumed by the menu, so the digit does not also reach other handlers or text fields.
+
+In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
 
 ### Highlight shapes
 
