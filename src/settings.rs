@@ -58,6 +58,7 @@ pub enum PieMenuHighlightShape {
 }
 
 /// Appearance of the center indicator (background circle + directional highlight).
+#[derive(Clone, Debug)]
 pub struct PieMenuCenterIndicatorSettings {
     /// Radius of the static background circle. Set to [`f32::NAN`] to disable.
     pub background_radius: SmartFloat<f32>,
@@ -98,6 +99,7 @@ impl Default for PieMenuCenterIndicatorSettings {
 }
 
 /// Appearance of the optional title label shown above the center indicator.
+#[derive(Clone, Debug)]
 pub struct PieMenuLabelSettings {
     /// Whether to show the title. The title string is passed to [`crate::PieMenu::show`].
     pub display: bool,
@@ -132,6 +134,7 @@ impl Default for PieMenuLabelSettings {
 }
 
 /// Uniform or per-side inner padding in logical pixels.
+#[derive(Clone, Debug)]
 pub struct Padding {
     pub top: f32,
     pub right: f32,
@@ -164,6 +167,7 @@ pub enum ShowBehavior {
 }
 
 /// Input and dismissal behaviour.
+#[derive(Clone, Debug)]
 pub struct PieMenuInput {
     /// Allow number keys 1–9 (numpad or number row; egui does not distinguish them) to activate buttons by direction.
     pub use_numpad_keys: bool,
@@ -219,6 +223,7 @@ pub enum RevealAnimation {
 }
 
 /// Small digit hints (the number key that selects each button) drawn beside buttons.
+#[derive(Clone, Debug)]
 pub struct PieMenuNumberHints {
     /// Draw the hints. Only has an effect when [`PieMenuInput::use_numpad_keys`] is on.
     pub show: bool,
@@ -255,6 +260,7 @@ impl Default for PieMenuNumberHints {
 }
 
 /// Animation / highlight behaviour.
+#[derive(Clone, Debug)]
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
     pub reveal: RevealAnimation,
@@ -278,6 +284,7 @@ impl Default for PieMenuAnimations {
 }
 
 /// Top-level settings for a [`crate::PieMenu`].
+#[derive(Clone, Debug)]
 pub struct PieMenuSettings {
     /// Distance from the menu centre to the inner edge of each button, in logical pixels.
     pub layout_radius: f32,

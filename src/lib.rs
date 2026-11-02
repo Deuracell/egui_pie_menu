@@ -18,6 +18,7 @@ use highlight_shapes::{ArcValues, CircleValues, HighlightPainter, SliceValues};
 /// Only defines *where* the button sits (`direction`) and an optional keyboard
 /// mnemonic. All visual content is rendered by the caller via the closure
 /// passed to [`PieMenu::show`].
+#[derive(Clone, Debug)]
 pub struct PieButton {
     /// Which of the eight directions this button occupies.
     pub direction: PieDirection,
@@ -161,6 +162,7 @@ pub fn assign_mnemonics(buttons: &mut [PieButton], labels: &[&str]) {
 }
 
 /// Outcome of a [`PieMenu::show`] call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieMenuResponse {
     /// A button was activated; value is its index in the slice passed to `show`.
     Selected(usize),
@@ -1280,6 +1282,18 @@ mod selection_tests {
     fn mirror_applies_to_picking() {
         let b = btns();
         assert_eq!(PieMenu::pick_button(&b, Vec2::new(10.0, 0.0), 0.0, true, false), Some(0));
+    }
+
+    #[test]
+    fn arc_points_are_finite_for_degenerate_input() {
+        use crate::highlight_shapes::HighlightPainter;
+        let ctx = egui::Context::default();
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let c = Pos2::ZERO;
+        assert!(painter.arc_calculate_points(c, f32::NAN, 10.0, 0.0..1.0).is_empty());
+        for p in painter.arc_calculate_points(c, 15.0, 10.0, 1.0..1.0) {
+            assert!(p.x.is_finite() && p.y.is_finite());
+        }
     }
 
     #[test]

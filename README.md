@@ -239,6 +239,8 @@ menu.settings.input.ignore_empty_sectors = true; // pointing at a direction with
 menu.hovered(); // Option<usize>: the currently highlighted button
 ```
 
+Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN`/disabled radius, zero-width strokes or arcs) no longer panic.
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
