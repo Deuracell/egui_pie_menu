@@ -22,10 +22,9 @@ struct Demo {
     highlight_radius: f32,
     highlight_angle_deg: f32,
 
+    // Button editor: the source of truth; `buttons` is rebuilt from it every frame.
+    button_configs: Vec<ButtonConfig>,
     buttons: Vec<PieButton>,
-
-    // State for the checkbox button slot
-    word_wrap: bool,
 
     // Mirror for show threshold slider (only active in OnMovement mode)
     show_threshold: f32,
@@ -46,18 +45,11 @@ struct Demo {
 
 impl Demo {
     fn new() -> Self {
-        let buttons = vec![
-            PieButton::new(PieDirection::North)    .with_mnemonic('c'),
-            PieButton::new(PieDirection::NorthEast).with_mnemonic('p'),
-            PieButton::new(PieDirection::East)     .with_mnemonic('r'),
-            PieButton::new(PieDirection::SouthEast).with_mnemonic('s'),
-            PieButton::new(PieDirection::South)    .with_mnemonic('d'),
-            PieButton::new(PieDirection::SouthWest).with_mnemonic('t'),
-            PieButton::new(PieDirection::West)     .with_mnemonic('u'),
-            PieButton::new(PieDirection::NorthWest),
-        ];
+        let button_configs = default_button_configs();
+        let buttons = build_buttons(&button_configs);
 
-        let menu = PieMenu::new();
+        let mut menu = PieMenu::new();
+        menu.settings.input.auto_mnemonics = true; // so "Auto" buttons get a letter
         let bg_radius = menu.settings.center_indicator.background_radius.get();
         let highlight_radius = menu.settings.center_indicator.highlight_radius.get();
         let highlight_angle_deg = menu.settings.center_indicator.highlight_angle.to_degrees();
@@ -70,8 +62,8 @@ impl Demo {
             bg_radius,
             highlight_radius,
             highlight_angle_deg,
+            button_configs,
             buttons,
-            word_wrap: false,
             show_threshold: DEFAULT_SHOW_THRESHOLD,
             search: String::new(),
             slide_start_shape: DEFAULT_SLIDE_START_SHAPE,
@@ -87,27 +79,87 @@ impl Demo {
 const DEFAULT_SHOW_THRESHOLD: f32 = 10.0;
 const DEFAULT_SLIDE_START_SHAPE: f32 = -1.0; // start the slide as a diamond
 
-const LABELS: &[&str] = &[
-    "Copy", "Paste Special", "Redo", "Save As…",
-    "Delete Permanently", "Cut", "Undo Last Change", "Word wrap",
-];
+// ── Button editor model ─────────────────────────────────────────────────────
 
-const COLORS: &[Color32] = &[
-    Color32::from_rgb( 70, 130, 180),
-    Color32::from_rgb( 70, 130, 180),
-    Color32::from_rgb(100, 160, 100),
-    Color32::from_rgb(180, 140,  60),
-    Color32::from_rgb(180,  70,  70),
-    Color32::from_rgb(180, 100,  60),
-    Color32::from_rgb(100, 160, 100),
-    Color32::from_rgb(130,  90, 180),
-];
+#[derive(Clone, Copy, PartialEq)]
+enum ButtonKind {
+    Button,
+    Checkbox,
+}
 
-// Keyboard shortcut hints shown in tooltips
-const TOOLTIPS: &[&str] = &[
-    "Ctrl+C", "Ctrl+Shift+V", "Ctrl+Y", "Ctrl+Shift+S",
-    "Del", "Ctrl+X", "Ctrl+Z", "",
-];
+/// Editor-side mnemonic choice; `Key` takes its letter from `ButtonConfig::key`.
+#[derive(Clone, Copy, PartialEq)]
+enum MnemonicMode {
+    /// Follow the menu's "Auto mnemonics" setting (`Mnemonic::Auto`).
+    Auto,
+    /// Explicit letter (`Mnemonic::Key`).
+    Key,
+    /// Never a mnemonic (`Mnemonic::None`).
+    None,
+}
+
+#[derive(Clone)]
+struct ButtonConfig {
+    label: String,
+    /// Optional icon (e.g. an emoji) shown before the label.
+    icon: String,
+    tooltip: String,
+    kind: ButtonKind,
+    mnemonic: MnemonicMode,
+    /// The explicit mnemonic letter when `mnemonic` is `Key`.
+    key: String,
+    color: Color32,
+    /// Checkbox state when `kind` is `Checkbox`.
+    checked: bool,
+}
+
+const DIR_NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+
+fn direction(i: usize) -> PieDirection {
+    [
+        PieDirection::North, PieDirection::NorthEast, PieDirection::East, PieDirection::SouthEast,
+        PieDirection::South, PieDirection::SouthWest, PieDirection::West, PieDirection::NorthWest,
+    ][i].clone()
+}
+
+/// The demo's standard buttons (one per direction, N clockwise to NW).
+fn default_button_configs() -> Vec<ButtonConfig> {
+    let b = |label: &str, icon: &str, tooltip: &str, key: Option<char>, (r, g, bl): (u8, u8, u8)| ButtonConfig {
+        label: label.into(),
+        icon: icon.into(),
+        tooltip: tooltip.into(),
+        kind: ButtonKind::Button,
+        mnemonic: if key.is_some() { MnemonicMode::Key } else { MnemonicMode::Auto },
+        key: key.map(String::from).unwrap_or_default(),
+        color: Color32::from_rgb(r, g, bl),
+        checked: false,
+    };
+    vec![
+        b("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
+        b("Paste Special",      "",   "Ctrl+Shift+V", Some('p'), ( 70, 130, 180)),
+        b("Redo",               "",   "Ctrl+Y",       Some('r'), (100, 160, 100)),
+        b("Save As…",           "",   "Ctrl+Shift+S", Some('s'), (180, 140,  60)),
+        b("Delete Permanently", "🗑", "Del",          Some('d'), (180,  70,  70)),
+        b("Cut",                "",   "Ctrl+X",       Some('t'), (180, 100,  60)),
+        b("Undo Last Change",   "",   "Ctrl+Z",       Some('u'), (100, 160, 100)),
+        ButtonConfig { kind: ButtonKind::Checkbox, ..b("Word wrap", "", "", None, (130, 90, 180)) },
+    ]
+}
+
+/// Builds the menu's buttons from the editor. The menu resolves the mnemonics itself.
+fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
+    configs.iter().enumerate()
+        .map(|(i, c)| {
+            let b = PieButton::new(direction(i)).with_label(c.label.clone());
+            match (c.mnemonic, c.key.chars().next()) {
+                (MnemonicMode::Auto, _)       => b,
+                (MnemonicMode::Key, Some(k))  => b.with_mnemonic(k),
+                // Key mode with no letter typed yet behaves like None.
+                (MnemonicMode::Key, None) | (MnemonicMode::None, _) => b.without_mnemonic(),
+            }
+        })
+        .collect()
+}
 
 const ALL_REVEALS: &[RevealAnimation] = &[
     RevealAnimation::None,
@@ -223,6 +275,8 @@ impl eframe::App for Demo {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let d = PieMenuSettings::default(); // defaults for the reset buttons
+        self.buttons = build_buttons(&self.button_configs);
+        let mnemonics = self.menu.mnemonics(&self.buttons); // keys in effect, for editor + render
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             // ── Search ───────────────────────────────────────────────
             ui.add_space(4.0);
@@ -457,10 +511,74 @@ impl eframe::App for Demo {
                     });
                 });
 
-                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc word wrap", |ui| {
+                section(ui, &query, &mut shown, "Buttons",
+                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color", |ui| {
+                    ui.checkbox(&mut self.menu.settings.input.auto_mnemonics, "Auto mnemonics")
+                        .on_hover_text("Generate mnemonics from labels for buttons set to Auto");
+                    if ui.button("Reset buttons").clicked() {
+                        self.button_configs = default_button_configs();
+                    }
+                    for (i, cfg) in self.button_configs.iter_mut().enumerate() {
+                        let assigned = mnemonics[i];
+                        egui::CollapsingHeader::new(format!("{} · {}", DIR_NAMES[i], cfg.label))
+                            .id_salt(("button_cfg", i))
+                            .show(ui, |ui| {
+                                egui::Grid::new(("button_grid", i)).num_columns(2).show(ui, |ui| {
+                                    ui.label("Label");
+                                    ui.add(egui::TextEdit::singleline(&mut cfg.label).desired_width(130.0));
+                                    ui.end_row();
+
+                                    ui.label("Icon");
+                                    ui.add(egui::TextEdit::singleline(&mut cfg.icon).desired_width(40.0))
+                                        .on_hover_text("Shown before the label, e.g. an emoji");
+                                    ui.end_row();
+
+                                    ui.label("Tooltip");
+                                    ui.add(egui::TextEdit::singleline(&mut cfg.tooltip).desired_width(130.0));
+                                    ui.end_row();
+
+                                    ui.label("Kind");
+                                    ui.horizontal(|ui| {
+                                        ui.radio_value(&mut cfg.kind, ButtonKind::Button, "Button");
+                                        ui.radio_value(&mut cfg.kind, ButtonKind::Checkbox, "Checkbox");
+                                    });
+                                    ui.end_row();
+
+                                    ui.label("Mnemonic");
+                                    ui.horizontal(|ui| {
+                                        egui::ComboBox::from_id_salt(("mnemonic_mode", i))
+                                            .width(60.0)
+                                            .selected_text(match cfg.mnemonic {
+                                                MnemonicMode::Auto => "Auto",
+                                                MnemonicMode::Key  => "Key",
+                                                MnemonicMode::None => "None",
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::Auto, "Auto")
+                                                    .on_hover_text("Follow the menu's Auto mnemonics setting");
+                                                ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::Key, "Key");
+                                                ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::None, "None");
+                                            });
+                                        if cfg.mnemonic == MnemonicMode::Key {
+                                            ui.add(egui::TextEdit::singleline(&mut cfg.key).char_limit(1).desired_width(16.0));
+                                        }
+                                        let got = assigned.map_or("none".to_string(), |c| c.to_string());
+                                        ui.label(RichText::new(format!("→ {got}")).weak())
+                                            .on_hover_text("The mnemonic this button actually has");
+                                    });
+                                    ui.end_row();
+
+                                    ui.label("Colour");
+                                    ui.color_edit_button_srgba(&mut cfg.color);
+                                    ui.end_row();
+                                });
+                            });
+                    }
+                });
+
+                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc", |ui| {
                     ui.checkbox(&mut self.pinned, "Pin menu at center");
                     ui.label("While pinned, press Esc to unpin.");
-                    ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
                 });
 
                 if shown == 0 {
@@ -507,21 +625,35 @@ impl eframe::App for Demo {
 
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, idx, hovered| {
-                        let label = LABELS[idx];
-                        let color = COLORS[idx];
+                        let cfg = &self.button_configs[idx];
                         let (bg, fg) = if hovered {
-                            (color, Color32::WHITE)
+                            (cfg.color, Color32::WHITE)
                         } else {
-                            (color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
+                            (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
                         };
                         // Hint digit in a dimmed version of the label colour unless overridden.
                         let hint = inside_hints[idx].as_ref().map(|h| {
                             (RichText::new(&h.text).color(hint_color.unwrap_or(fg.gamma_multiply(0.55))), h.on_right)
                         });
 
-                        // NW slot (idx 7): checkbox — display only, toggle happens on Selected(7)
-                        if idx == 7 {
-                            egui::Frame::new()
+                        // Icon + label, with the mnemonic underlined.
+                        let shown_text = if cfg.icon.is_empty() {
+                            cfg.label.clone()
+                        } else {
+                            format!("{}  {}", cfg.icon, cfg.label)
+                        };
+                        let text: egui::WidgetText = match mnemonics[idx] {
+                            Some(m) => mnemonic_text(&shown_text, m, TextFormat {
+                                color: fg,
+                                font_id: ui.style().text_styles[&egui::TextStyle::Body].clone(),
+                                ..Default::default()
+                            }).into(),
+                            None => RichText::new(shown_text).color(fg).into(),
+                        };
+
+                        let resp = match cfg.kind {
+                            // Display only: the toggle happens on Selected.
+                            ButtonKind::Checkbox => egui::Frame::new()
                                 .fill(bg)
                                 .corner_radius(6.0)
                                 .inner_margin(Vec2::new(10.0, 5.0))
@@ -529,43 +661,30 @@ impl eframe::App for Demo {
                                     ui.spacing_mut().item_spacing.x = hint_gap;
                                     ui.horizontal(|ui| {
                                         if let Some((h, false)) = &hint { ui.label(h.clone()); }
-                                        let mut display = self.word_wrap;
-                                        ui.checkbox(&mut display, RichText::new(label).color(fg));
+                                        let mut display = cfg.checked;
+                                        ui.checkbox(&mut display, text);
                                         if let Some((h, true)) = &hint { ui.label(h.clone()); }
                                     });
-                                });
-                            return;
-                        }
-
-                        // South slot (idx 4): icon button — verify egui::Button works inside an Area
-                        if idx == 4 {
-                            ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
-                            let btn = hint_button(RichText::new(format!("🗑  {label}")).color(fg), hint, hint_gap)
-                                .fill(bg).corner_radius(6.0);
-                            ui.add(btn).on_hover_text(TOOLTIPS[idx]);
-                            return;
-                        }
-
-                        // All other slots: mnemonic label with tooltip
-                        ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
-                        let text: egui::WidgetText = if let Some(mnemonic) = self.buttons[idx].mnemonic {
-                            mnemonic_text(label, mnemonic, TextFormat {
-                                color: fg,
-                                font_id: ui.style().text_styles[&egui::TextStyle::Body].clone(),
-                                ..Default::default()
-                            }).into()
-                        } else {
-                            RichText::new(label).color(fg).into()
+                                })
+                                .response,
+                            ButtonKind::Button => {
+                                ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
+                                ui.add(hint_button(text, hint, hint_gap).fill(bg).corner_radius(6.0))
+                            }
                         };
-                        let resp = ui.add(hint_button(text, hint, hint_gap).fill(bg).corner_radius(6.0));
-                        if !TOOLTIPS[idx].is_empty() {
-                            resp.on_hover_text(TOOLTIPS[idx]);
+                        if !cfg.tooltip.is_empty() {
+                            resp.on_hover_text(&cfg.tooltip);
                         }
                     })
                 {
                     PieMenuResponse::Selected(idx) => {
-                        if idx == 7 { self.word_wrap = !self.word_wrap; }
-                        self.last_action = format!("Selected: {}", LABELS[idx]);
+                        let cfg = &mut self.button_configs[idx];
+                        self.last_action = if cfg.kind == ButtonKind::Checkbox {
+                            cfg.checked = !cfg.checked;
+                            format!("Selected: {} ({})", cfg.label, if cfg.checked { "on" } else { "off" })
+                        } else {
+                            format!("Selected: {}", cfg.label)
+                        };
                         if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::Dismissed => {

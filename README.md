@@ -23,7 +23,9 @@ The crate is not published on crates.io. Depend on it through git and pin a rele
 egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", tag = "v0.36.0" }
 ```
 
-Release tags mirror the egui version they target:
+Release tags mirror the egui version they target: the minor version tracks egui (`0.36.x` targets egui 0.36).
+
+> **Until 1.0, patch releases may contain breaking changes** — the minor version is reserved for the egui version. Read the commit log or release notes before moving to a newer tag. Since the crate is pinned by git tag, nothing updates without you changing the tag.
 
 | Tag | egui / eframe |
 |---|---|
@@ -36,20 +38,28 @@ Release tags mirror the egui version they target:
 
 ### 1. Define buttons once
 
-Buttons carry a direction and an optional mnemonic key. Visual content is provided by a closure at render time.
+Buttons carry a direction, a label and a mnemonic setting. Visual content is provided by a closure at render time; the label is only used to generate mnemonics.
 
 ```rust
 use egui_pie_menu::{PieButton, PieDirection};
 
 let buttons = vec![
-    PieButton::new(PieDirection::North).with_mnemonic('c'),
-    PieButton::new(PieDirection::East).with_mnemonic('r'),
-    PieButton::new(PieDirection::South).with_mnemonic('d'),
-    PieButton::new(PieDirection::West).with_mnemonic('u'),
+    PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c'), // explicit key
+    PieButton::new(PieDirection::East).with_label("Redo"),                     // Auto (follows the menu)
+    PieButton::new(PieDirection::South).with_label("Delete").without_mnemonic(), // never one
+    PieButton::new(PieDirection::West).with_label("Undo"),
 ];
 ```
 
-To generate mnemonics automatically (opt-in), call `assign_mnemonics(&mut buttons, &labels)` once, or whenever labels change. Explicit `with_mnemonic` keys are never altered and are reserved, so generated ones never duplicate them; all buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials. Only a button with no possible letter gets none.
+Each button's `mnemonic` is a `Mnemonic`:
+
+| Value | Meaning |
+|---|---|
+| `Mnemonic::Auto` (default) | Follows the menu: generated from the label when `menu.settings.input.auto_mnemonics` is on, otherwise none. |
+| `Mnemonic::Key(c)` (`with_mnemonic`) | This key, case-insensitive. Reserved, so generated mnemonics never duplicate it. |
+| `Mnemonic::None` (`without_mnemonic`) | Never has a mnemonic, even with auto mnemonics on. |
+
+With `auto_mnemonics` on (off by default), all `Auto` buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials, then the remaining letters left to right. Only a button with no possible letter gets none. Generated letters can move when other buttons or labels change (a button may give up its letter so another one gets any at all), so **if a particular letter matters, set it with `with_mnemonic`**. Use `menu.mnemonics(&buttons)` to get the keys in effect for rendering.
 
 Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. Duplicate mnemonics produce a warning on stderr in debug builds.
 
@@ -84,13 +94,15 @@ use egui::Color32;
 if self.menu_open {
     let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
     let key_down = ctx.input(|i| i.pointer.secondary_down());
+    // Keys in effect (explicit + generated). Fetch before `show`, which borrows the menu.
+    let mnemonics = self.menu.mnemonics(&buttons);
 
     match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"),
         |ui, idx, hovered| {
-            let label = ["Copy", "Redo", "Delete", "Undo"][idx];
+            let label = &buttons[idx].label;
             let color = if hovered { Color32::WHITE } else { Color32::LIGHT_GRAY };
             // mnemonic_text underlines the mnemonic character in the label
-            if let Some(c) = buttons[idx].mnemonic {
+            if let Some(c) = mnemonics[idx] {
                 ui.label(mnemonic_text(label, c, TextFormat {
                     color,
                     font_id: FontId::default(),
@@ -195,6 +207,7 @@ menu.settings.label.text_color = Color32::LIGHT_GRAY;
 // Input
 menu.settings.input.use_numpad_keys    = true;
 menu.settings.input.use_mnemonic_keys  = true;
+menu.settings.input.auto_mnemonics     = true;   // generate keys for Mnemonic::Auto buttons (default false)
 menu.settings.input.double_tap_window  = Duration::from_millis(400);
 ```
 
