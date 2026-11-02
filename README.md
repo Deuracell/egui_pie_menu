@@ -59,7 +59,7 @@ Each button's `mnemonic` is a `Mnemonic`:
 | `Mnemonic::Key(c)` (`with_mnemonic`) | This key, case-insensitive. Reserved, so generated mnemonics never duplicate it. |
 | `Mnemonic::None` (`without_mnemonic`) | Never has a mnemonic, even with auto mnemonics on. |
 
-With `auto_mnemonics` on (off by default), all `Auto` buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials, then the remaining letters left to right. Only a button with no possible letter gets none. Generated letters can move when other buttons or labels change (a button may give up its letter so another one gets any at all), so **if a particular letter matters, set it with `with_mnemonic`**. Use `menu.mnemonics(&buttons)` to get the keys in effect for rendering.
+With `auto_mnemonics` on (off by default), all `Auto` buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials, then the remaining letters left to right. Only a button with no possible letter gets none. Generated letters can move when other buttons or labels change (a button may give up its letter so another one gets any at all), so **if a particular letter matters, set it with `with_mnemonic`**. The keys in effect are on the `ButtonView` in the render closure (`b.mnemonic`), or from `menu.mnemonics(&buttons)` outside it.
 
 Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. Duplicate mnemonics produce a warning on stderr in debug builds.
 
@@ -88,31 +88,19 @@ if ctx.input(|i| i.pointer.secondary_pressed()) {
 ### 3. Call `show` every frame
 
 ```rust
-use egui_pie_menu::{mnemonic_text, FontId, PieMenuResponse, TextFormat};
+use egui_pie_menu::PieMenuResponse;
 use egui::Color32;
 
 if self.menu_open {
     let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
     let key_down = ctx.input(|i| i.pointer.secondary_down());
-    // Keys in effect (explicit + generated). Fetch before `show`, which borrows the menu.
-    let mnemonics = self.menu.mnemonics(&buttons);
 
-    match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"),
-        |ui, idx, hovered| {
-            let label = &buttons[idx].label;
-            let color = if hovered { Color32::WHITE } else { Color32::LIGHT_GRAY };
-            // mnemonic_text underlines the mnemonic character in the label
-            if let Some(c) = mnemonics[idx] {
-                ui.label(mnemonic_text(label, c, TextFormat {
-                    color,
-                    font_id: FontId::default(),
-                    ..Default::default()
-                }));
-            } else {
-                ui.label(label);
-            }
-        })
-    {
+    match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"), |ui, b| {
+        // `b` is a `ButtonView`: index, hover state, resolved mnemonic and number hint.
+        let color = if b.hovered { Color32::WHITE } else { Color32::LIGHT_GRAY };
+        // The label comes from the button; its mnemonic (if any) is underlined.
+        ui.label(b.label_text().color(color));
+    }) {
         PieMenuResponse::Selected(idx) => {
             println!("selected button {idx}");
             self.menu_open = false;
@@ -125,6 +113,17 @@ if self.menu_open {
 }
 ```
 
+The render closure receives a `ButtonView` (nothing to precompute before `show`):
+
+| Field / method | Meaning |
+|---|---|
+| `b.idx` | Index within the level shown (what `Selected(idx)` returns) |
+| `b.hovered` | The pointer highlights this button |
+| `b.button` | The `&PieButton` (label, direction, …) |
+| `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
+| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off or when `number_hints.show` makes the menu paint it beside the button |
+| `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour and font follow the egui style; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
+
 `show` signature:
 
 ```rust
@@ -135,7 +134,7 @@ pub fn show(
     current_mouse_pos: Option<Pos2>,
     key_down: bool,                          // true while the hotkey that opened the menu is held
     title: Option<&str>,                     // label shown above the center indicator
-    render_button: impl FnMut(&mut Ui, usize, bool), // (ui, index, is_hovered)
+    render_button: impl FnMut(&mut Ui, &ButtonView),  // (ui, view of the button)
 ) -> PieMenuResponse
 ```
 
@@ -157,7 +156,7 @@ pub fn show(
 
 ## Mnemonic labels
 
-`mnemonic_text` builds an egui `LayoutJob` that renders a string with the mnemonic character underlined. Pass it directly to `ui.label()`.
+In the render closure use `ui.label(b.label_text())` (see above). For full control, `mnemonic_text` builds an egui `LayoutJob` that renders a string with the mnemonic character underlined. Pass it directly to `ui.label()`.
 
 ```rust
 use egui_pie_menu::{mnemonic_text, FontId, TextFormat};
@@ -225,11 +224,11 @@ menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade
 ### Number hints
 
 ```rust
-// Inside your button (it grows to fit): get the hint before `show`, use it in the closure.
-let hints: Vec<_> = buttons.iter().map(|b| menu.number_hint(b)).collect();
+// Inside your button (it grows to fit): use `b.number_hint` in the render closure.
 let hint_gap = menu.settings.number_hints.spacing;
 // … in the render closure:
-// let btn = match &hints[idx] {
+// let label = b.label_text();
+// let btn = match &b.number_hint {
 //     Some(h) if h.on_right => egui::Button::new((label, h.text.as_str())),
 //     Some(h)               => egui::Button::new((h.text.as_str(), label)),
 //     None                  => egui::Button::new(label),

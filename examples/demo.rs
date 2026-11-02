@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintSide, NumberHint, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat, TextFormat};
+use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -614,17 +614,15 @@ impl eframe::App for Demo {
                 let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
                 let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
 
-                // Number hints inside the buttons are fetched before `show`, which borrows the
-                // menu mutably; "beside" mode lets the menu paint them itself.
+                // "Beside" mode lets the menu paint the hints itself; "inside" mode draws
+                // them from `b.number_hint` in the closure below.
                 self.menu.settings.number_hints.show = self.show_hints && !self.hints_inside;
-                let inside_hints: Vec<Option<NumberHint>> = self.buttons.iter()
-                    .map(|b| if self.show_hints && self.hints_inside { self.menu.number_hint(b) } else { None })
-                    .collect();
                 let hint_gap = self.menu.settings.number_hints.spacing;
                 let hint_color = self.menu.settings.number_hints.color;
 
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
-                    |ui, idx, hovered| {
+                    |ui, b| {
+                        let (idx, hovered) = (b.idx, b.hovered);
                         let cfg = &self.button_configs[idx];
                         let (bg, fg) = if hovered {
                             (cfg.color, Color32::WHITE)
@@ -632,24 +630,17 @@ impl eframe::App for Demo {
                             (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
                         };
                         // Hint digit in a dimmed version of the label colour unless overridden.
-                        let hint = inside_hints[idx].as_ref().map(|h| {
+                        let inside = self.show_hints && self.hints_inside;
+                        let hint = b.number_hint.as_ref().filter(|_| inside).map(|h| {
                             (RichText::new(&h.text).color(hint_color.unwrap_or(fg.gamma_multiply(0.55))), h.on_right)
                         });
 
                         // Icon + label, with the mnemonic underlined.
-                        let shown_text = if cfg.icon.is_empty() {
-                            cfg.label.clone()
-                        } else {
-                            format!("{}  {}", cfg.icon, cfg.label)
-                        };
-                        let text: egui::WidgetText = match mnemonics[idx] {
-                            Some(m) => mnemonic_text(&shown_text, m, TextFormat {
-                                color: fg,
-                                font_id: ui.style().text_styles[&egui::TextStyle::Body].clone(),
-                                ..Default::default()
-                            }).into(),
-                            None => RichText::new(shown_text).color(fg).into(),
-                        };
+                        let mut label = b.label_text().color(fg);
+                        if !cfg.icon.is_empty() {
+                            label = label.prefix(format!("{}  ", cfg.icon));
+                        }
+                        let text: egui::WidgetText = label.into();
 
                         let resp = match cfg.kind {
                             // Display only: the toggle happens on Selected.
