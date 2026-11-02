@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat, TextFormat};
+use egui_pie_menu::{mnemonic_text, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintSide, NumberHint, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat, TextFormat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -37,6 +37,11 @@ struct Demo {
     slide_start_shape: f32,
     // Mirror for the slide-out fade duration slider (kept while "Fade while sliding" is off)
     slide_fade_ms: u64,
+    // Colour picker value for number hints (kept while "Custom colour" is off)
+    hint_color: Color32,
+    // Number hints on/off, and whether they go inside the buttons or are painted beside
+    show_hints: bool,
+    hints_inside: bool,
 }
 
 impl Demo {
@@ -71,6 +76,9 @@ impl Demo {
             search: String::new(),
             slide_start_shape: DEFAULT_SLIDE_START_SHAPE,
             slide_fade_ms: 200,
+            hint_color: Color32::GRAY,
+            show_hints: false,
+            hints_inside: true,
         }
     }
 }
@@ -162,6 +170,28 @@ fn slider_reset<N: egui::emath::Numeric>(
         changed
     })
     .inner
+}
+
+/// A button with an optional number hint before or after its label (`true` = after),
+/// so the button grows to fit the digit.
+fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)>, gap: f32) -> egui::Button<'static> {
+    let label: egui::WidgetText = label.into();
+    match hint {
+        Some((h, true))  => egui::Button::new((label, h)).gap(gap),
+        Some((h, false)) => egui::Button::new((h, label)).gap(gap),
+        None             => egui::Button::new(label),
+    }
+}
+
+const ALL_HINT_SIDES: &[HintSide] = &[HintSide::Trailing, HintSide::Outside, HintSide::Left, HintSide::Right];
+
+fn hint_side_label(s: HintSide) -> &'static str {
+    match s {
+        HintSide::Trailing => "After label (reading order)",
+        HintSide::Outside => "Outside (away from centre)",
+        HintSide::Left    => "Left",
+        HintSide::Right   => "Right",
+    }
 }
 
 const ALL_SHAPES: &[PieMenuHighlightShape] = &[
@@ -389,8 +419,45 @@ impl eframe::App for Demo {
                     }
                 });
 
-                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc word wrap number hints digits", |ui| {
-                    ui.checkbox(&mut self.menu.settings.number_hints.show, "Show number hints");
+                section(ui, &query, &mut shown, "Number hints",
+                    "number hints digits keys inside beside painted side trailing after outside left right spacing gap color colour", |ui| {
+                    ui.checkbox(&mut self.show_hints, "Show number hints");
+                    ui.add_enabled_ui(self.show_hints, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.hints_inside, true, "Inside button");
+                            ui.radio_value(&mut self.hints_inside, false, "Beside (painted)");
+                        });
+
+                        ui.label("Side");
+                        let current = self.menu.settings.number_hints.side;
+                        egui::ComboBox::from_id_salt("hint_side")
+                            .selected_text(hint_side_label(current))
+                            .show_ui(ui, |ui| {
+                                for &s in ALL_HINT_SIDES {
+                                    ui.selectable_value(&mut self.menu.settings.number_hints.side, s, hint_side_label(s));
+                                }
+                            });
+
+                        ui.label("Spacing (px)");
+                        slider_reset(ui, &mut self.menu.settings.number_hints.spacing,
+                            d.number_hints.spacing, 0.0..=40.0, 0.5);
+
+                        let mut custom = self.menu.settings.number_hints.color.is_some();
+                        if ui.checkbox(&mut custom, "Custom colour")
+                            .on_hover_text("Off: inside uses a dimmed label colour; beside uses egui's weak text colour.")
+                            .changed()
+                        {
+                            self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
+                        }
+                        ui.add_enabled_ui(custom, |ui| {
+                            if ui.color_edit_button_srgba(&mut self.hint_color).changed() {
+                                self.menu.settings.number_hints.color = Some(self.hint_color);
+                            }
+                        });
+                    });
+                });
+
+                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc word wrap", |ui| {
                     ui.checkbox(&mut self.pinned, "Pin menu at center");
                     ui.label("While pinned, press Esc to unpin.");
                     ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
@@ -429,6 +496,15 @@ impl eframe::App for Demo {
                 let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
                 let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
 
+                // Number hints inside the buttons are fetched before `show`, which borrows the
+                // menu mutably; "beside" mode lets the menu paint them itself.
+                self.menu.settings.number_hints.show = self.show_hints && !self.hints_inside;
+                let inside_hints: Vec<Option<NumberHint>> = self.buttons.iter()
+                    .map(|b| if self.show_hints && self.hints_inside { self.menu.number_hint(b) } else { None })
+                    .collect();
+                let hint_gap = self.menu.settings.number_hints.spacing;
+                let hint_color = self.menu.settings.number_hints.color;
+
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, idx, hovered| {
                         let label = LABELS[idx];
@@ -438,6 +514,10 @@ impl eframe::App for Demo {
                         } else {
                             (color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
                         };
+                        // Hint digit in a dimmed version of the label colour unless overridden.
+                        let hint = inside_hints[idx].as_ref().map(|h| {
+                            (RichText::new(&h.text).color(hint_color.unwrap_or(fg.gamma_multiply(0.55))), h.on_right)
+                        });
 
                         // NW slot (idx 7): checkbox — display only, toggle happens on Selected(7)
                         if idx == 7 {
@@ -446,8 +526,13 @@ impl eframe::App for Demo {
                                 .corner_radius(6.0)
                                 .inner_margin(Vec2::new(10.0, 5.0))
                                 .show(ui, |ui| {
-                                    let mut display = self.word_wrap;
-                                    ui.checkbox(&mut display, RichText::new(label).color(fg));
+                                    ui.spacing_mut().item_spacing.x = hint_gap;
+                                    ui.horizontal(|ui| {
+                                        if let Some((h, false)) = &hint { ui.label(h.clone()); }
+                                        let mut display = self.word_wrap;
+                                        ui.checkbox(&mut display, RichText::new(label).color(fg));
+                                        if let Some((h, true)) = &hint { ui.label(h.clone()); }
+                                    });
                                 });
                             return;
                         }
@@ -455,9 +540,8 @@ impl eframe::App for Demo {
                         // South slot (idx 4): icon button — verify egui::Button works inside an Area
                         if idx == 4 {
                             ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
-                            let btn = egui::Button::new(
-                                RichText::new(format!("🗑  {label}")).color(fg)
-                            ).fill(bg).corner_radius(6.0);
+                            let btn = hint_button(RichText::new(format!("🗑  {label}")).color(fg), hint, hint_gap)
+                                .fill(bg).corner_radius(6.0);
                             ui.add(btn).on_hover_text(TOOLTIPS[idx]);
                             return;
                         }
@@ -473,7 +557,7 @@ impl eframe::App for Demo {
                         } else {
                             RichText::new(label).color(fg).into()
                         };
-                        let resp = ui.add(egui::Button::new(text).fill(bg).corner_radius(6.0));
+                        let resp = ui.add(hint_button(text, hint, hint_gap).fill(bg).corner_radius(6.0));
                         if !TOOLTIPS[idx].is_empty() {
                             resp.on_hover_text(TOOLTIPS[idx]);
                         }

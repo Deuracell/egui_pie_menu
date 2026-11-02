@@ -203,13 +203,18 @@ pub enum RevealAnimation {
 
 /// Small digit hints (the number key that selects each button) drawn beside buttons.
 pub struct PieMenuNumberHints {
-    /// Draw the hints. Only has an effect when [`PieMenuInput::use_numpad_keys`] is on.
+    /// Have the menu paint the digit *beside* each button. Only has an effect when
+    /// [`PieMenuInput::use_numpad_keys`] is on. To put the digit *inside* your button
+    /// instead (so the button grows to fit it), leave this off and use
+    /// [`crate::PieMenu::number_hint`] in your render closure. `side`, `spacing` and
+    /// `arabic_indic_digits` apply to both; `color` and `font` only to the painted digit.
     pub show: bool,
-    /// Digit colour.
-    pub color: Color32,
+    /// Digit colour. `None` (default) uses egui's weak text colour: a dimmed version of
+    /// the default label colour that follows the light/dark theme.
+    pub color: Option<Color32>,
     /// Digit font.
     pub font: FontId,
-    /// Gap between the digit and the button's outer edge, in logical pixels.
+    /// Gap between the button's edge and the digit, in logical pixels.
     pub spacing: f32,
     /// Which side of the button the digit is drawn on.
     pub side: HintSide,
@@ -220,7 +225,16 @@ pub struct PieMenuNumberHints {
 /// Side of a button on which a number hint is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintSide {
+    /// After the label in reading order (default): right of the button for left-to-right
+    /// text, left of it for right-to-left text.
+    Trailing,
+    /// The side facing away from the centre: right for eastern buttons, left for western
+    /// ones, right for North/South. Based on the displayed position, so it follows a
+    /// mirrored layout.
+    Outside,
+    /// Always on the left.
     Left,
+    /// Always on the right.
     Right,
 }
 
@@ -228,10 +242,10 @@ impl Default for PieMenuNumberHints {
     fn default() -> Self {
         Self {
             show: false,
-            color: Color32::GRAY,
+            color: None,
             font: FontId::proportional(11.0),
-            spacing: 14.0,
-            side: HintSide::Left,
+            spacing: 4.0,
+            side: HintSide::Trailing,
             arabic_indic_digits: false,
         }
     }

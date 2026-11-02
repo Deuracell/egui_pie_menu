@@ -210,8 +210,21 @@ menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade
 ### Number hints
 
 ```rust
-menu.settings.number_hints.show = true;      // gray digit beside each button
-menu.settings.number_hints.side = HintSide::Right;
+// Inside your button (it grows to fit): get the hint before `show`, use it in the closure.
+let hints: Vec<_> = buttons.iter().map(|b| menu.number_hint(b)).collect();
+let hint_gap = menu.settings.number_hints.spacing;
+// … in the render closure:
+// let btn = match &hints[idx] {
+//     Some(h) if h.on_right => egui::Button::new((label, h.text.as_str())),
+//     Some(h)               => egui::Button::new((h.text.as_str(), label)),
+//     None                  => egui::Button::new(label),
+// }.gap(hint_gap);
+
+// Or let the menu paint the digit beside each button:
+menu.settings.number_hints.show = true;
+menu.settings.number_hints.side = HintSide::Trailing;  // default: after the label in reading order; or Outside / Left / Right
+menu.settings.number_hints.spacing = 4.0;              // gap between button and digit (px)
+menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's weak text colour
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
