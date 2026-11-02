@@ -203,6 +203,14 @@ menu.settings.animations.reveal = RevealAnimation::SlideOut;  // or Fade / None 
 menu.settings.animations.reveal_duration = Duration::from_millis(150);
 ```
 
+### Number hints
+
+```rust
+menu.settings.number_hints.show = true;      // gray digit beside each button
+menu.settings.number_hints.side = HintSide::Right;
+menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:

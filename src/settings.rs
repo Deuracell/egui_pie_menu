@@ -197,6 +197,42 @@ pub enum RevealAnimation {
     SlideOut,
 }
 
+/// Small digit hints (the number key that selects each button) drawn beside buttons.
+pub struct PieMenuNumberHints {
+    /// Draw the hints. Only has an effect when [`PieMenuInput::use_numpad_keys`] is on.
+    pub show: bool,
+    /// Digit colour.
+    pub color: Color32,
+    /// Digit font.
+    pub font: FontId,
+    /// Gap between the digit and the button's outer edge, in logical pixels.
+    pub spacing: f32,
+    /// Which side of the button the digit is drawn on.
+    pub side: HintSide,
+    /// Draw Arabic-Indic digits (٠١٢٣…) instead of Western ones.
+    pub arabic_indic_digits: bool,
+}
+
+/// Side of a button on which a number hint is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HintSide {
+    Left,
+    Right,
+}
+
+impl Default for PieMenuNumberHints {
+    fn default() -> Self {
+        Self {
+            show: false,
+            color: Color32::GRAY,
+            font: FontId::proportional(11.0),
+            spacing: 14.0,
+            side: HintSide::Left,
+            arabic_indic_digits: false,
+        }
+    }
+}
+
 /// Animation / highlight behaviour.
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
@@ -244,6 +280,8 @@ pub struct PieMenuSettings {
     pub label: PieMenuLabelSettings,
     /// Highlight animation settings.
     pub animations: PieMenuAnimations,
+    /// Optional number-key hints next to the buttons.
+    pub number_hints: PieMenuNumberHints,
 }
 
 impl Default for PieMenuSettings {
@@ -258,6 +296,7 @@ impl Default for PieMenuSettings {
             center_indicator: PieMenuCenterIndicatorSettings::default(),
             label: PieMenuLabelSettings::default(),
             animations: PieMenuAnimations::default(),
+            number_hints: PieMenuNumberHints::default(),
         }
     }
 }

@@ -251,6 +251,7 @@ impl eframe::App for Demo {
                 // ── Misc ─────────────────────────────────────────────
                 ui.heading("Misc");
                 ui.separator();
+                ui.checkbox(&mut self.menu.settings.number_hints.show, "Show number hints");
                 ui.checkbox(&mut self.pinned, "Pin menu at center");
                 ui.label("While pinned, press Esc to unpin.");
                 ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
