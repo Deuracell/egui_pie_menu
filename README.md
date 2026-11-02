@@ -249,6 +249,13 @@ menu.reveal();                              // visible immediately, regardless o
 menu.settings.block_background = false;     // keep the rest of the UI clickable while it is open
 ```
 
+### Dev tool
+
+```rust
+// Edit settings live in a window and copy generated `menu.settings.… = …;` code.
+egui_pie_menu::dev_tool::show_dev_tool(ctx, &mut open, &mut menu.settings);
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:

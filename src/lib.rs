@@ -10,6 +10,8 @@ pub use utils::common_utils::SmartFloat;
 pub mod settings;
 pub use settings::*;
 
+pub mod dev_tool;
+
 pub(crate) mod highlight_shapes;
 use highlight_shapes::{ArcValues, CircleValues, HighlightPainter, SliceValues};
 
