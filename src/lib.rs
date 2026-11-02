@@ -63,6 +63,16 @@ pub enum PieMenuResponse {
 ///
 /// Owns interaction state but not button content. Construct once, then call
 /// [`PieMenu::show`] every frame with the buttons for the current context.
+/// A number-key hint to draw inside your own button, from [`PieMenu::number_hint`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NumberHint {
+    /// The digit, already converted to Arabic-Indic if that setting is on.
+    pub text: String,
+    /// Whether the digit goes after (right of) the label rather than before it,
+    /// resolved from [`PieMenuNumberHints::side`].
+    pub on_right: bool,
+}
+
 pub struct PieMenu {
     pub id: egui::Id,
     open_time: Instant,
@@ -119,6 +129,45 @@ impl PieMenu {
     pub fn with_settings(mut self, settings: PieMenuSettings) -> Self {
         self.settings = settings;
         self
+    }
+
+    /// The number-key hint for `button`, for drawing inside your own button so the button
+    /// grows to fit it, e.g. `egui::Button::new((label, hint.text)).gap(spacing)`.
+    ///
+    /// Returns `None` when number keys are off. This is independent of
+    /// [`PieMenuNumberHints::show`], which makes the menu paint the digit *beside* the
+    /// button instead; use one or the other. Call it before [`PieMenu::show`] (which
+    /// borrows the menu mutably) and move the results into the render closure.
+    pub fn number_hint(&self, button: &PieButton) -> Option<NumberHint> {
+        self.settings.input.use_numpad_keys.then(|| NumberHint {
+            text: self.hint_digit(&button.direction).to_string(),
+            on_right: self.hint_on_right(&button.direction),
+        })
+    }
+
+    /// The hint digit for a direction, honouring `arabic_indic_digits`.
+    fn hint_digit(&self, dir: &PieDirection) -> char {
+        let digit = Self::direction_digit(dir);
+        if self.settings.number_hints.arabic_indic_digits {
+            char::from_u32('٠' as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
+        } else {
+            digit
+        }
+    }
+
+    /// Whether the hint goes on the right of the button, from [`PieMenuNumberHints::side`].
+    fn hint_on_right(&self, dir: &PieDirection) -> bool {
+        match self.settings.number_hints.side {
+            // Left-to-right only for now; right-to-left support comes with mirroring.
+            HintSide::Trailing => true,
+            // Away from the centre; North/South have no horizontal side, so use the right.
+            HintSide::Outside => !matches!(
+                dir,
+                PieDirection::West | PieDirection::NorthWest | PieDirection::SouthWest
+            ),
+            HintSide::Left => false,
+            HintSide::Right => true,
+        }
     }
 
     /// Call this when opening the menu. Resets interaction state and sets position.
@@ -629,22 +678,21 @@ impl PieMenu {
 
             if self.settings.number_hints.show && self.settings.input.use_numpad_keys {
                 let hints = &self.settings.number_hints;
-                let (x, align) = match hints.side {
-                    HintSide::Left => (button_center.x - hw - hints.spacing, egui::Align2::RIGHT_CENTER),
-                    HintSide::Right => (button_center.x + hw + hints.spacing, egui::Align2::LEFT_CENTER),
-                };
-                let digit = Self::direction_digit(&button.direction);
-                let digit = if hints.arabic_indic_digits {
-                    char::from_u32('٠' as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
+                let (x, align) = if self.hint_on_right(&button.direction) {
+                    (button_center.x + hw + hints.spacing, egui::Align2::LEFT_CENTER)
                 } else {
-                    digit
+                    (button_center.x - hw - hints.spacing, egui::Align2::RIGHT_CENTER)
                 };
+                let color = hints
+                    .color
+                    .unwrap_or_else(|| ctx.global_style().visuals.weak_text_color());
+                let digit = self.hint_digit(&button.direction);
                 painter.text(
                     Pos2::new(x, button_center.y),
                     align,
                     digit,
                     hints.font.clone(),
-                    hints.color.gamma_multiply(opacity),
+                    color.gamma_multiply(opacity),
                 );
             }
 
@@ -657,6 +705,11 @@ impl PieMenu {
                     if opacity < 1.0 {
                         ui.set_opacity(opacity);
                     }
+                    // Buttons are single-line. An Area keeps last frame's size as its max
+                    // width, so content that grows (a number hint added, a label changed)
+                    // would wrap instead of widening the button. Don't wrap; let it grow.
+                    // Explicit newlines still work, and the closure can override this.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     render_button(ui, idx, is_hovered)
                 });
 
