@@ -77,6 +77,8 @@ pub struct PieMenu {
     /// Set by `open()` when this press follows a QuickTap within the double-tap window.
     /// While set, the menu never becomes visible; releasing yields `DoubleTap`.
     double_tap_pending: bool,
+    /// When the buttons became visible; drives the reveal animation.
+    shown_at: Option<Instant>,
     /// Cached button sizes from the previous frame, used to centre each Area.
     button_sizes: Vec<Vec2>,
 }
@@ -101,6 +103,7 @@ impl PieMenu {
             mouse_shown: false,
             last_quick_tap: None,
             double_tap_pending: false,
+            shown_at: None,
             button_sizes: Vec::new(),
         }
     }
@@ -125,6 +128,7 @@ impl PieMenu {
         self.release_handled = false;
         self.selected_index = None;
         self.mouse_shown = false;
+        self.shown_at = None;
         self.double_tap_pending = self
             .last_quick_tap
             .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
@@ -213,6 +217,7 @@ impl PieMenu {
         let center = self.position;
 
         // Update mouse_shown: latch on once the show condition is met.
+        // (shown_at is stamped below, once mouse_shown has latched)
         // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`).
         if !self.mouse_shown && !self.double_tap_pending {
             match self.settings.show_behavior {
@@ -225,6 +230,10 @@ impl PieMenu {
                     }
                 }
             }
+        }
+
+        if self.mouse_shown && self.shown_at.is_none() {
+            self.shown_at = Some(Instant::now());
         }
 
         // Before the menu is visible, handle key release as QuickTap/DoubleTap only.
@@ -570,12 +579,38 @@ impl PieMenu {
                 center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
             let is_hovered = self.selected_index == Some(idx);
 
+            // Reveal animation: progress 0..1, eased for the slide.
+            let anim = &self.settings.animations;
+            let t = match (anim.reveal, self.shown_at) {
+                (RevealAnimation::None, _) | (_, None) => 1.0,
+                (_, Some(at)) => {
+                    let d = anim.reveal_duration.as_secs_f32().max(f32::EPSILON);
+                    (at.elapsed().as_secs_f32() / d).clamp(0.0, 1.0)
+                }
+            };
+            if t < 1.0 {
+                ctx.request_repaint();
+            }
+            let button_center = if anim.reveal == RevealAnimation::SlideOut {
+                let eased = 1.0 - (1.0 - t).powi(3);
+                center + (button_center - center) * eased
+            } else {
+                button_center
+            };
+            let animated = anim.reveal != RevealAnimation::None;
+
             let area_pos = button_center - cached_size / 2.0;
 
             let response = egui::Area::new(self.id.with(idx))
                 .order(egui::Order::Tooltip)
+                .fade_in(!animated)
                 .fixed_pos(area_pos)
-                .show(ctx, |ui| render_button(ui, idx, is_hovered));
+                .show(ctx, |ui| {
+                    if t < 1.0 {
+                        ui.set_opacity(t);
+                    }
+                    render_button(ui, idx, is_hovered)
+                });
 
             self.button_sizes[idx] = response.response.rect.size();
         }

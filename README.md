@@ -196,6 +196,13 @@ menu.settings.input.use_mnemonic_keys  = true;
 menu.settings.input.double_tap_window  = Duration::from_millis(400);
 ```
 
+### Reveal animation
+
+```rust
+menu.settings.animations.reveal = RevealAnimation::SlideOut;  // or Fade / None (default)
+menu.settings.animations.reveal_duration = Duration::from_millis(150);
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:

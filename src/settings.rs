@@ -186,8 +186,23 @@ impl Default for PieMenuInput {
     }
 }
 
+/// How the buttons appear when the menu is revealed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealAnimation {
+    /// No custom animation (egui's default area fade applies).
+    None,
+    /// Buttons fade in over [`PieMenuAnimations::reveal_duration`].
+    Fade,
+    /// Buttons slide out from the centre to their positions while fading in.
+    SlideOut,
+}
+
 /// Animation / highlight behaviour.
 pub struct PieMenuAnimations {
+    /// Animation used when the buttons are revealed.
+    pub reveal: RevealAnimation,
+    /// Duration of the reveal animation.
+    pub reveal_duration: Duration,
     /// Snap the highlight to the nearest button direction instead of following the mouse.
     pub center_highlight_snapping: bool,
     /// Whether to draw the center highlight at all.
@@ -197,6 +212,8 @@ pub struct PieMenuAnimations {
 impl Default for PieMenuAnimations {
     fn default() -> Self {
         Self {
+            reveal: RevealAnimation::None,
+            reveal_duration: Duration::from_millis(150),
             center_highlight_snapping: false,
             center_highlight_show: true,
         }
