@@ -174,6 +174,19 @@ impl PieMenu {
         }
     }
 
+    fn direction_digit(dir: &PieDirection) -> char {
+        match dir {
+            PieDirection::North => '8',
+            PieDirection::NorthEast => '9',
+            PieDirection::East => '6',
+            PieDirection::SouthEast => '3',
+            PieDirection::South => '2',
+            PieDirection::SouthWest => '1',
+            PieDirection::West => '4',
+            PieDirection::NorthWest => '7',
+        }
+    }
+
     fn direction_numpad(dir: &PieDirection) -> Key {
         match dir {
             PieDirection::North => Key::Num8,
@@ -613,6 +626,27 @@ impl PieMenu {
                 button_center
             };
             let area_pos = button_center - cached_size / 2.0;
+
+            if self.settings.number_hints.show && self.settings.input.use_numpad_keys {
+                let hints = &self.settings.number_hints;
+                let (x, align) = match hints.side {
+                    HintSide::Left => (button_center.x - hw - hints.spacing, egui::Align2::RIGHT_CENTER),
+                    HintSide::Right => (button_center.x + hw + hints.spacing, egui::Align2::LEFT_CENTER),
+                };
+                let digit = Self::direction_digit(&button.direction);
+                let digit = if hints.arabic_indic_digits {
+                    char::from_u32('٠' as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
+                } else {
+                    digit
+                };
+                painter.text(
+                    Pos2::new(x, button_center.y),
+                    align,
+                    digit,
+                    hints.font.clone(),
+                    hints.color.gamma_multiply(opacity),
+                );
+            }
 
             let response = egui::Area::new(self.id.with(idx))
                 .order(egui::Order::Tooltip)

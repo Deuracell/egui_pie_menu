@@ -207,6 +207,14 @@ menu.settings.animations.slide_start_shape_factor = Some(-1.0);          // star
 menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade while sliding; None = no fade
 ```
 
+### Number hints
+
+```rust
+menu.settings.number_hints.show = true;      // gray digit beside each button
+menu.settings.number_hints.side = HintSide::Right;
+menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
