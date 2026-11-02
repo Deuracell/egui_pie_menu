@@ -111,6 +111,8 @@ struct ButtonConfig {
     color: Color32,
     /// Checkbox state when `kind` is `Checkbox`.
     checked: bool,
+    /// Disabled buttons cannot be selected (`PieButton::with_enabled`).
+    enabled: bool,
 }
 
 const DIR_NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -133,6 +135,7 @@ fn default_button_configs() -> Vec<ButtonConfig> {
         key: key.map(String::from).unwrap_or_default(),
         color: Color32::from_rgb(r, g, bl),
         checked: false,
+        enabled: true,
     };
     vec![
         b("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
@@ -150,7 +153,7 @@ fn default_button_configs() -> Vec<ButtonConfig> {
 fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
     configs.iter().enumerate()
         .map(|(i, c)| {
-            let b = PieButton::new(direction(i)).with_label(c.label.clone());
+            let b = PieButton::new(direction(i)).with_label(c.label.clone()).with_enabled(c.enabled);
             match (c.mnemonic, c.key.chars().next()) {
                 (MnemonicMode::Auto, _)       => b,
                 (MnemonicMode::Key, Some(k))  => b.with_mnemonic(k),
@@ -277,6 +280,13 @@ impl eframe::App for Demo {
         let d = PieMenuSettings::default(); // defaults for the reset buttons
         self.buttons = build_buttons(&self.button_configs);
         let mnemonics = self.menu.mnemonics(&self.buttons); // keys in effect, for editor + render
+        // Problems (shared key / direction) are shown in red below; the menu stays closed
+        // until they are fixed, because debug builds assert on them when it opens.
+        let problems = self.menu.check_buttons(&self.buttons);
+        let mut bad = [false; 8];
+        for p in &problems {
+            for i in p.buttons() { bad[i] = true; }
+        }
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             // ── Search ───────────────────────────────────────────────
             ui.add_space(4.0);
@@ -520,7 +530,13 @@ impl eframe::App for Demo {
                     }
                     for (i, cfg) in self.button_configs.iter_mut().enumerate() {
                         let assigned = mnemonics[i];
-                        egui::CollapsingHeader::new(format!("{} · {}", DIR_NAMES[i], cfg.label))
+                        let title = format!("{} · {}", DIR_NAMES[i], cfg.label);
+                        let title: egui::WidgetText = if bad[i] {
+                            RichText::new(format!("⚠ {title}")).color(Color32::RED).into()
+                        } else {
+                            title.into()
+                        };
+                        egui::CollapsingHeader::new(title)
                             .id_salt(("button_cfg", i))
                             .show(ui, |ui| {
                                 egui::Grid::new(("button_grid", i)).num_columns(2).show(ui, |ui| {
@@ -535,6 +551,11 @@ impl eframe::App for Demo {
 
                                     ui.label("Tooltip");
                                     ui.add(egui::TextEdit::singleline(&mut cfg.tooltip).desired_width(130.0));
+                                    ui.end_row();
+
+                                    ui.label("Enabled");
+                                    ui.checkbox(&mut cfg.enabled, "")
+                                        .on_hover_text("Disabled buttons are skipped by mouse, number keys and mnemonics");
                                     ui.end_row();
 
                                     ui.label("Kind");
@@ -560,7 +581,15 @@ impl eframe::App for Demo {
                                                 ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::None, "None");
                                             });
                                         if cfg.mnemonic == MnemonicMode::Key {
-                                            ui.add(egui::TextEdit::singleline(&mut cfg.key).char_limit(1).desired_width(16.0));
+                                            let resp = ui.add(egui::TextEdit::singleline(&mut cfg.key).char_limit(1).desired_width(16.0));
+                                            if bad[i] {
+                                                ui.painter().rect_stroke(
+                                                    resp.rect.expand(2.0), 3.0,
+                                                    egui::Stroke::new(2.0, Color32::RED),
+                                                    egui::StrokeKind::Outside,
+                                                );
+                                                resp.on_hover_text("⚠ This key is also used by another button");
+                                            }
                                         }
                                         let got = assigned.map_or("none".to_string(), |c| c.to_string());
                                         ui.label(RichText::new(format!("→ {got}")).weak())
@@ -590,18 +619,33 @@ impl eframe::App for Demo {
             });
         });
 
+        if !problems.is_empty() {
+            egui::Window::new(RichText::new("⚠ Button configuration problem").color(Color32::RED))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 40.0])
+                .collapsible(false)
+                .resizable(false)
+                .frame(egui::Frame::window(&ctx.global_style()).stroke(egui::Stroke::new(2.0, Color32::RED)))
+                .show(ctx, |ui| {
+                    for p in &problems {
+                        ui.colored_label(Color32::LIGHT_RED, format!("• {p}"));
+                    }
+                    ui.label("The menu is disabled until this is fixed (see the Buttons section).");
+                });
+            self.menu_open = false;
+        }
+
         egui::CentralPanel::default().show(ui, |ui| {
             ui.label("Right-click to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss");
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
             });
 
-            if self.pinned {
+            if self.pinned && problems.is_empty() {
                 self.menu.position = ui.clip_rect().center();
                 self.menu_open = true;
             }
 
-            if !self.pinned && !self.menu_open {
+            if !self.pinned && !self.menu_open && problems.is_empty() {
                 if let Some(pos) = ctx.input(|i| {
                     i.pointer.secondary_pressed().then(|| i.pointer.latest_pos()).flatten()
                 }) {
@@ -610,7 +654,7 @@ impl eframe::App for Demo {
                 }
             }
 
-            if self.menu_open {
+            if self.menu_open && problems.is_empty() {
                 let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
                 let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
 
@@ -624,7 +668,9 @@ impl eframe::App for Demo {
                     |ui, b| {
                         let (idx, hovered) = (b.idx, b.hovered);
                         let cfg = &self.button_configs[idx];
-                        let (bg, fg) = if hovered {
+                        let (bg, fg) = if !b.enabled {
+                            (cfg.color.gamma_multiply(0.25), Color32::DARK_GRAY)
+                        } else if hovered {
                             (cfg.color, Color32::WHITE)
                         } else {
                             (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
