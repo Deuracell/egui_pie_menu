@@ -41,6 +41,8 @@ pub struct PieButton {
     /// The text shown on the button, used to generate a mnemonic for
     /// [`Mnemonic::Auto`]. Rendering is still up to the closure.
     pub label: String,
+    /// Buttons of the sub-pie opened by this button. Empty for a plain button.
+    pub children: Vec<PieButton>,
 }
 
 impl PieButton {
@@ -50,12 +52,23 @@ impl PieButton {
             direction,
             mnemonic: Mnemonic::Auto,
             label: String::new(),
+            children: Vec::new(),
         }
     }
 
     /// Sets the label text used to generate a mnemonic.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
+        self
+    }
+
+    /// Makes this button open a sub-pie containing `children` when selected.
+    ///
+    /// Inside a sub-pie, Backspace or a click on the centre goes back one level.
+    /// Use [`PieMenu::current_buttons`] to get the buttons currently shown, and
+    /// [`PieMenu::selected_path`] to learn which leaf was chosen.
+    pub fn with_children(mut self, children: Vec<PieButton>) -> Self {
+        self.children = children;
         self
     }
 
@@ -293,6 +306,10 @@ pub struct PieMenu {
     double_tap_pending: bool,
     /// When the buttons became visible; drives the reveal animation.
     shown_at: Option<Instant>,
+    /// Indices of the buttons descended through to reach the current sub-pie level.
+    path: Vec<usize>,
+    /// Full index path of the last leaf selection (see [`PieMenu::selected_path`]).
+    selected_path: Vec<usize>,
     /// Cached button sizes from the previous frame, used to centre each Area.
     button_sizes: Vec<Vec2>,
 }
@@ -318,6 +335,8 @@ impl PieMenu {
             last_quick_tap: None,
             double_tap_pending: false,
             shown_at: None,
+            path: Vec::new(),
+            selected_path: Vec::new(),
             button_sizes: Vec::new(),
         }
     }
@@ -390,6 +409,8 @@ impl PieMenu {
         self.selected_index = None;
         self.mouse_shown = false;
         self.shown_at = None;
+        self.path.clear();
+        self.selected_path.clear();
         self.double_tap_pending = self
             .last_quick_tap
             .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
@@ -477,6 +498,12 @@ impl PieMenu {
     /// draws the label with its mnemonic underlined.
     ///
     /// `key_down` should be `true` while the hotkey that opened the menu is held.
+    ///
+    /// `buttons` is always the **root** level. When a button has
+    /// [`PieButton::children`], selecting it descends into a sub-pie; the
+    /// `usize` in callbacks and in [`PieMenuResponse::Selected`] is then an index
+    /// into [`PieMenu::current_buttons`], and the full route to the chosen leaf
+    /// is available from [`PieMenu::selected_path`].
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -485,6 +512,88 @@ impl PieMenu {
         key_down: bool,
         title: Option<&str>,
         mut render_button: impl FnMut(&mut Ui, &ButtonView),
+    ) -> PieMenuResponse {
+        if Self::resolve_level(buttons, &self.path).is_none() {
+            self.path.clear();
+        }
+        let level = Self::resolve_level(buttons, &self.path).unwrap_or(buttons);
+
+        // Go back one level: Backspace, or a click on the centre.
+        if !self.path.is_empty() && self.mouse_shown {
+            let thr = self.settings.mouse_trigger_threshold;
+            let back = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace))
+                || (ctx.input(|i| i.pointer.primary_clicked())
+                    && current_mouse_pos.is_some_and(|p| (p - self.position).length() <= thr));
+            if back {
+                self.path.pop();
+                self.restart_level(current_mouse_pos, key_down);
+                return PieMenuResponse::None;
+            }
+        }
+
+        match self.show_level(ctx, level, current_mouse_pos, key_down, title, &mut render_button) {
+            PieMenuResponse::Selected(idx) => {
+                if level.get(idx).is_some_and(|b| !b.children.is_empty()) {
+                    self.path.push(idx);
+                    self.restart_level(current_mouse_pos, key_down);
+                    PieMenuResponse::None
+                } else {
+                    self.selected_path = self.path.clone();
+                    self.selected_path.push(idx);
+                    PieMenuResponse::Selected(idx)
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// The buttons currently displayed (root level, or the open sub-pie).
+    /// Use this, not your root slice, to look up labels inside the render closure.
+    pub fn current_buttons<'a>(&self, root: &'a [PieButton]) -> &'a [PieButton] {
+        Self::resolve_level(root, &self.path).unwrap_or(root)
+    }
+
+    /// Indices of the parent buttons descended through to reach the current sub-pie.
+    /// Empty at the root level.
+    pub fn path(&self) -> &[usize] {
+        &self.path
+    }
+
+    /// After [`PieMenuResponse::Selected`]: the full index path from the root to the
+    /// chosen button (the last element is the index within its level).
+    pub fn selected_path(&self) -> &[usize] {
+        &self.selected_path
+    }
+
+    fn resolve_level<'a>(root: &'a [PieButton], path: &[usize]) -> Option<&'a [PieButton]> {
+        let mut level = root;
+        for &i in path {
+            level = &level.get(i)?.children;
+        }
+        Some(level)
+    }
+
+    /// Re-centres on the pointer and shows the (new) level immediately.
+    fn restart_level(&mut self, mouse: Option<Pos2>, key_down: bool) {
+        if let Some(p) = mouse {
+            self.position = p;
+        }
+        self.selected_index = None;
+        self.mouse_shown = true;
+        self.shown_at = Some(Instant::now());
+        // If the key is already up (selection came from the release), the sub-pie is
+        // click/keyboard driven; otherwise a later release selects as usual.
+        self.release_handled = !key_down;
+    }
+
+    fn show_level(
+        &mut self,
+        ctx: &egui::Context,
+        buttons: &[PieButton],
+        current_mouse_pos: Option<Pos2>,
+        key_down: bool,
+        title: Option<&str>,
+        render_button: &mut impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
         // Ensure cached size vec is long enough
         if self.button_sizes.len() < buttons.len() {
@@ -1241,3 +1350,35 @@ mod button_view_tests {
         assert_eq!(job.sections[0].format.font_id, FontId::monospace(20.0));
     }
 }
+
+#[cfg(test)]
+mod subpie_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_level_walks_path() {
+        let root = vec![
+            PieButton::new(PieDirection::North),
+            PieButton::new(PieDirection::East).with_children(vec![
+                PieButton::new(PieDirection::West),
+                PieButton::new(PieDirection::South).with_children(vec![PieButton::new(PieDirection::North)]),
+            ]),
+        ];
+        assert_eq!(PieMenu::resolve_level(&root, &[]).unwrap().len(), 2);
+        assert_eq!(PieMenu::resolve_level(&root, &[1]).unwrap().len(), 2);
+        assert_eq!(PieMenu::resolve_level(&root, &[1, 1]).unwrap().len(), 1);
+        assert!(PieMenu::resolve_level(&root, &[0]).unwrap().is_empty());
+        assert!(PieMenu::resolve_level(&root, &[5]).is_none());
+    }
+
+    #[test]
+    fn restart_level_recentres_and_shows() {
+        let mut m = PieMenu::new();
+        m.restart_level(Some(Pos2::new(10.0, 20.0)), false);
+        assert_eq!(m.position, Pos2::new(10.0, 20.0));
+        assert!(m.mouse_shown && m.release_handled);
+        m.restart_level(None, true);
+        assert!(!m.release_handled);
+    }
+}
+
