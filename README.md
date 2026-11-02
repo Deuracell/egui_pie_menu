@@ -242,6 +242,19 @@ menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
+### Disabled buttons, empty sectors, hover query
+
+```rust
+PieButton::new(PieDirection::North).with_label("Cut").with_enabled(false)
+// skipped by mouse, number keys and mnemonics; no generated mnemonic.
+// In the render closure `b.enabled` tells you to grey it out.
+
+menu.settings.input.ignore_empty_sectors = true; // pointing at a direction with no button selects nothing
+menu.hovered(); // Option<usize>: the currently highlighted button
+```
+
+Number keys are consumed by the menu, so the digit does not also reach other handlers or text fields.
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:

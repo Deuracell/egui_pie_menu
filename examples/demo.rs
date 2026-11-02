@@ -111,6 +111,8 @@ struct ButtonConfig {
     color: Color32,
     /// Checkbox state when `kind` is `Checkbox`.
     checked: bool,
+    /// Disabled buttons cannot be selected (`PieButton::with_enabled`).
+    enabled: bool,
 }
 
 const DIR_NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -133,6 +135,7 @@ fn default_button_configs() -> Vec<ButtonConfig> {
         key: key.map(String::from).unwrap_or_default(),
         color: Color32::from_rgb(r, g, bl),
         checked: false,
+        enabled: true,
     };
     vec![
         b("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
@@ -150,7 +153,7 @@ fn default_button_configs() -> Vec<ButtonConfig> {
 fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
     configs.iter().enumerate()
         .map(|(i, c)| {
-            let b = PieButton::new(direction(i)).with_label(c.label.clone());
+            let b = PieButton::new(direction(i)).with_label(c.label.clone()).with_enabled(c.enabled);
             match (c.mnemonic, c.key.chars().next()) {
                 (MnemonicMode::Auto, _)       => b,
                 (MnemonicMode::Key, Some(k))  => b.with_mnemonic(k),
@@ -537,6 +540,11 @@ impl eframe::App for Demo {
                                     ui.add(egui::TextEdit::singleline(&mut cfg.tooltip).desired_width(130.0));
                                     ui.end_row();
 
+                                    ui.label("Enabled");
+                                    ui.checkbox(&mut cfg.enabled, "")
+                                        .on_hover_text("Disabled buttons are skipped by mouse, number keys and mnemonics");
+                                    ui.end_row();
+
                                     ui.label("Kind");
                                     ui.horizontal(|ui| {
                                         ui.radio_value(&mut cfg.kind, ButtonKind::Button, "Button");
@@ -576,9 +584,11 @@ impl eframe::App for Demo {
                     }
                 });
 
-                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc", |ui| {
+                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc empty sectors", |ui| {
                     ui.checkbox(&mut self.pinned, "Pin menu at center");
                     ui.label("While pinned, press Esc to unpin.");
+                    ui.checkbox(&mut self.menu.settings.input.ignore_empty_sectors, "Ignore empty sectors")
+                        .on_hover_text("Pointing at a direction with no button selects nothing");
                 });
 
                 if shown == 0 {
@@ -624,7 +634,9 @@ impl eframe::App for Demo {
                     |ui, b| {
                         let (idx, hovered) = (b.idx, b.hovered);
                         let cfg = &self.button_configs[idx];
-                        let (bg, fg) = if hovered {
+                        let (bg, fg) = if !b.enabled {
+                            (cfg.color.gamma_multiply(0.25), Color32::DARK_GRAY)
+                        } else if hovered {
                             (cfg.color, Color32::WHITE)
                         } else {
                             (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
