@@ -1,7 +1,7 @@
 pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::time::{Duration, Instant};
 
 mod utils;
@@ -43,6 +43,10 @@ pub struct PieButton {
     pub label: String,
     /// Buttons of the sub-pie opened by this button. Empty for a plain button.
     pub children: Vec<PieButton>,
+    /// A disabled button is never highlighted or selected (mouse, number keys,
+    /// mnemonic) and gets no generated mnemonic. It is still drawn by your closure;
+    /// check [`ButtonView::enabled`] to grey it out.
+    pub enabled: bool,
 }
 
 impl PieButton {
@@ -53,7 +57,14 @@ impl PieButton {
             mnemonic: Mnemonic::Auto,
             label: String::new(),
             children: Vec::new(),
+            enabled: true,
         }
+    }
+
+    /// Enables or disables this button. See [`PieButton::enabled`].
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
     }
 
     /// Sets the label text used to generate a mnemonic.
@@ -95,6 +106,69 @@ impl PieButton {
 ///   possible get a distinct mnemonic. Word initials are preferred, then the other
 ///   letters left to right. Only a button with no possible letter is left without one.
 ///   Only `a`–`z` are generated.
+/// A problem with the buttons of one pie level, from [`PieMenu::check_buttons`].
+///
+/// Indices refer to the slice that was checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ButtonProblem {
+    /// Two buttons occupy the same direction.
+    SharedDirection { first: usize, second: usize, direction: PieDirection },
+    /// Two enabled buttons have the same mnemonic key.
+    DuplicateMnemonic { first: usize, second: usize, key: char },
+}
+
+impl ButtonProblem {
+    /// The two button indices involved.
+    pub fn buttons(&self) -> [usize; 2] {
+        match self {
+            ButtonProblem::SharedDirection { first, second, .. }
+            | ButtonProblem::DuplicateMnemonic { first, second, .. } => [*first, *second],
+        }
+    }
+}
+
+impl std::fmt::Display for ButtonProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ButtonProblem::SharedDirection { first, second, direction } => {
+                write!(f, "buttons {first} and {second} are both in direction {direction:?}")
+            }
+            ButtonProblem::DuplicateMnemonic { first, second, key } => {
+                write!(f, "buttons {first} and {second} share the mnemonic '{key}'")
+            }
+        }
+    }
+}
+
+/// Problems with the buttons of one pie level: several buttons in one direction, or
+/// the same mnemonic on several enabled buttons. Buttons in different (sub-)pie levels
+/// are never compared with each other, so they may reuse directions and keys.
+fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>]) -> Vec<ButtonProblem> {
+    let mut problems = Vec::new();
+    let mut dirs: Vec<(usize, &PieDirection)> = Vec::new();
+    for (i, b) in buttons.iter().enumerate() {
+        if let Some((first, _)) = dirs.iter().find(|(_, d)| **d == b.direction) {
+            problems.push(ButtonProblem::SharedDirection {
+                first: *first,
+                second: i,
+                direction: b.direction.clone(),
+            });
+        } else {
+            dirs.push((i, &b.direction));
+        }
+    }
+    let mut keys: Vec<(char, usize)> = Vec::new();
+    for (i, (b, m)) in buttons.iter().zip(mnemonics).enumerate() {
+        let (true, Some(c)) = (b.enabled, *m) else { continue };
+        if let Some((_, first)) = keys.iter().find(|(k, _)| *k == c) {
+            problems.push(ButtonProblem::DuplicateMnemonic { first: *first, second: i, key: c });
+        } else {
+            keys.push((c, i));
+        }
+    }
+    problems
+}
+
 fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
     let mut resolved: Vec<Option<char>> = buttons
         .iter()
@@ -113,7 +187,7 @@ fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
         .iter()
         .map(|button| {
             let mut list: Vec<char> = Vec::new();
-            if button.mnemonic == Mnemonic::Auto {
+            if button.mnemonic == Mnemonic::Auto && button.enabled {
                 let label = &button.label;
                 let letters = |c: &char| c.is_ascii_alphabetic();
                 let initials = label
@@ -198,6 +272,8 @@ pub struct ButtonView<'a> {
     pub idx: usize,
     /// Whether the pointer currently highlights this button.
     pub hovered: bool,
+    /// Whether the button can be selected (`false`: grey it out).
+    pub enabled: bool,
     /// The button itself (label, direction, …).
     pub button: &'a PieButton,
     /// The mnemonic key in effect for this button (lower-case), if any.
@@ -304,6 +380,8 @@ pub struct PieMenu {
     /// Set by `open()` when this press follows a QuickTap within the double-tap window.
     /// While set, the menu never becomes visible; releasing yields `DoubleTap`.
     double_tap_pending: bool,
+    /// Debug-only: the duplicate direction/mnemonic check already ran for this open.
+    checked_buttons: bool,
     /// When the buttons became visible; drives the reveal animation.
     shown_at: Option<Instant>,
     /// Indices of the buttons descended through to reach the current sub-pie level.
@@ -334,6 +412,7 @@ impl PieMenu {
             mouse_shown: false,
             last_quick_tap: None,
             double_tap_pending: false,
+            checked_buttons: false,
             shown_at: None,
             path: Vec::new(),
             selected_path: Vec::new(),
@@ -354,9 +433,16 @@ impl PieMenu {
         self
     }
 
+    /// Problems in one level's buttons: several in one direction, or the same mnemonic
+    /// on several enabled buttons. Debug builds assert on these when the menu opens;
+    /// call this to check (or show the problems) yourself, e.g. in an editor, in any
+    /// build. Pass the buttons of a single level.
+    pub fn check_buttons(&self, buttons: &[PieButton]) -> Vec<ButtonProblem> {
+        button_problems(buttons, &self.mnemonics(buttons))
+    }
+
     /// The mnemonic key in effect for each button (lower-case), from each button's
-    /// [`Mnemonic`] and [`PieMenuInput::auto_mnemonics`]. Use it in your render closure,
-    /// for use outside the render closure. Inside it, prefer [`ButtonView::mnemonic`] and
+    /// [`Mnemonic`] and [`PieMenuInput::auto_mnemonics`], for use outside the render closure. Inside it, prefer [`ButtonView::mnemonic`] and
     /// [`ButtonView::label_text`]. Cheap: a few microseconds for eight buttons.
     pub fn mnemonics(&self, buttons: &[PieButton]) -> Vec<Option<char>> {
         resolve_mnemonics(buttons, self.settings.input.auto_mnemonics)
@@ -411,6 +497,7 @@ impl PieMenu {
         self.shown_at = None;
         self.path.clear();
         self.selected_path.clear();
+        self.checked_buttons = false;
         self.double_tap_pending = self
             .last_quick_tap
             .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
@@ -474,6 +561,36 @@ impl PieMenu {
             PieDirection::West => '4',
             PieDirection::NorthWest => '7',
         }
+    }
+
+    /// Smallest absolute difference between two angles, in `0..=PI`.
+    fn angle_diff(a: f32, b: f32) -> f32 {
+        let d = (a - b).rem_euclid(TAU);
+        d.min(TAU - d)
+    }
+
+    /// Index of the enabled button the pointer vector `mouse_vec` (from the menu
+    /// centre) points at, or `None`. Empty directions are skipped: the pointer snaps to
+    /// the closest available button. On an exact tie (e.g. straight down between East
+    /// and West buttons) the earlier button in the slice wins.
+    fn pick_button(buttons: &[PieButton], mouse_vec: Vec2, shape_factor: f32) -> Option<usize> {
+        let angle = mouse_vec.y.atan2(mouse_vec.x);
+        let dir_angle = |d: &PieDirection| {
+            let v = Self::direction_vec(d, shape_factor);
+            v.y.atan2(v.x)
+        };
+        buttons
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.enabled)
+            .map(|(idx, b)| (idx, Self::angle_diff(angle, dir_angle(&b.direction))))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(idx, _)| idx)
+    }
+
+    /// Index of the button the pointer currently highlights, if any.
+    pub fn hovered(&self) -> Option<usize> {
+        self.selected_index
     }
 
     fn direction_numpad(dir: &PieDirection) -> Key {
@@ -579,6 +696,7 @@ impl PieMenu {
             self.position = p;
         }
         self.selected_index = None;
+        self.checked_buttons = false;
         self.mouse_shown = true;
         self.shown_at = Some(Instant::now());
         // If the key is already up (selection came from the release), the sub-pie is
@@ -727,10 +845,39 @@ impl PieMenu {
             );
         }
 
-        // Numpad key selection
+        // Debug builds: assert once per open (and per sub-pie level) that this level's
+        // buttons are well-formed. Only buttons shown together are compared.
+        #[cfg(debug_assertions)]
+        if !self.checked_buttons {
+            self.checked_buttons = true;
+            let problems = self.check_buttons(buttons);
+            debug_assert!(
+                problems.is_empty(),
+                "egui_pie_menu: {}",
+                problems.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("; ")
+            );
+        }
+
+        // Numpad key selection. The key (and its text event) is consumed so the digit
+        // does not also reach other handlers or text fields.
         if self.settings.input.use_numpad_keys {
-            for (idx, button) in buttons.iter().enumerate() {
-                if ctx.input(|i| i.key_pressed(Self::direction_numpad(&button.direction))) {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+                let key = Self::direction_numpad(&button.direction);
+                let digit = Self::direction_digit(&button.direction).to_string();
+                let hit = ctx.input_mut(|i| {
+                    let hit = i.consume_key(egui::Modifiers::NONE, key);
+                    if hit {
+                        if let Some(p) = i
+                            .events
+                            .iter()
+                            .position(|e| matches!(e, egui::Event::Text(t) if *t == digit))
+                        {
+                            i.events.remove(p);
+                        }
+                    }
+                    hit
+                });
+                if hit {
                     return PieMenuResponse::Selected(idx);
                 }
             }
@@ -739,22 +886,10 @@ impl PieMenu {
         // Mnemonic key selection — consume matched events so other handlers never see them.
         if self.settings.input.use_mnemonic_keys {
             let mnemonics = self.mnemonics(buttons);
-            #[cfg(debug_assertions)]
-            {
-                let mut seen = std::collections::HashMap::new();
-                for (button, mnemonic) in buttons.iter().zip(&mnemonics) {
-                    if let Some(c) = *mnemonic {
-                        let key = c.to_ascii_lowercase();
-                        let prev: &mut Vec<PieDirection> = seen.entry(key).or_default();
-                        prev.push(button.direction.clone());
-                        if prev.len() == 2 {
-                            eprintln!("egui_pie_menu: duplicate mnemonic '{key}' on {:?}", prev);
-                        }
-                    }
-                }
-            }
-
             for (idx, mnemonic) in mnemonics.iter().enumerate() {
+                if !buttons[idx].enabled {
+                    continue;
+                }
                 if let Some(key) = mnemonic.and_then(char_to_key) {
                     let pressed = ctx.input_mut(|i| {
                         if i.key_pressed(key) {
@@ -777,18 +912,7 @@ impl PieMenu {
             if mouse_vec.length() <= self.settings.mouse_trigger_threshold {
                 return None;
             }
-            let angle = mouse_vec.y.atan2(mouse_vec.x);
-            buttons
-                .iter()
-                .enumerate()
-                .map(|(idx, button)| {
-                    let dir_vec = Self::direction_vec(&button.direction, shape_factor);
-                    let button_angle = dir_vec.y.atan2(dir_vec.x);
-                    let diff = ((angle - button_angle + PI) % TAU - PI).abs();
-                    (idx, diff)
-                })
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                .map(|(idx, _)| idx)
+            Self::pick_button(buttons, mouse_vec, shape_factor)
         });
 
         // Center highlight — progress driven by mouse distance from center.
@@ -1060,6 +1184,7 @@ impl PieMenu {
                     render_button(ui, &ButtonView {
                         idx,
                         hovered: is_hovered,
+                        enabled: button.enabled,
                         button,
                         mnemonic: mnemonics[idx],
                         number_hint: number_hints[idx].clone(),
@@ -1382,3 +1507,101 @@ mod subpie_tests {
     }
 }
 
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn btns() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::West),
+            PieButton::new(PieDirection::NorthWest),
+            PieButton::new(PieDirection::East),
+        ]
+    }
+
+    fn pick(b: &[PieButton], v: Vec2) -> Option<usize> {
+        PieMenu::pick_button(b, v, 0.0)
+    }
+
+    #[test]
+    fn west_sector_covers_both_sides_of_the_axis() {
+        let b = btns();
+        // Slightly above and below the pure-west axis must both pick West (index 0).
+        assert_eq!(pick(&b, Vec2::new(-10.0, -1.0)), Some(0));
+        assert_eq!(pick(&b, Vec2::new(-10.0, 1.0)), Some(0));
+        assert_eq!(pick(&b, Vec2::new(-10.0, -6.0)), Some(1)); // beyond 22.5deg -> NW
+    }
+
+    #[test]
+    fn empty_sectors_snap_to_the_closest_button() {
+        let b = btns(); // W, NW, E
+        assert_eq!(pick(&b, Vec2::new(-1.0, -10.0)), Some(1)); // north, slightly west -> NW
+        assert_eq!(pick(&b, Vec2::new(10.0, 10.0)), Some(2)); // south-east -> E
+    }
+
+    #[test]
+    fn disabled_buttons_are_skipped() {
+        let mut b = btns();
+        b[0].enabled = false;
+        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), Some(1)); // next nearest
+        b[1].enabled = false;
+        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), Some(2));
+        b[2].enabled = false;
+        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), None);
+    }
+
+    fn lab(d: PieDirection, label: &str) -> PieButton {
+        PieButton::new(d).with_label(label)
+    }
+
+    #[test]
+    fn problems_detect_same_direction_and_duplicate_mnemonics() {
+        let b = vec![
+            lab(PieDirection::North, "Copy").with_mnemonic('c'),
+            lab(PieDirection::North, "Cut").with_mnemonic('x'),
+            lab(PieDirection::East, "Cat").with_mnemonic('c'),
+        ];
+        let p = button_problems(&b, &resolve_mnemonics(&b, true));
+        assert_eq!(
+            p,
+            vec![
+                ButtonProblem::SharedDirection { first: 0, second: 1, direction: PieDirection::North },
+                ButtonProblem::DuplicateMnemonic { first: 0, second: 2, key: 'c' },
+            ]
+        );
+        assert_eq!(p[1].buttons(), [0, 2]);
+        assert!(p[1].to_string().contains("mnemonic 'c'"));
+    }
+
+    #[test]
+    fn problems_ignore_disabled_buttons_and_distinct_levels() {
+        let b = vec![
+            lab(PieDirection::North, "Copy").with_mnemonic('c'),
+            lab(PieDirection::East, "Cat").with_mnemonic('c').with_enabled(false),
+        ];
+        assert!(button_problems(&b, &resolve_mnemonics(&b, true)).is_empty());
+        // Another level may reuse the same direction and key: checked separately.
+        let other = vec![lab(PieDirection::North, "Cut").with_mnemonic('c')];
+        assert!(button_problems(&other, &resolve_mnemonics(&other, true)).is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "are both in direction")]
+    fn show_asserts_on_buttons_sharing_a_direction() {
+        let ctx = egui::Context::default();
+        let buttons = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
+        let mut m = PieMenu::new();
+        m.settings.show_behavior = ShowBehavior::Instant;
+        m.open(Pos2::new(100.0, 100.0));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |_, _| {});
+        });
+    }
+
+    #[test]
+    fn disabled_buttons_get_no_generated_mnemonic() {
+        let b = vec![PieButton::new(PieDirection::North).with_label("Copy").with_enabled(false)];
+        assert_eq!(resolve_mnemonics(&b, true), vec![None]);
+    }
+}

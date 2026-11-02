@@ -263,6 +263,24 @@ Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the 
 let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */])];
 ```
 
+### Disabled buttons and hover query
+
+```rust
+PieButton::new(PieDirection::North).with_label("Cut").with_enabled(false)
+// skipped by mouse, number keys and mnemonics; no generated mnemonic.
+// In the render closure `b.enabled` tells you to grey it out.
+
+menu.hovered(); // Option<usize>: the currently highlighted button
+```
+
+Pointing at a direction with no (enabled) button snaps to the closest available one.
+
+Number keys are consumed by the menu, so the digit does not also reach other handlers or text fields.
+
+In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
+
+To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic`, each with the two button indices, and a readable `Display`). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
