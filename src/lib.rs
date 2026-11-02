@@ -177,11 +177,97 @@ pub enum PieMenuResponse {
     None,
 }
 
+/// What the menu knows about one button, handed to your render closure by
+/// [`PieMenu::show`]. Everything is resolved for the level currently shown, so you never
+/// have to precompute mnemonics or hints.
+pub struct ButtonView<'a> {
+    /// Index of the button within the level being shown (what `Selected(idx)` returns).
+    pub idx: usize,
+    /// Whether the pointer currently highlights this button.
+    pub hovered: bool,
+    /// The button itself (label, direction, …).
+    pub button: &'a PieButton,
+    /// The mnemonic key in effect for this button (lower-case), if any.
+    pub mnemonic: Option<char>,
+    /// A number-key hint to draw inside your own button. `None` when number keys are
+    /// off, or when [`PieMenuNumberHints::show`] is on (the menu then paints the digit
+    /// beside the button itself).
+    pub number_hint: Option<NumberHint>,
+    text_color: Color32,
+    body_font: FontId,
+}
+
+impl ButtonView<'_> {
+    /// The button's label with its mnemonic (if any) underlined, ready for
+    /// `ui.label(..)` or `egui::Button::new(..)`. Colour and font follow the current
+    /// egui style; override with [`LabelText::color`] / [`LabelText::font`].
+    pub fn label_text(&self) -> LabelText {
+        LabelText {
+            prefix: String::new(),
+            text: self.button.label.clone(),
+            mnemonic: self.mnemonic,
+            color: self.text_color,
+            font: self.body_font.clone(),
+        }
+    }
+}
+
+/// A button label with its mnemonic underlined; see [`ButtonView::label_text`].
+/// Converts into [`egui::WidgetText`], so pass it to `ui.label(..)` directly.
+#[derive(Clone, Debug)]
+pub struct LabelText {
+    prefix: String,
+    text: String,
+    mnemonic: Option<char>,
+    color: Color32,
+    font: FontId,
+}
+
+impl LabelText {
+    /// Text (and underline) colour.
+    pub fn color(mut self, color: Color32) -> Self {
+        self.color = color;
+        self
+    }
+
+    /// Font.
+    pub fn font(mut self, font: FontId) -> Self {
+        self.font = font;
+        self
+    }
+
+    /// Text placed before the label, never underlined (e.g. an icon: `"🗑  "`).
+    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = prefix.into();
+        self
+    }
+
+    fn to_job(&self) -> LayoutJob {
+        let format = TextFormat { color: self.color, font_id: self.font.clone(), ..Default::default() };
+        let mut job = LayoutJob::default();
+        if !self.prefix.is_empty() {
+            job.append(&self.prefix, 0.0, format.clone());
+        }
+        match self.mnemonic {
+            Some(m) => append_mnemonic_text(&mut job, &self.text, m, format),
+            None => job.append(&self.text, 0.0, format),
+        }
+        job
+    }
+}
+
+impl From<LabelText> for egui::WidgetText {
+    fn from(l: LabelText) -> Self {
+        l.to_job().into()
+    }
+}
+
 /// Radial (pie) menu widget.
 ///
 /// Owns interaction state but not button content. Construct once, then call
 /// [`PieMenu::show`] every frame with the buttons for the current context.
-/// A number-key hint to draw inside your own button, from [`PieMenu::number_hint`].
+/// A number-key hint to draw inside your own button; see [`ButtonView::number_hint`]
+/// (or [`PieMenu::number_hint`] outside the render closure).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NumberHint {
     /// The digit, already converted to Arabic-Indic if that setting is on.
@@ -251,8 +337,8 @@ impl PieMenu {
 
     /// The mnemonic key in effect for each button (lower-case), from each button's
     /// [`Mnemonic`] and [`PieMenuInput::auto_mnemonics`]. Use it in your render closure,
-    /// e.g. with [`mnemonic_text`]; call it before [`PieMenu::show`] (which borrows the
-    /// menu mutably) and move the result in. Cheap: a few microseconds for eight buttons.
+    /// for use outside the render closure. Inside it, prefer [`ButtonView::mnemonic`] and
+    /// [`ButtonView::label_text`]. Cheap: a few microseconds for eight buttons.
     pub fn mnemonics(&self, buttons: &[PieButton]) -> Vec<Option<char>> {
         resolve_mnemonics(buttons, self.settings.input.auto_mnemonics)
     }
@@ -384,9 +470,11 @@ impl PieMenu {
 
     /// Show the pie menu for this frame.
     ///
-    /// `render_button(ui, index, is_hovered)` is called once per button inside
-    /// a floating [`egui::Area`] centred at that button's position. Use it to
-    /// draw any egui content — labels, images, custom widgets, etc.
+    /// `render_button(ui, &button_view)` is called once per button inside a floating
+    /// [`egui::Area`] centred at that button's position. Use it to draw any egui
+    /// content — labels, images, custom widgets, etc. The [`ButtonView`] carries the
+    /// index, hover state, resolved mnemonic and number hint; `ui.label(b.label_text())`
+    /// draws the label with its mnemonic underlined.
     ///
     /// `key_down` should be `true` while the hotkey that opened the menu is held.
     pub fn show(
@@ -396,7 +484,7 @@ impl PieMenu {
         current_mouse_pos: Option<Pos2>,
         key_down: bool,
         title: Option<&str>,
-        mut render_button: impl FnMut(&mut Ui, usize, bool),
+        mut render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
         // Ensure cached size vec is long enough
         if self.button_sizes.len() < buttons.len() {
@@ -745,6 +833,20 @@ impl PieMenu {
         }
 
         // Draw buttons via caller-provided closure inside floating Areas
+        // Resolved once per frame for the view handed to the render closure.
+        let mnemonics = self.mnemonics(buttons);
+        let number_hints: Vec<Option<NumberHint>> = buttons
+            .iter()
+            .map(|b| if self.settings.number_hints.show { None } else { self.number_hint(b) })
+            .collect();
+        let (text_color, body_font) = {
+            let style = ctx.global_style();
+            (
+                style.visuals.text_color(),
+                style.text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default(),
+            )
+        };
+
         for (idx, button) in buttons.iter().enumerate() {
             let dir_vec = Self::direction_vec(&button.direction, shape_factor);
             let dir_norm = dir_vec.normalized();
@@ -846,7 +948,15 @@ impl PieMenu {
                     // would wrap instead of widening the button. Don't wrap; let it grow.
                     // Explicit newlines still work, and the closure can override this.
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    render_button(ui, idx, is_hovered)
+                    render_button(ui, &ButtonView {
+                        idx,
+                        hovered: is_hovered,
+                        button,
+                        mnemonic: mnemonics[idx],
+                        number_hint: number_hints[idx].clone(),
+                        text_color,
+                        body_font: body_font.clone(),
+                    })
                 });
 
             self.button_sizes[idx] = response.response.rect.size();
@@ -903,12 +1013,16 @@ impl PieMenu {
 /// }));
 /// ```
 pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    append_mnemonic_text(&mut job, text, mnemonic, format);
+    job
+}
+
+fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: char, format: TextFormat) {
     let mnemonic_lower = mnemonic.to_ascii_lowercase();
     let split = text
         .char_indices()
         .find(|(_, c)| c.to_ascii_lowercase() == mnemonic_lower);
-
-    let mut job = LayoutJob::default();
 
     match split {
         None => {
@@ -933,8 +1047,6 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
             }
         }
     }
-
-    job
 }
 
 fn char_to_key(c: char) -> Option<Key> {
@@ -1081,12 +1193,51 @@ mod pin_tests {
         m.reveal();
         let mut resp = PieMenuResponse::None;
         let mut out = ctx.run_ui(Default::default(), |ui| {
-            resp = m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |ui, _, _| {
+            resp = m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |ui, _| {
                 ui.label("x");
             });
         });
         out.textures_delta.clear();
         assert!(matches!(resp, PieMenuResponse::None));
         assert!(m.mouse_shown);
+    }
+}
+
+#[cfg(test)]
+mod button_view_tests {
+    use super::*;
+
+    fn label(prefix: &str, mnemonic: Option<char>) -> LabelText {
+        LabelText {
+            prefix: prefix.to_string(),
+            text: "Copy".to_string(),
+            mnemonic,
+            color: Color32::WHITE,
+            font: FontId::default(),
+        }
+    }
+
+    #[test]
+    fn plain_label_is_one_section() {
+        assert_eq!(label("", None).to_job().sections.len(), 1);
+    }
+
+    #[test]
+    fn mnemonic_is_underlined_and_prefix_is_not() {
+        let job = label("X ", Some('p')).to_job();
+        assert_eq!(job.text, "X Copy");
+        // egui merges equal adjacent formats: "X Co" | "p" (underlined) | "y"
+        assert_eq!(job.sections.len(), 3);
+        assert!(job.sections[1].format.underline != Stroke::NONE);
+        let underlined: Vec<_> = job.sections.iter().filter(|s| s.format.underline != Stroke::NONE).collect();
+        assert_eq!(underlined.len(), 1);
+    }
+
+    #[test]
+    fn overrides_apply() {
+        let l = label("", None).color(Color32::RED).font(FontId::monospace(20.0));
+        let job = l.to_job();
+        assert_eq!(job.sections[0].format.color, Color32::RED);
+        assert_eq!(job.sections[0].format.font_id, FontId::monospace(20.0));
     }
 }
