@@ -229,6 +229,16 @@ menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */])];
 ```
 
+### Disabled buttons, empty sectors, hover query
+
+```rust
+PieButton::new(PieDirection::North).with_enabled(false) // skipped by mouse, number keys, mnemonics
+// in your closure: `menu.current_buttons(&root)[idx].enabled` to grey it out
+
+menu.settings.input.ignore_empty_sectors = true; // pointing at a direction with no button selects nothing
+menu.hovered(); // Option<usize>: the currently highlighted button
+```
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:

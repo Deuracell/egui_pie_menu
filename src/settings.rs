@@ -178,6 +178,10 @@ pub struct PieMenuInput {
     /// Set to `false` for Blender-style interaction, where selection is triggered
     /// by releasing the key that opened the menu rather than by a separate click.
     pub select_on_primary_click: bool,
+    /// When `true`, pointing at one of the eight directions that has **no** button
+    /// highlights nothing, instead of snapping to the nearest existing button.
+    /// Useful for menus with fewer than eight buttons.
+    pub ignore_empty_sectors: bool,
     /// Inputs that dismiss the menu without selecting a button.
     ///
     /// Any [`PieMenuDismissInput::Key`] or [`PieMenuDismissInput::PointerButton`]
@@ -193,6 +197,7 @@ impl Default for PieMenuInput {
             use_mnemonic_keys: true,
             double_tap_window: Duration::from_millis(400),
             select_on_primary_click: true,
+            ignore_empty_sectors: false,
             dismiss_inputs: vec![
                 PieMenuDismissInput::Key(Key::Escape),
                 PieMenuDismissInput::Key(Key::Num5),

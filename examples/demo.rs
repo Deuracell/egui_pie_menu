@@ -346,6 +346,11 @@ impl eframe::App for Demo {
                 if lang_changed { self.apply_language(); }
                 ui.checkbox(&mut self.menu.settings.mirror_horizontal, "Mirror layout (RTL)");
                 ui.checkbox(&mut self.menu.settings.number_hints.show, "Show number hints");
+                ui.checkbox(&mut self.menu.settings.input.ignore_empty_sectors, "Ignore empty sectors");
+                let mut cut_disabled = !self.buttons[5].enabled;
+                if ui.checkbox(&mut cut_disabled, "Disable the SW button").changed() {
+                    self.buttons[5].enabled = !cut_disabled;
+                }
                 ui.label(RichText::new("egui has no bidi: keep labels single-script.").small());
                 if !self.font_note.is_empty() { ui.label(RichText::new(&self.font_note).small()); }
                 ui.add_space(8.0);
@@ -388,7 +393,10 @@ impl eframe::App for Demo {
                     |ui, idx, hovered| {
                         let label = labels[idx];
                         let color = COLORS[idx];
-                        let (bg, fg) = if hovered {
+                        let enabled = self.buttons[idx].enabled;
+                        let (bg, fg) = if !enabled {
+                            (color.gamma_multiply(0.25), Color32::DARK_GRAY)
+                        } else if hovered {
                             (color, Color32::WHITE)
                         } else {
                             (color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
