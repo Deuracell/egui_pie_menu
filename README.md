@@ -243,6 +243,8 @@ menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's
 menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
 ```
 
+Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN`/disabled radius, zero-width strokes or arcs) no longer panic.
+
 ### Highlight shapes
 
 `PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
