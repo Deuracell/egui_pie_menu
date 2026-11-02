@@ -154,6 +154,10 @@ pub struct PieMenuInput {
     /// Allow single-character mnemonic keys to activate buttons.
     /// Matched key events are consumed so they don't reach other handlers.
     pub use_mnemonic_keys: bool,
+    /// Generate mnemonics from button labels for buttons left at
+    /// [`crate::Mnemonic::Auto`]. Explicit keys ([`crate::Mnemonic::Key`]) are kept and
+    /// reserved; [`crate::Mnemonic::None`] buttons never get one. Off by default.
+    pub auto_mnemonics: bool,
     /// Maximum gap between two [`crate::PieMenuResponse::QuickTap`]s to produce a
     /// [`crate::PieMenuResponse::DoubleTap`].
     pub double_tap_window: Duration,
@@ -175,6 +179,7 @@ impl Default for PieMenuInput {
         Self {
             use_numpad_keys: true,
             use_mnemonic_keys: true,
+            auto_mnemonics: false,
             double_tap_window: Duration::from_millis(400),
             select_on_primary_click: true,
             dismiss_inputs: vec![
