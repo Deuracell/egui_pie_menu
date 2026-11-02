@@ -2,7 +2,7 @@ pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
 use std::f32::consts::{PI, TAU};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod utils;
 pub use utils::common_utils::SmartFloat;
@@ -579,35 +579,49 @@ impl PieMenu {
                 center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
             let is_hovered = self.selected_index == Some(idx);
 
-            // Reveal animation: progress 0..1, eased for the slide.
+            // Reveal animation: movement and opacity progress, each 0..1.
             let anim = &self.settings.animations;
-            let t = match (anim.reveal, self.shown_at) {
-                (RevealAnimation::None, _) | (_, None) => 1.0,
-                (_, Some(at)) => {
-                    let d = anim.reveal_duration.as_secs_f32().max(f32::EPSILON);
-                    (at.elapsed().as_secs_f32() / d).clamp(0.0, 1.0)
-                }
+            let elapsed = self.shown_at.map(|at| at.elapsed().as_secs_f32());
+            let progress = |d: Duration| {
+                elapsed.map_or(1.0, |e| (e / d.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0))
             };
-            if t < 1.0 {
+            let (move_t, opacity) = match anim.reveal {
+                RevealAnimation::None => (1.0, 1.0),
+                RevealAnimation::Fade => (1.0, progress(anim.reveal_duration)),
+                RevealAnimation::SlideOut => (
+                    progress(anim.reveal_duration),
+                    anim.slide_fade.map_or(1.0, progress),
+                ),
+            };
+            if move_t < 1.0 || opacity < 1.0 {
                 ctx.request_repaint();
             }
-            let button_center = if anim.reveal == RevealAnimation::SlideOut {
-                let eased = 1.0 - (1.0 - t).powi(3);
-                center + (button_center - center) * eased
+            let button_center = if move_t < 1.0 {
+                let eased = 1.0 - (1.0 - move_t).powi(3);
+                // Interpolate the radius and (optionally) the shape factor, then lay the
+                // button out as if that were the final layout, scaled about the centre.
+                // With a start radius of 0 this collapses every button onto the centre.
+                let end_radius = self.settings.layout_radius;
+                let radius = anim.slide_start_radius + (end_radius - anim.slide_start_radius) * eased;
+                let start_sf = anim.slide_start_shape_factor.unwrap_or(shape_factor);
+                let sf = start_sf + (shape_factor - start_sf) * eased;
+                let scale = if end_radius > 0.0 { radius / end_radius } else { 1.0 };
+                let offset = Self::direction_vec(&button.direction, sf) * end_radius
+                    + Vec2::new(hw * sx, hh * sy);
+                center + offset * scale
             } else {
                 button_center
             };
-            let animated = anim.reveal != RevealAnimation::None;
-
             let area_pos = button_center - cached_size / 2.0;
 
             let response = egui::Area::new(self.id.with(idx))
                 .order(egui::Order::Tooltip)
-                .fade_in(!animated)
+                // egui's own area fade is always off: Fade replaces it, None means none.
+                .fade_in(false)
                 .fixed_pos(area_pos)
                 .show(ctx, |ui| {
-                    if t < 1.0 {
-                        ui.set_opacity(t);
+                    if opacity < 1.0 {
+                        ui.set_opacity(opacity);
                     }
                     render_button(ui, idx, is_hovered)
                 });

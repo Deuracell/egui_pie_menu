@@ -199,8 +199,12 @@ menu.settings.input.double_tap_window  = Duration::from_millis(400);
 ### Reveal animation
 
 ```rust
-menu.settings.animations.reveal = RevealAnimation::SlideOut;  // or Fade / None (default)
-menu.settings.animations.reveal_duration = Duration::from_millis(150);
+// None (instant) · Fade (default) · SlideOut
+menu.settings.animations.reveal = RevealAnimation::SlideOut;
+menu.settings.animations.reveal_duration = Duration::from_millis(200);   // Fade / SlideOut (default 200 ms)
+menu.settings.animations.slide_start_radius = 0.0;                       // 0 = from the centre
+menu.settings.animations.slide_start_shape_factor = Some(-1.0);          // start as a diamond; None = final shape
+menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade while sliding; None = no fade
 ```
 
 ### Highlight shapes
