@@ -389,7 +389,8 @@ impl eframe::App for Demo {
                     }
                 });
 
-                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc word wrap", |ui| {
+                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc word wrap number hints digits", |ui| {
+                    ui.checkbox(&mut self.menu.settings.number_hints.show, "Show number hints");
                     ui.checkbox(&mut self.pinned, "Pin menu at center");
                     ui.label("While pinned, press Esc to unpin.");
                     ui.label(format!("Word wrap (NW button): {}", if self.word_wrap { "ON" } else { "OFF" }));
