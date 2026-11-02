@@ -31,6 +31,7 @@ pub enum Mnemonic {
 /// Defines *where* the button sits (`direction`), its keyboard mnemonic and the
 /// label text used to generate one. All visual content is rendered by the caller
 /// via the closure passed to [`PieMenu::show`].
+#[derive(Clone, Debug)]
 pub struct PieButton {
     /// Which of the eight directions this button occupies.
     pub direction: PieDirection,
@@ -160,6 +161,7 @@ fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
 }
 
 /// Outcome of a [`PieMenu::show`] call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieMenuResponse {
     /// A button was activated; value is its index in the slice passed to `show`.
     Selected(usize),
@@ -1028,3 +1030,19 @@ mod mnemonic_tests {
     }
 }
 
+#[cfg(test)]
+mod highlight_tests {
+    use super::*;
+
+    #[test]
+    fn arc_points_are_finite_for_degenerate_input() {
+        use crate::highlight_shapes::HighlightPainter;
+        let ctx = egui::Context::default();
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let c = Pos2::ZERO;
+        assert!(painter.arc_calculate_points(c, f32::NAN, 10.0, 0.0..1.0).is_empty());
+        for p in painter.arc_calculate_points(c, 15.0, 10.0, 1.0..1.0) {
+            assert!(p.x.is_finite() && p.y.is_finite());
+        }
+    }
+}
