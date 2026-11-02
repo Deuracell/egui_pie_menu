@@ -92,11 +92,15 @@ impl HighlightPainter for egui::Painter {
         resolution: f32,
         angle_range: std::ops::Range<f32>,) -> Vec<Pos2> {
         //assert!(angle_range.start >= 0.0 && angle_range.end <= std::f32::consts::TAU, "Angle range must be within the range of 0 to 2π radians");
-        assert!(resolution > 0.0 && resolution <= 100.0, "Resolution must be between 0.0 and 100.0");
-        assert!(radius > 0.0, "Radius must be greater than 0.0");
+        // Degenerate input (disabled/NaN radius, zero-width arc) yields no points
+        // instead of panicking or producing NaN positions.
+        if !(radius > 0.0) || !(resolution > 0.0) || !angle_range.start.is_finite() || !angle_range.end.is_finite() {
+            return Vec::new();
+        }
+        let resolution = resolution.min(100.0);
         let width_angle = angle_range.end - angle_range.start;
-        let arc_length = width_angle * radius;
-        let n_points = (arc_length * resolution).ceil() as usize;
+        let arc_length = width_angle.abs() * radius;
+        let n_points = ((arc_length * resolution).ceil() as usize).max(1);
         let step = width_angle / n_points as f32;
         let points: Vec<Pos2> = (0..=n_points)
             .map(|i| {
@@ -119,8 +123,10 @@ impl HighlightPainter for egui::Painter {
     fn draw_circle(&self, circle_values: CircleValues) {
         let circle = circle_values;
         let center = circle.offset_center + circle.offset_radius * egui::vec2(circle.offset_angle.cos(), circle.offset_angle.sin());
-        assert!(circle.circle_radius > 0.0, "Highlight circles `circle_radius` must be greater than 0.0");
-        
+        if !(circle.circle_radius > 0.0) || !center.is_finite() {
+            return;
+        }
+
         if circle.stroke.color == egui::Color32::TRANSPARENT
             && circle.fill_color == egui::Color32::TRANSPARENT
         {
@@ -144,13 +150,14 @@ impl HighlightPainter for egui::Painter {
     /// If the stroke color is transparent, the function returns without drawing anything and prints a message to the console.\
     /// It then calculates the points along the arc using the `arc_calculate_points` function, and adds a line shape to the painter using those points and the provided stroke.
     fn draw_arc(&self, arc_values: ArcValues) {
-        assert!(arc_values.stroke != egui::Stroke::NONE, "Stroke must not be NONE");
-        if arc_values.stroke.color == egui::Color32::TRANSPARENT {
+        if arc_values.stroke.color == egui::Color32::TRANSPARENT || arc_values.stroke.width <= 0.0 {
             return;
         }
         let arc = arc_values;
         let points = self.arc_calculate_points(arc.center, arc.radius, arc.resolution, arc.angle_range);
-        self.add(Shape::line(points, arc.stroke));
+        if points.len() >= 2 {
+            self.add(Shape::line(points, arc.stroke));
+        }
     }
     
     /// ### Draws various shapes on the painter based on the provided `PieMenuHighlightShape` and associated values.

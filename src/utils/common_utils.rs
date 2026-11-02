@@ -5,6 +5,7 @@ use num_traits::Float;
 /// Instead of pairing a value with a separate `enabled: bool`, set the value
 /// to `NaN` when it should have no effect. Use [`SmartFloat::new`] to create
 /// an enabled value and [`SmartFloat::is_enabled`] to check it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SmartFloat<T: Float>(T);
 
 impl<T: Float> SmartFloat<T> {
