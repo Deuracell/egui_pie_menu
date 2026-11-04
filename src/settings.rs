@@ -228,25 +228,18 @@ pub enum RevealAnimation {
     SlideOut,
 }
 
-/// Small digit hints (the number key that selects each button) drawn beside buttons.
+/// Small digit hints (the number key that selects each button), drawn by your render
+/// closure inside the button from [`crate::ButtonView::number_hint`]. Only produced when
+/// [`PieMenuInput::use_numpad_keys`] is on.
 #[derive(Clone, Debug)]
 pub struct PieMenuNumberHints {
-    /// Have the menu paint the digit *beside* each button. Only has an effect when
-    /// [`PieMenuInput::use_numpad_keys`] is on. To put the digit *inside* your button
-    /// instead (so the button grows to fit it), leave this off and use
-    /// [`crate::PieMenu::number_hint`] in your render closure. `side`, `spacing` and
-    /// `digits` apply to both; `font` only to the painted digit. The colour is applied to
-    /// the painted digit and passed on in [`crate::NumberHint::color`] for digits you draw.
-    pub show: bool,
     /// Digit colour. `None` (default) uses egui's weak text colour: a dimmed version of
-    /// the default label colour that follows the light/dark theme. On a hovered button the
-    /// digit gets more contrast automatically (brighter in a dark theme, darker in a light one).
+    /// the default label colour that follows the light/dark theme. On a hovered button,
+    /// [`crate::NumberHint::color_on`] gives it more contrast against the button colour.
     pub color: Option<Color32>,
-    /// Digit font.
-    pub font: FontId,
-    /// Gap between the button's edge and the digit, in logical pixels.
+    /// Suggested gap between the label and the digit, in logical pixels (for your closure).
     pub spacing: f32,
-    /// Which side of the button the digit is drawn on.
+    /// Which side of the label the digit goes on.
     pub side: HintSide,
     /// Which digits to draw (Western, Arabic-Indic or Persian).
     pub digits: HintDigits,
@@ -265,11 +258,11 @@ pub enum HintDigits {
     Persian,
 }
 
-/// Side of a button on which a number hint is drawn.
+/// Side of the label on which a number hint is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintSide {
-    /// After the label in reading order (default): right of the button for left-to-right
-    /// text, left of it for right-to-left text.
+    /// After the label in reading order (default): right of it for left-to-right text,
+    /// left of it for right-to-left text.
     Trailing,
     /// The side facing away from the centre: right for eastern buttons, left for western
     /// ones, right for North/South. Based on the displayed position, so it follows a
@@ -284,9 +277,7 @@ pub enum HintSide {
 impl Default for PieMenuNumberHints {
     fn default() -> Self {
         Self {
-            show: false,
             color: None,
-            font: FontId::proportional(11.0),
             spacing: 4.0,
             side: HintSide::Trailing,
             digits: HintDigits::Western,
