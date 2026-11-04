@@ -366,9 +366,34 @@ fn drag_reset_with<N: egui::emath::Numeric>(
                 *value = default;
                 changed = true;
             }
-            let width = ui.available_width();
+            // Blender-style fill: the field's background, then a bar showing where the
+            // value sits in its range (egui's selection colour), then the drag value on top
+            // with a transparent background so the bar shows through under the number.
+            let rect = ui.available_rect_before_wrap();
+            let rect = egui::Rect::from_center_size(rect.center(), Vec2::new(rect.width(), height));
+            let (lo, hi) = (range.start().to_f64(), range.end().to_f64());
+            let fraction = if hi > lo { ((value.to_f64() - lo) / (hi - lo)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+            let visuals = ui.visuals().clone();
+            let state = if ui.rect_contains_pointer(rect) { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
+            let radius = state.corner_radius;
+            ui.painter().rect_filled(rect, radius, state.weak_bg_fill);
+            if fraction > 0.0 {
+                let mut bar = rect;
+                bar.set_width(rect.width() * fraction);
+                ui.painter().rect_filled(bar, radius, visuals.selection.bg_fill.gamma_multiply(0.6));
+            }
             let drag = configure(egui::DragValue::new(&mut *value).range(range));
-            changed |= ui.add_sized([width, height], drag).changed();
+            changed |= ui
+                .scope(|ui| {
+                    let w = &mut ui.visuals_mut().widgets;
+                    for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+                        s.bg_fill = Color32::TRANSPARENT;
+                        s.weak_bg_fill = Color32::TRANSPARENT;
+                    }
+                    ui.add_sized(rect.size(), drag)
+                })
+                .inner
+                .changed();
             changed
         },
     )
