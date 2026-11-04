@@ -287,8 +287,9 @@ pub struct ButtonView<'a> {
 
 impl ButtonView<'_> {
     /// The button's label with its mnemonic (if any) underlined, ready for
-    /// `ui.label(..)` or `egui::Button::new(..)`. Colour and font follow the current
-    /// egui style; override with [`LabelText::color`] / [`LabelText::font`].
+    /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's strong text colour,
+    /// dimmed per [`PieMenuSettings::dim_text`] (and always when disabled); the font is
+    /// egui's body font. Override with [`LabelText::color`] / [`LabelText::font`].
     pub fn label_text(&self) -> LabelText {
         LabelText {
             prefix: String::new(),
@@ -296,7 +297,6 @@ impl ButtonView<'_> {
             mnemonic: self.mnemonic,
             color: self.text_color,
             font: self.body_font.clone(),
-            hovered: self.hovered,
         }
     }
 }
@@ -310,24 +310,12 @@ pub struct LabelText {
     mnemonic: Option<char>,
     color: Color32,
     font: FontId,
-    hovered: bool,
 }
 
 impl LabelText {
     /// Text (and underline) colour.
     pub fn color(mut self, color: Color32) -> Self {
         self.color = color;
-        self
-    }
-
-    /// On a hovered button, gives the colour more contrast against `bg` (the colour the
-    /// label is drawn on) with [`more_contrast`]; unchanged otherwise. Call it after
-    /// [`Self::color`]. Use the same `bg` as [`NumberHint::color_on`] so the label and the
-    /// digit react alike.
-    pub fn contrast_on(mut self, bg: Color32) -> Self {
-        if self.hovered {
-            self.color = more_contrast(self.color, bg, HOVER_CONTRAST);
-        }
         self
     }
 
@@ -373,48 +361,28 @@ impl From<LabelText> for egui::WidgetText {
 pub struct NumberHint {
     /// The digit, already converted to the [`PieMenuNumberHints::digits`] style.
     pub text: String,
-    /// The digit's colour: [`PieMenuNumberHints::color`], or egui's weak text colour.
-    /// For a hover-aware colour use [`Self::color_on`].
+    /// The digit's colour: [`PieMenuNumberHints::color`] (or egui's strong text colour),
+    /// dimmed per [`PieMenuNumberHints::dim`] for this button's hover/enabled state.
     pub color: Color32,
-    /// Whether the button is hovered (set inside the render closure).
-    hovered: bool,
     /// Whether the digit goes after (right of) the label rather than before it,
     /// resolved from [`PieMenuNumberHints::side`].
     pub on_right: bool,
 }
 
-impl NumberHint {
-    /// The digit colour to draw on `bg` (your button's colour): [`Self::color`], with more
-    /// contrast against `bg` while the button is hovered (see [`more_contrast`]).
-    pub fn color_on(&self, bg: Color32) -> Color32 {
-        if self.hovered {
-            more_contrast(self.color, bg, HOVER_CONTRAST)
-        } else {
-            self.color
-        }
-    }
-}
+/// How far dimmed text moves towards the theme's background colour (0.4: e.g. white
+/// becomes light grey on a dark theme).
+const TEXT_DIM: f32 = 0.4;
 
-/// How far [`LabelText::contrast_on`] and [`NumberHint::color_on`] move a hovered
-/// button's text towards white or black.
-pub const HOVER_CONTRAST: f32 = 0.6;
-
-/// `color` moved `amount` (0..=1) of the way towards white or black, whichever contrasts
-/// more with `bg` (WCAG contrast ratio). So text on a dark background gets lighter and
-/// text on a light one darker, whatever the theme. Alpha is kept.
-pub fn more_contrast(color: Color32, bg: Color32, amount: f32) -> Color32 {
-    fn channel(c: u8) -> f32 {
-        let c = c as f32 / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+/// `color` for a button in the given state: full when enabled and (hovered, or `rule`
+/// only dims disabled buttons), else moved [`TEXT_DIM`] of the way towards `bg`.
+fn dimmed_text(color: Color32, bg: Color32, rule: DimText, hovered: bool, enabled: bool) -> Color32 {
+    let full = enabled && (hovered || rule == DimText::OnlyWhenDisabled);
+    if full {
+        return color;
     }
-    let l = 0.2126 * channel(bg.r()) + 0.7152 * channel(bg.g()) + 0.0722 * channel(bg.b());
-    // Contrast ratio against white vs black; pick the larger.
-    let towards_white = (1.05 / (l + 0.05)) >= ((l + 0.05) / 0.05);
-    let target = if towards_white { 255.0 } else { 0.0 };
-    let t = amount.clamp(0.0, 1.0);
     let [r, g, b, a] = color.to_srgba_unmultiplied();
-    let mix = |c: u8| (c as f32 + (target - c as f32) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(mix(r), mix(g), mix(b), a)
+    let mix = |c: u8, t: u8| (c as f32 + (t as f32 - c as f32) * TEXT_DIM).round() as u8;
+    Color32::from_rgba_unmultiplied(mix(r, bg.r()), mix(g, bg.g()), mix(b, bg.b()), a)
 }
 
 pub struct PieMenu {
@@ -503,27 +471,27 @@ impl PieMenu {
     /// grows to fit it, e.g. `egui::Button::new((label, hint.text)).gap(spacing)`.
     ///
     /// Returns `None` when number keys are off. Inside the render closure, prefer
-    /// [`ButtonView::number_hint`], which also knows whether the button is hovered.
+    /// [`ButtonView::number_hint`], which also knows whether the button is hovered
+    /// (this one gives the colour for a non-hovered button in a dark theme).
     pub fn number_hint(&self, button: &PieButton) -> Option<NumberHint> {
         self.number_hint_styled(button, false, &egui::Visuals::dark())
     }
 
     /// [`Self::number_hint`] with the colour resolved for `hovered` against `visuals`.
-    /// Outside `show`, the theme is unknown, so the dark visuals stand in when no
-    /// explicit colour is set.
     fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
         let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
+        let hints = &self.settings.number_hints;
         self.settings.input.use_numpad_keys.then(|| NumberHint {
             text: self.hint_digit(&dir).to_string(),
-            color: self.hint_color(visuals),
-            hovered,
+            color: dimmed_text(
+                hints.color.unwrap_or_else(|| visuals.strong_text_color()),
+                visuals.panel_fill,
+                hints.dim,
+                hovered,
+                button.enabled,
+            ),
             on_right: self.hint_on_right(&dir),
         })
-    }
-
-    /// The configured hint colour, or egui's weak text colour.
-    fn hint_color(&self, visuals: &egui::Visuals) -> Color32 {
-        self.settings.number_hints.color.unwrap_or_else(|| visuals.weak_text_color())
     }
 
     /// The hint digit for a direction, in the [`PieMenuNumberHints::digits`] style.
@@ -1174,13 +1142,7 @@ impl PieMenu {
         // Resolved once per frame for the view handed to the render closure.
         let mnemonics = self.mnemonics(buttons);
         let visuals = ctx.global_style().visuals.clone();
-        let (text_color, body_font) = {
-            let style = ctx.global_style();
-            (
-                style.visuals.text_color(),
-                style.text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default(),
-            )
-        };
+        let body_font = ctx.global_style().text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
 
         for (idx, button) in buttons.iter().enumerate() {
             let dir_vec = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
@@ -1274,7 +1236,13 @@ impl PieMenu {
                         button,
                         mnemonic: mnemonics[idx],
                         number_hint: self.number_hint_styled(button, is_hovered, &visuals),
-                        text_color,
+                        text_color: dimmed_text(
+                            visuals.strong_text_color(),
+                            visuals.panel_fill,
+                            self.settings.dim_text,
+                            is_hovered,
+                            button.enabled,
+                        ),
                         body_font: body_font.clone(),
                     })
                 });
@@ -1564,7 +1532,6 @@ mod button_view_tests {
             mnemonic,
             color: Color32::WHITE,
             font: FontId::default(),
-            hovered: false,
         }
     }
 
@@ -1806,39 +1773,45 @@ mod finding_tests {
     }
 
     #[test]
-    fn hint_colour_follows_hover() {
-        let mut m = PieMenu::new();
-        let v = egui::Visuals::dark();
-        let grey = Color32::from_gray(100);
-        let dark_bg = Color32::from_rgb(20, 30, 60);
-        let light_bg = Color32::from_rgb(230, 220, 120);
-        let normal = m.number_hint_styled(&north(), false, &v).unwrap();
-        assert_eq!(normal.color, v.weak_text_color());
-        assert_eq!(normal.color_on(dark_bg), normal.color, "not hovered: unchanged");
-        m.settings.number_hints.color = Some(grey);
-        let hovered = m.number_hint_styled(&north(), true, &v).unwrap();
-        assert_eq!(hovered.color, grey, "`color` is the plain colour");
-        // 60% of the way to white on a dark button, to black on a light one.
-        assert_eq!(hovered.color_on(dark_bg), Color32::from_gray(193));
-        assert_eq!(hovered.color_on(light_bg), Color32::from_gray(40));
-        // The public helper is never hovered.
-        assert_eq!(m.number_hint(&north()).unwrap().color_on(dark_bg), grey);
+    fn text_dimming_rules() {
+        let bg = Color32::from_gray(30);
+        let white = Color32::WHITE;
+        let dim = Color32::from_gray(165); // 40% of the way from 255 to 30
+        use DimText::*;
+        // (rule, hovered, enabled) -> full colour?
+        assert_eq!(dimmed_text(white, bg, WhenNotHovered, true, true), white);
+        assert_eq!(dimmed_text(white, bg, WhenNotHovered, false, true), dim);
+        assert_eq!(dimmed_text(white, bg, OnlyWhenDisabled, false, true), white);
+        // Disabled is always dimmed, hovered or not, under either rule.
+        for rule in [WhenNotHovered, OnlyWhenDisabled] {
+            for hovered in [false, true] {
+                assert_eq!(dimmed_text(white, bg, rule, hovered, false), dim);
+            }
+        }
+        // Light theme: black text dims towards the light background (lighter).
+        assert_eq!(
+            dimmed_text(Color32::BLACK, Color32::from_gray(250), WhenNotHovered, false, true),
+            Color32::from_gray(100)
+        );
     }
 
     #[test]
-    fn label_contrast_follows_hover_and_background() {
-        let b = north();
-        let view = |hovered| ButtonView {
-            idx: 0, hovered, enabled: true, button: &b, mnemonic: None, number_hint: None,
-            text_color: Color32::from_gray(100), body_font: FontId::default(),
-        };
-        let dark_bg = Color32::from_rgb(20, 30, 60);
-        let light_bg = Color32::WHITE;
-        assert_eq!(view(false).label_text().contrast_on(dark_bg).color, Color32::from_gray(100));
-        assert_eq!(view(true).label_text().contrast_on(dark_bg).color, Color32::from_gray(193));
-        assert_eq!(view(true).label_text().contrast_on(light_bg).color, Color32::from_gray(40));
-        // Saturated mid-tone (the demo's green button): black text contrasts more.
-        assert_eq!(more_contrast(Color32::WHITE, Color32::from_rgb(100, 160, 100), 1.0), Color32::BLACK);
+    fn hint_and_label_dimming_are_independent() {
+        let mut m = PieMenu::new();
+        let v = egui::Visuals::dark();
+        let full = v.strong_text_color();
+        m.settings.dim_text = DimText::WhenNotHovered;
+        m.settings.number_hints.dim = DimText::OnlyWhenDisabled;
+        // The digit stays full on a non-hovered button…
+        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, full);
+        // …but is dimmed on a disabled one.
+        let disabled = north().with_enabled(false);
+        assert_ne!(m.number_hint_styled(&disabled, true, &v).unwrap().color, full);
+        // A custom digit colour is the full colour and dims the same way.
+        m.settings.number_hints.dim = DimText::WhenNotHovered;
+        m.settings.number_hints.color = Some(Color32::from_rgb(200, 100, 50));
+        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::from_rgb(200, 100, 50));
+        assert_ne!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::from_rgb(200, 100, 50));
     }
 
     #[test]
