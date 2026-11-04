@@ -435,7 +435,7 @@ impl eframe::App for Demo {
 
                     let mut own_height = self.menu.settings.diagonal_height.is_some();
                     if ui.checkbox(&mut own_height, "Diagonal height")
-                        .on_hover_text("Place NE/SE/SW/NW at a fraction of the N/S height: 0.5 = halfway between N/S and E/W. Off: follows the shape factor.")
+                        .on_hover_text("Place NE/SE/SW/NW at a fraction of the N/S height (0.5 = halfway between N/S and E/W); they slide along the layout shape. Off: at 45°.")
                         .changed()
                     {
                         self.menu.settings.diagonal_height = own_height.then_some(self.diagonal_height);
