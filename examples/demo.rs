@@ -826,7 +826,7 @@ impl eframe::App for Demo {
                 // which come from the theme, can be checked in both.
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss (Esc also unpins)");
+                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Pinned: only Esc unpins");
             });
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -902,7 +902,8 @@ impl eframe::App for Demo {
                 let input = &mut self.menu.settings.input;
                 if self.pinned {
                     input.select_on_primary_click &= pointer_in_menu_area;
-                    input.dismiss_inputs.retain(|d| matches!(d, egui_pie_menu::PieMenuDismissInput::Key(_)));
+                    // Only Esc unpins: no pointer dismissals, and not 5 either.
+                    input.dismiss_inputs.retain(|d| *d == egui_pie_menu::PieMenuDismissInput::Key(egui::Key::Escape));
                 }
                 if esc_for_sidebar {
                     input.dismiss_inputs.retain(|d| *d != egui_pie_menu::PieMenuDismissInput::Key(egui::Key::Escape));
@@ -982,7 +983,7 @@ impl eframe::App for Demo {
                         if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::Dismissed => {
-                        // Esc (or 5) unpins; pointer dismissals are disabled while pinned.
+                        // Dismissed: closes the menu; while pinned only Esc can get here, and it unpins.
                         self.pinned = false;
                         self.pin_active = false;
                         self.last_action = "Dismissed.".to_string();

@@ -842,10 +842,26 @@ impl PieMenu {
             return PieMenuResponse::None;
         }
 
+        // Keyboard ownership. A blocking menu takes keyboard focus away, so a text field
+        // that was focused when the menu opened stops receiving keys from the next frame
+        // (this frame it already ran, so consuming keys below would be too late).
+        // A non-blocking (pinned) menu leaves typing alone: while egui wants keyboard
+        // input, dismiss keys, number keys and mnemonics go to that widget, not the menu.
+        let keys_for_menu = if self.settings.block_background {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            true
+        } else {
+            !ctx.egui_wants_keyboard_input()
+        };
+
         // Early exit checks
         let dismissed = ctx.input(|i| {
             self.settings.input.dismiss_inputs.iter().any(|d| match d {
-                PieMenuDismissInput::Key(k) => i.key_pressed(*k),
+                PieMenuDismissInput::Key(k) => keys_for_menu && i.key_pressed(*k),
                 PieMenuDismissInput::PointerButton(pb) => i.pointer.button_clicked(*pb),
             })
         });
@@ -921,21 +937,6 @@ impl PieMenu {
             );
         }
 
-        // Keyboard ownership. A blocking menu takes keyboard focus away, so a text field
-        // that was focused when the menu opened stops receiving keys from the next frame
-        // (this frame it already ran, so consuming keys below would be too late).
-        // A non-blocking (pinned) menu leaves typing alone: while egui wants keyboard
-        // input, number keys and mnemonics go to that widget, not the menu.
-        let keys_for_menu = if self.settings.block_background {
-            ctx.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
-            });
-            true
-        } else {
-            !ctx.egui_wants_keyboard_input()
-        };
 
         // Numpad key selection. The key (and its text event) is consumed so the digit
         // does not also reach other handlers or text fields.
@@ -1880,6 +1881,20 @@ mod finding_tests {
         let resp = frame(&ctx, &mut m, &mut text, true, digit8());
         assert_eq!(resp, PieMenuResponse::None, "typing selected a pie button");
         assert_eq!(text, "8");
+        // A dismiss key typed into the field doesn't dismiss the menu either.
+        let five = vec![
+            egui::Event::Key {
+                key: Key::Num5,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("5".into()),
+        ];
+        let resp = frame(&ctx, &mut m, &mut text, true, five);
+        assert_eq!(resp, PieMenuResponse::None, "typing 5 dismissed the menu");
+        assert_eq!(text, "85");
         // Without a focused field the key selects as before.
         ctx.memory_mut(|mem| mem.stop_text_input());
         let resp = frame(&ctx, &mut m, &mut text, false, digit8());
