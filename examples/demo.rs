@@ -75,6 +75,10 @@ struct Demo {
     menu_open: bool,
     last_action: String,
     pinned: bool,
+    /// True while the pinned menu is the open one.
+    pin_active: bool,
+    /// True while the open menu was opened by holding Space (not right-click).
+    space_open: bool,
 
     // Mirrored f32 values for SmartFloat settings (sliders need plain f32)
     bg_radius: f32,
@@ -137,8 +141,10 @@ impl Demo {
             font_note: String::new(),
             menu,
             menu_open: false,
-            last_action: "Right-click anywhere to open the menu.".to_string(),
+            last_action: String::new(),
             pinned: false,
+            pin_active: false,
+            space_open: false,
             bg_radius,
             highlight_radius,
             highlight_angle_deg,
@@ -357,6 +363,10 @@ impl eframe::App for Demo {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+        // Sampled before the sidebar runs: if a sidebar widget has focus or a popup
+        // (e.g. a colour picker) is open, Esc belongs to it and must not also reach the
+        // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
+        let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         let d = PieMenuSettings::default(); // defaults for the reset buttons
         self.buttons = build_buttons(&self.button_configs);
         let mnemonics = self.menu.mnemonics(&self.buttons); // keys in effect, for editor + render
@@ -700,11 +710,6 @@ impl eframe::App for Demo {
                     if !self.font_note.is_empty() { ui.label(RichText::new(&self.font_note).small()); }
                 });
 
-                section(ui, &query, &mut shown, "Misc", "pin center centre unpin esc", |ui| {
-                    ui.checkbox(&mut self.pinned, "Pin menu at center");
-                    ui.label("While pinned, press Esc to unpin.");
-                });
-
                 if shown == 0 {
                     ui.label(RichText::new("No matching settings.").italics().color(Color32::GRAY));
                 }
@@ -730,28 +735,92 @@ impl eframe::App for Demo {
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.label("Right-click to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss");
-            ui.centered_and_justified(|ui| {
-                ui.label(RichText::new(&self.last_action).size(18.0).color(Color32::LIGHT_GRAY));
+            // The panel's own area (not its clip rect, which can be larger), so the
+            // pinned menu, the result text and the pointer checks share one centre.
+            let viewport = ui.max_rect();
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.pinned, "Pin pie-menu");
+                ui.label("·  Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss (Esc also unpins)");
             });
+            // Result of the last action: near the top so the menu never covers it, and
+            // centred on the same x as the pinned menu.
+            let text_top = ui.cursor().min.y + 20.0;
+            let text_rect = ui.painter().text(
+                egui::pos2(viewport.center().x, text_top),
+                egui::Align2::CENTER_TOP,
+                &self.last_action,
+                egui::FontId::proportional(18.0),
+                Color32::LIGHT_GRAY,
+            );
+            // Pinned menu: the pointer counts only below this top area, so the pin
+            // checkbox never hovers or clicks a pie button.
+            let menu_area = egui::Rect::from_min_max(
+                egui::pos2(viewport.min.x, text_rect.max.y.max(text_top + 18.0)), viewport.max);
 
+            // Unticking the pin closes the pinned menu.
+            if !self.pinned && self.pin_active {
+                self.pin_active = false;
+                self.menu_open = false;
+            }
+            // Pinned: open once at the centre, visible straight away.
             if self.pinned && problems.is_empty() {
-                self.menu.position = ui.clip_rect().center();
-                self.menu_open = true;
+                if !self.pin_active {
+                    self.pin_active = true;
+                    self.space_open = false;
+                    self.menu.open(viewport.center());
+                    self.menu.reveal();
+                    self.menu_open = true;
+                }
+                self.menu.position = viewport.center();
             }
 
+            let pointer = ctx.input(|i| i.pointer.latest_pos());
+            let pointer_in_viewport = pointer.is_some_and(|p| viewport.contains(p));
+            let pointer_in_menu_area = pointer.is_some_and(|p| menu_area.contains(p));
             if !self.pinned && !self.menu_open && problems.is_empty() {
                 if let Some(pos) = ctx.input(|i| {
                     i.pointer.secondary_pressed().then(|| i.pointer.latest_pos()).flatten()
                 }) {
                     self.menu.open(pos);
                     self.menu_open = true;
+                    self.space_open = false;
+                } else if pointer_in_viewport
+                    && ctx.memory(|m| m.focused().is_none())
+                    && ctx.input(|i| i.events.iter().any(|e| matches!(e,
+                        egui::Event::Key { key: egui::Key::Space, pressed: true, repeat: false, .. })))
+                {
+                    // Demo-only shortcut: hold Space like the right button. Only while the
+                    // pointer is over the viewport and no sidebar widget has focus.
+                    self.menu.open(pointer.unwrap());
+                    self.menu_open = true;
+                    self.space_open = true;
                 }
             }
 
             if self.menu_open && problems.is_empty() {
-                let mouse_pos = if self.pinned { None } else { ctx.input(|i| i.pointer.latest_pos()) };
-                let key_down  = if self.pinned { true  } else { ctx.input(|i| i.pointer.secondary_down()) };
+                // Pinned: the pointer only counts inside the viewport, below the top bar.
+                let mouse_pos = if self.pinned { pointer.filter(|_| pointer_in_menu_area) } else { pointer };
+                let key_down = if self.pinned {
+                    true
+                } else if self.space_open {
+                    ctx.input(|i| i.key_down(egui::Key::Space))
+                } else {
+                    ctx.input(|i| i.pointer.secondary_down())
+                };
+                // Per-frame input tweaks; the user's settings are restored after `show`.
+                // Pinned: don't block the rest of the UI; clicks select only inside the
+                // menu area (outside, a click would otherwise dismiss); the pointer never
+                // dismisses. Esc is held back while the sidebar owns it.
+                let saved_input = self.menu.settings.input.clone();
+                self.menu.settings.block_background = !self.pinned;
+                let input = &mut self.menu.settings.input;
+                if self.pinned {
+                    input.select_on_primary_click &= pointer_in_menu_area;
+                    input.dismiss_inputs.retain(|d| matches!(d, egui_pie_menu::PieMenuDismissInput::Key(_)));
+                }
+                if esc_for_sidebar {
+                    input.dismiss_inputs.retain(|d| *d != egui_pie_menu::PieMenuDismissInput::Key(egui::Key::Escape));
+                }
 
                 // "Beside" mode lets the menu paint the hints itself; "inside" mode draws
                 // them from `b.number_hint` in the closure below.
@@ -820,9 +889,9 @@ impl eframe::App for Demo {
                         if !self.pinned { self.menu_open = false; }
                     }
                     PieMenuResponse::Dismissed => {
-                        // Esc unpins: the full-screen input blocker would otherwise
-                        // make the "Pin menu at center" checkbox unreachable.
+                        // Esc (or 5) unpins; pointer dismissals are disabled while pinned.
                         self.pinned = false;
+                        self.pin_active = false;
                         self.last_action = "Dismissed.".to_string();
                         self.menu_open = false;
                     }
@@ -836,6 +905,7 @@ impl eframe::App for Demo {
                     }
                     PieMenuResponse::None => {}
                 }
+                self.menu.settings.input = saved_input;
             }
         });
     }

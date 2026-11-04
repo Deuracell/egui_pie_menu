@@ -641,11 +641,12 @@ impl PieMenu {
         }
         let level = Self::resolve_level(buttons, &self.path).unwrap_or(buttons);
 
-        // Go back one level: Backspace, or a click on the centre.
+        // Go back one level: Backspace, or a click on the centre (when clicks are enabled).
         if !self.path.is_empty() && self.mouse_shown {
             let thr = self.settings.mouse_trigger_threshold;
             let back = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace))
-                || (ctx.input(|i| i.pointer.primary_clicked())
+                || (self.settings.input.select_on_primary_click
+                    && ctx.input(|i| i.pointer.primary_clicked())
                     && current_mouse_pos.is_some_and(|p| (p - self.position).length() <= thr));
             if back {
                 self.path.pop();
