@@ -351,14 +351,24 @@ fn drag_reset_with<N: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<N>,
     configure: impl for<'s> FnOnce(egui::DragValue<'s>) -> egui::DragValue<'s>,
 ) -> bool {
-    ui.horizontal(|ui| {
-        let mut changed = ui.add(configure(egui::DragValue::new(&mut *value).range(range))).changed();
-        if reset_button(ui, *value == default) {
-            *value = default;
-            changed = true;
-        }
-        changed
-    })
+    // Full row: the reset button against the right edge, the drag value filling the
+    // rest of the sidebar width (item spacing between), so all fields line up.
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), height),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            let mut changed = false;
+            if reset_button(ui, *value == default) {
+                *value = default;
+                changed = true;
+            }
+            let width = ui.available_width();
+            let drag = configure(egui::DragValue::new(&mut *value).range(range));
+            changed |= ui.add_sized([width, height], drag).changed();
+            changed
+        },
+    )
     .inner
 }
 
