@@ -106,6 +106,8 @@ struct Demo {
     hint_color: Color32,
     /// Config index of each menu button (see `build_buttons`).
     button_map: Vec<usize>,
+    /// Height of every pie button in the demo (both kinds), in px.
+    button_height: f32,
     // Slider value for "Diagonal height" (kept while it is off)
     diagonal_height: f32,
     // Colour picker value for "Force contrast text" (kept while it is off)
@@ -164,6 +166,7 @@ impl Demo {
             slide_fade_ms: 200,
             hint_color: Color32::WHITE,
             button_map,
+            button_height: DEFAULT_BUTTON_HEIGHT,
             diagonal_height: 0.5,
             label_color: Color32::WHITE,
             show_hints: false,
@@ -173,6 +176,8 @@ impl Demo {
 
 /// Demo-side defaults for values the library settings don't hold directly.
 const DEFAULT_SHOW_THRESHOLD: f32 = 10.0;
+/// The demo's pie buttons are drawn by the demo, so their height is a demo setting.
+const DEFAULT_BUTTON_HEIGHT: f32 = 24.0;
 const DEFAULT_SLIDE_START_SHAPE: f32 = -1.0; // start the slide as a diamond
 
 // ── Button editor model ─────────────────────────────────────────────────────
@@ -429,7 +434,7 @@ impl eframe::App for Demo {
             let mut shown = 0;
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height", |ui| {
+                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height button size", |ui| {
                     ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
                     slider_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
 
@@ -448,6 +453,10 @@ impl eframe::App for Demo {
 
                     ui.label("Radius");
                     slider_reset(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0, 1.0);
+
+                    ui.label("Button height (px)")
+                        .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
+                    slider_reset(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0, 1.0);
                 });
 
                 section(ui, &query, &mut shown, "Center background", "radius fill color colour stroke width", |ui| {
@@ -884,6 +893,7 @@ impl eframe::App for Demo {
                 }
 
                 let hint_gap = self.menu.settings.number_hints.spacing;
+                let button_h = self.button_height;
 
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, b| {
@@ -911,23 +921,33 @@ impl eframe::App for Demo {
 
                         let resp = match cfg.kind {
                             // Display only: the toggle happens on Selected.
+                            // Both kinds get the same fixed height ("Button height"): no vertical
+                            // padding, content centred in a row of exactly that height.
                             ButtonKind::Checkbox => egui::Frame::new()
                                 .fill(bg)
                                 .corner_radius(6.0)
-                                .inner_margin(Vec2::new(10.0, 5.0))
+                                .inner_margin(Vec2::new(10.0, 0.0))
                                 .show(ui, |ui| {
                                     ui.spacing_mut().item_spacing.x = hint_gap;
-                                    ui.horizontal(|ui| {
-                                        if let Some((h, false)) = &hint { ui.label(h.clone()); }
-                                        let mut display = cfg.checked;
-                                        ui.checkbox(&mut display, text);
-                                        if let Some((h, true)) = &hint { ui.label(h.clone()); }
-                                    });
+                                    ui.allocate_ui_with_layout(
+                                        Vec2::new(0.0, button_h),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.set_min_height(button_h);
+                                            if let Some((h, false)) = &hint { ui.label(h.clone()); }
+                                            let mut display = cfg.checked;
+                                            ui.checkbox(&mut display, text);
+                                            if let Some((h, true)) = &hint { ui.label(h.clone()); }
+                                        },
+                                    );
                                 })
                                 .response,
                             ButtonKind::Button => {
-                                ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
-                                ui.add(hint_button(text, hint, hint_gap).fill(bg).corner_radius(6.0))
+                                ui.spacing_mut().button_padding = Vec2::new(10.0, 0.0);
+                                ui.add(hint_button(text, hint, hint_gap)
+                                    .fill(bg)
+                                    .corner_radius(6.0)
+                                    .min_size(Vec2::new(0.0, button_h)))
                             }
                         };
                         if !cfg.tooltip.is_empty() {
