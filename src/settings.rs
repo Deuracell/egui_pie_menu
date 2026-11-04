@@ -336,10 +336,11 @@ pub struct PieMenuSettings {
     pub shape_factor: f32,
     /// Height of the diagonal (intercardinal: NE, SE, SW, NW) buttons, as a fraction of a
     /// North/South button's centre height above/below the East–West row: `0.5` puts them
-    /// halfway between N/S and E/W, `0.0` level with E/W, `1.0` level with N/S. Hover
-    /// picking and the centre highlight follow. `None` (default): the height follows from
-    /// [`Self::shape_factor`], with the button's inner corner on the layout circle.
-    /// Horizontal placement always follows `shape_factor`.
+    /// halfway between N/S and E/W, `1.0` level with N/S; low values bottom out with the
+    /// inner corner on the E–W axis. The buttons slide *along* the layout shape (circle,
+    /// square or diamond per [`Self::shape_factor`]), keeping their inner corner on it, so
+    /// lower diagonals also move outward. Hover picking and the centre highlight follow.
+    /// `None` (default): diagonals sit at 45° on the shape.
     pub diagonal_height: Option<f32>,
     /// Controls when the menu becomes visible and whether tap responses are possible.
     /// See [`ShowBehavior`].
