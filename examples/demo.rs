@@ -106,9 +106,8 @@ struct Demo {
     hint_color: Color32,
     /// Config index of each menu button (see `build_buttons`).
     button_map: Vec<usize>,
-    // Number hints on/off, and whether they go inside the buttons or are painted beside
+    // Number hints (drawn inside the buttons) on/off
     show_hints: bool,
-    hints_inside: bool,
 }
 
 impl Demo {
@@ -162,7 +161,6 @@ impl Demo {
             hint_color: Color32::GRAY,
             button_map,
             show_hints: false,
-            hints_inside: true,
         }
     }
 }
@@ -591,14 +589,9 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys inside beside painted side trailing after outside left right spacing gap color colour", |ui| {
+                    "number hints digits keys side trailing after outside left right spacing gap color colour", |ui| {
                     ui.checkbox(&mut self.show_hints, "Show number hints");
                     ui.add_enabled_ui(self.show_hints, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.hints_inside, true, "Inside button");
-                            ui.radio_value(&mut self.hints_inside, false, "Beside (painted)");
-                        });
-
                         ui.label("Side");
                         let current = self.menu.settings.number_hints.side;
                         egui::ComboBox::from_id_salt("hint_side")
@@ -615,7 +608,7 @@ impl eframe::App for Demo {
 
                         let mut custom = self.menu.settings.number_hints.color.is_some();
                         if ui.checkbox(&mut custom, "Custom colour")
-                            .on_hover_text("Off: egui's weak text colour (dimmed). Either way the digit brightens on hover.")
+                            .on_hover_text("Off: egui's weak text colour (dimmed). Either way the digit gets more contrast against the button on hover.")
                             .changed()
                         {
                             self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
@@ -852,31 +845,28 @@ impl eframe::App for Demo {
                     input.dismiss_inputs.retain(|d| *d != egui_pie_menu::PieMenuDismissInput::Key(egui::Key::Escape));
                 }
 
-                // "Beside" mode lets the menu paint the hints itself; "inside" mode draws
-                // them from `b.number_hint` in the closure below.
-                self.menu.settings.number_hints.show = self.show_hints && !self.hints_inside;
                 let hint_gap = self.menu.settings.number_hints.spacing;
 
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, b| {
                         let (idx, hovered) = (b.idx, b.hovered);
                         let cfg = &self.button_configs[self.button_map[idx]];
-                        let (bg, fg) = if !b.enabled {
-                            (cfg.color.gamma_multiply(0.25), Color32::DARK_GRAY)
+                        let bg = if !b.enabled {
+                            cfg.color.gamma_multiply(0.25)
                         } else if hovered {
-                            (cfg.color, Color32::WHITE)
+                            cfg.color
                         } else {
-                            (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
+                            cfg.color.gamma_multiply(0.6)
                         };
-                        // Hint digit in the library's colour (the normal or custom colour,
-                        // with more contrast while hovered).
-                        let inside = self.show_hints && self.hints_inside;
-                        let hint = b.number_hint.as_ref().filter(|_| inside).map(|h| {
-                            (RichText::new(&h.text).color(h.color), h.on_right)
+                        let fg = if b.enabled { Color32::LIGHT_GRAY } else { Color32::DARK_GRAY };
+                        // Hovered: label and digit both get more contrast against the button
+                        // colour (lighter on a dark button, darker on a light one).
+                        let hint = b.number_hint.as_ref().filter(|_| self.show_hints).map(|h| {
+                            (RichText::new(&h.text).color(h.color_on(bg)), h.on_right)
                         });
 
                         // Icon + label, with the mnemonic underlined.
-                        let mut label = b.label_text().color(fg);
+                        let mut label = b.label_text().color(fg).contrast_on(bg);
                         if !cfg.icon.is_empty() {
                             label = label.prefix(format!("{}  ", cfg.icon));
                         }
