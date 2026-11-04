@@ -334,6 +334,13 @@ pub struct PieMenuSettings {
     ///
     /// Cardinal buttons (N/S/E/W) are unaffected; only the diagonal positions change.
     pub shape_factor: f32,
+    /// Height of the diagonal (intercardinal: NE, SE, SW, NW) buttons, as a fraction of a
+    /// North/South button's centre height above/below the East–West row: `0.5` puts them
+    /// halfway between N/S and E/W, `0.0` level with E/W, `1.0` level with N/S. Hover
+    /// picking and the centre highlight follow. `None` (default): the height follows from
+    /// [`Self::shape_factor`], with the button's inner corner on the layout circle.
+    /// Horizontal placement always follows `shape_factor`.
+    pub diagonal_height: Option<f32>,
     /// Controls when the menu becomes visible and whether tap responses are possible.
     /// See [`ShowBehavior`].
     pub show_behavior: ShowBehavior,
@@ -373,6 +380,7 @@ impl Default for PieMenuSettings {
         Self {
             layout_radius: 100.0,
             shape_factor: 0.0,
+            diagonal_height: None,
             show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
             screen_margin: 8.0,
             mouse_trigger_threshold: 12.0,

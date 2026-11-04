@@ -106,6 +106,8 @@ struct Demo {
     hint_color: Color32,
     /// Config index of each menu button (see `build_buttons`).
     button_map: Vec<usize>,
+    // Slider value for "Diagonal height" (kept while it is off)
+    diagonal_height: f32,
     // Colour picker value for "Force contrast text" (kept while it is off)
     label_color: Color32,
     // Number hints (drawn inside the buttons) on/off
@@ -162,6 +164,7 @@ impl Demo {
             slide_fade_ms: 200,
             hint_color: Color32::WHITE,
             button_map,
+            diagonal_height: 0.5,
             label_color: Color32::WHITE,
             show_hints: false,
         }
@@ -426,9 +429,22 @@ impl eframe::App for Demo {
             let mut shown = 0;
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius", |ui| {
+                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height", |ui| {
                     ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
                     slider_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
+
+                    let mut own_height = self.menu.settings.diagonal_height.is_some();
+                    if ui.checkbox(&mut own_height, "Diagonal height")
+                        .on_hover_text("Place NE/SE/SW/NW at a fraction of the N/S height: 0.5 = halfway between N/S and E/W. Off: follows the shape factor.")
+                        .changed()
+                    {
+                        self.menu.settings.diagonal_height = own_height.then_some(self.diagonal_height);
+                    }
+                    ui.add_enabled_ui(own_height, |ui| {
+                        if slider_reset(ui, &mut self.diagonal_height, 0.5, 0.0..=1.0, 0.01) {
+                            self.menu.settings.diagonal_height = Some(self.diagonal_height);
+                        }
+                    });
 
                     ui.label("Radius");
                     slider_reset(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0, 1.0);
