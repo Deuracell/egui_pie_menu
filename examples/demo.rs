@@ -303,10 +303,13 @@ fn section(
         return;
     }
     *shown += 1;
-    ui.heading(title);
-    ui.separator();
-    add_contents(ui);
-    ui.add_space(8.0);
+    // Collapsible; Layout and Buttons start open. A search opens every matching section.
+    let default_open = matches!(title, "Layout" | "Buttons");
+    egui::CollapsingHeader::new(RichText::new(title).strong().size(15.0))
+        .id_salt(("section", title))
+        .default_open(default_open)
+        .open((!query.is_empty()).then_some(true))
+        .show(ui, add_contents);
 }
 
 /// Small "⟲" button that resets a value; disabled while the value is already the default.
@@ -470,8 +473,14 @@ impl eframe::App for Demo {
             let query = self.search.trim().to_lowercase();
             let mut shown = 0;
 
+            // Solid (non-floating) scrollbar, so it takes its own space instead of covering
+            // the reset buttons at the right edge of each row.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height button size", |ui| {
+                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height", |ui| {
+                    ui.label("Radius");
+                    px_drag(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0);
+
                     ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
                     drag_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
 
@@ -487,170 +496,28 @@ impl eframe::App for Demo {
                             self.menu.settings.intercardinal_height = Some(self.intercardinal_height);
                         }
                     });
+                });
 
-                    ui.label("Radius");
-                    px_drag(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0);
-
+                section(ui, &query, &mut shown, "Buttons",
+                    "buttons button height size text colour color force contrast blender", |ui| {
                     ui.label("Button height")
                         .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
                     px_drag(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
-                });
 
-                section(ui, &query, &mut shown, "Center background", "radius fill color colour stroke width", |ui| {
-                    ui.label("Radius");
-                    let def = d.center_indicator.background_radius.get();
-                    if px_drag(ui, &mut self.bg_radius, def, 0.0..=60.0) {
-                        self.menu.settings.center_indicator.background_radius = SmartFloat::new(self.bg_radius);
-                    }
-
-                    ui.label("Fill color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
-
-                    ui.label("Stroke width");
-                    px_drag(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
-                        d.center_indicator.background_stroke.width, 0.0..=10.0);
-
-                    ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_stroke.color);
-                });
-
-                section(ui, &query, &mut shown, "Highlight",
-                    "shape arc slice circle radius angle fill color colour stroke width snap button", |ui| {
-                    ui.label("Shape");
-                    let current = self.menu.settings.center_indicator.highlight_shape;
-                    egui::ComboBox::from_id_salt("shape")
-                        .selected_text(shape_label(current))
-                        .show_ui(ui, |ui| {
-                            for &s in ALL_SHAPES {
-                                ui.selectable_value(
-                                    &mut self.menu.settings.center_indicator.highlight_shape,
-                                    s, shape_label(s),
-                                );
-                            }
-                        });
-
-                    ui.label("Radius");
-                    let def = d.center_indicator.highlight_radius.get();
-                    if px_drag(ui, &mut self.highlight_radius, def, 1.0..=60.0) {
-                        self.menu.settings.center_indicator.highlight_radius = SmartFloat::new(self.highlight_radius);
-                    }
-
-                    ui.label("Arc angle (°)");
-                    let def = d.center_indicator.highlight_angle.to_degrees();
-                    if drag_reset(ui, &mut self.highlight_angle_deg, def, 5.0..=360.0, 1.0) {
-                        self.menu.settings.center_indicator.highlight_angle = self.highlight_angle_deg.to_radians();
-                    }
-
-                    ui.label("Circle radius");
-                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
-                        d.center_indicator.highlight_circle_radius, 1.0..=40.0);
-
-                    ui.label("Fill color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
-
-                    ui.label("Stroke width");
-                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
-                        d.center_indicator.highlight_stroke.width, 0.0..=10.0);
-
-                    ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_stroke.color);
-
-                    ui.checkbox(&mut self.menu.settings.animations.center_highlight_snapping, "Snap to button");
-                });
-
-                section(ui, &query, &mut shown, "Reveal animation",
-                    "animation fade none instant slide slideout duration start radius shape factor diamond square opacity", |ui| {
-                    let current = self.menu.settings.animations.reveal;
-                    egui::ComboBox::from_id_salt("reveal")
-                        .selected_text(reveal_label(current))
-                        .show_ui(ui, |ui| {
-                            for &r in ALL_REVEALS {
-                                ui.selectable_value(&mut self.menu.settings.animations.reveal, r, reveal_label(r));
-                            }
-                        });
-
-                    let reveal = self.menu.settings.animations.reveal;
-                    if matches!(reveal, RevealAnimation::Fade | RevealAnimation::SlideOut) {
-                        ui.label("Duration (ms)");
-                        let mut ms = self.menu.settings.animations.reveal_duration.as_millis() as u64;
-                        let def = d.animations.reveal_duration.as_millis() as u64;
-                        if drag_reset(ui, &mut ms, def, 0..=1000, 1.0) {
-                            self.menu.settings.animations.reveal_duration = Duration::from_millis(ms);
+                    ui.horizontal(|ui| {
+                        let mut forced = self.menu.settings.text_color.is_some();
+                        if ui.checkbox(&mut forced, "Force contrast text")
+                            .on_hover_text("On: this colour whether hovered or not (Blender-style, white by default). Off: egui's widget colours (dimmer normally, brighter on hover). Disabled buttons are greyed out either way.")
+                            .changed()
+                        {
+                            self.menu.settings.text_color = forced.then_some(self.label_color);
                         }
-                    }
-
-                    if reveal == RevealAnimation::SlideOut {
-                        // Fade first, right under the main duration.
-                        let mut fade = self.menu.settings.animations.slide_fade.is_some();
-                        if ui.checkbox(&mut fade, "Fade while sliding").changed() {
-                            self.menu.settings.animations.slide_fade =
-                                fade.then(|| Duration::from_millis(self.slide_fade_ms));
-                        }
-                        ui.add_enabled_ui(fade, |ui| {
-                            ui.label("Fade duration (ms)");
-                            let def = d.animations.slide_fade.map_or(200, |f| f.as_millis() as u64);
-                            if drag_reset(ui, &mut self.slide_fade_ms, def, 0..=1000, 1.0) {
-                                self.menu.settings.animations.slide_fade = Some(Duration::from_millis(self.slide_fade_ms));
+                        ui.add_enabled_ui(forced, |ui| {
+                            if ui.color_edit_button_srgba(&mut self.label_color).changed() {
+                                self.menu.settings.text_color = Some(self.label_color);
                             }
                         });
-
-                        ui.label("Start radius  (0 = from the centre)");
-                        px_drag(ui, &mut self.menu.settings.animations.slide_start_radius,
-                            d.animations.slide_start_radius, 0.0..=300.0);
-
-                        let mut own_shape = self.menu.settings.animations.slide_start_shape_factor.is_some();
-                        if ui.checkbox(&mut own_shape, "Own start shape").changed() {
-                            self.menu.settings.animations.slide_start_shape_factor =
-                                own_shape.then_some(self.slide_start_shape);
-                        }
-                        ui.add_enabled_ui(own_shape, |ui| {
-                            ui.label("Start shape  (−1 diamond · 0 circle · +1 square)");
-                            if drag_reset(ui, &mut self.slide_start_shape, DEFAULT_SLIDE_START_SHAPE, -1.0..=1.0, 0.01) {
-                                self.menu.settings.animations.slide_start_shape_factor = Some(self.slide_start_shape);
-                            }
-                        });
-                    }
-                });
-
-                section(ui, &query, &mut shown, "Center label",
-                    "title text color colour background stroke width", |ui| {
-                    ui.checkbox(&mut self.menu.settings.label.display, "Show title");
-                    ui.label("Text color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.label.text_color);
-                    ui.label("Background color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.label.background_color);
-                    ui.label("Stroke width");
-                    px_drag(ui, &mut self.menu.settings.label.background_stroke.width,
-                        d.label.background_stroke.width, 0.0..=4.0);
-                    ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.label.background_stroke.color);
-                });
-
-                section(ui, &query, &mut shown, "Show behaviour",
-                    "behavior instant movement threshold quick tap double tap", |ui| {
-                    let is_instant = matches!(self.menu.settings.show_behavior, ShowBehavior::Instant);
-                    egui::ComboBox::from_id_salt("show_behavior")
-                        .selected_text(if is_instant { "Instant" } else { "On movement" })
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(is_instant, "Instant").clicked() {
-                                self.menu.settings.show_behavior = ShowBehavior::Instant;
-                            }
-                            if ui.selectable_label(!is_instant, "On movement").clicked() {
-                                self.menu.settings.show_behavior =
-                                    ShowBehavior::OnMovement { threshold: self.show_threshold };
-                            }
-                        });
-
-                    if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
-                        ui.label("Threshold");
-                        if px_drag(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0) {
-                            self.show_threshold = *threshold;
-                        }
-                    }
-
-                    if is_instant {
-                        ui.label("QuickTap / DoubleTap not available.");
-                    }
+                    });
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
@@ -686,22 +553,8 @@ impl eframe::App for Demo {
                     });
                 });
 
-                section(ui, &query, &mut shown, "Buttons",
-                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color force contrast blender", |ui| {
-                    ui.horizontal(|ui| {
-                        let mut forced = self.menu.settings.text_color.is_some();
-                        if ui.checkbox(&mut forced, "Force contrast text")
-                            .on_hover_text("On: this colour whether hovered or not (Blender-style, white by default). Off: egui's widget colours (dimmer normally, brighter on hover). Disabled buttons are greyed out either way.")
-                            .changed()
-                        {
-                            self.menu.settings.text_color = forced.then_some(self.label_color);
-                        }
-                        ui.add_enabled_ui(forced, |ui| {
-                            if ui.color_edit_button_srgba(&mut self.label_color).changed() {
-                                self.menu.settings.text_color = Some(self.label_color);
-                            }
-                        });
-                    });
+                section(ui, &query, &mut shown, "Button list",
+                    "buttons list label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color enabled present remove reset", |ui| {
                     ui.checkbox(&mut self.menu.settings.input.auto_mnemonics, "Auto mnemonics")
                         .on_hover_text("Generate mnemonics from labels for buttons set to Auto");
                     if ui.button("Reset buttons").clicked() {
@@ -788,6 +641,163 @@ impl eframe::App for Demo {
                                     ui.end_row();
                                 });
                             }));
+                    }
+                });
+
+                section(ui, &query, &mut shown, "Center background", "radius fill color colour stroke width", |ui| {
+                    ui.label("Radius");
+                    let def = d.center_indicator.background_radius.get();
+                    if px_drag(ui, &mut self.bg_radius, def, 0.0..=60.0) {
+                        self.menu.settings.center_indicator.background_radius = SmartFloat::new(self.bg_radius);
+                    }
+
+                    ui.label("Fill color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
+
+                    ui.label("Stroke width");
+                    px_drag(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
+                        d.center_indicator.background_stroke.width, 0.0..=10.0);
+
+                    ui.label("Stroke color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_stroke.color);
+                });
+
+                section(ui, &query, &mut shown, "Highlight",
+                    "shape arc slice circle radius angle fill color colour stroke width snap button", |ui| {
+                    ui.label("Shape");
+                    let current = self.menu.settings.center_indicator.highlight_shape;
+                    egui::ComboBox::from_id_salt("shape")
+                        .selected_text(shape_label(current))
+                        .show_ui(ui, |ui| {
+                            for &s in ALL_SHAPES {
+                                ui.selectable_value(
+                                    &mut self.menu.settings.center_indicator.highlight_shape,
+                                    s, shape_label(s),
+                                );
+                            }
+                        });
+
+                    ui.label("Radius");
+                    let def = d.center_indicator.highlight_radius.get();
+                    if px_drag(ui, &mut self.highlight_radius, def, 1.0..=60.0) {
+                        self.menu.settings.center_indicator.highlight_radius = SmartFloat::new(self.highlight_radius);
+                    }
+
+                    ui.label("Arc angle (°)");
+                    let def = d.center_indicator.highlight_angle.to_degrees();
+                    if drag_reset(ui, &mut self.highlight_angle_deg, def, 5.0..=360.0, 1.0) {
+                        self.menu.settings.center_indicator.highlight_angle = self.highlight_angle_deg.to_radians();
+                    }
+
+                    ui.label("Circle radius");
+                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
+                        d.center_indicator.highlight_circle_radius, 1.0..=40.0);
+
+                    ui.label("Fill color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
+
+                    ui.label("Stroke width");
+                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
+                        d.center_indicator.highlight_stroke.width, 0.0..=10.0);
+
+                    ui.label("Stroke color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_stroke.color);
+
+                    ui.checkbox(&mut self.menu.settings.animations.center_highlight_snapping, "Snap to button");
+                });
+
+                section(ui, &query, &mut shown, "Center label",
+                    "title text color colour background stroke width", |ui| {
+                    ui.checkbox(&mut self.menu.settings.label.display, "Show title");
+                    ui.label("Text color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.label.text_color);
+                    ui.label("Background color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.label.background_color);
+                    ui.label("Stroke width");
+                    px_drag(ui, &mut self.menu.settings.label.background_stroke.width,
+                        d.label.background_stroke.width, 0.0..=4.0);
+                    ui.label("Stroke color");
+                    ui.color_edit_button_srgba(&mut self.menu.settings.label.background_stroke.color);
+                });
+
+                section(ui, &query, &mut shown, "Show behaviour",
+                    "behavior instant movement threshold quick tap double tap", |ui| {
+                    let is_instant = matches!(self.menu.settings.show_behavior, ShowBehavior::Instant);
+                    egui::ComboBox::from_id_salt("show_behavior")
+                        .selected_text(if is_instant { "Instant" } else { "On movement" })
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(is_instant, "Instant").clicked() {
+                                self.menu.settings.show_behavior = ShowBehavior::Instant;
+                            }
+                            if ui.selectable_label(!is_instant, "On movement").clicked() {
+                                self.menu.settings.show_behavior =
+                                    ShowBehavior::OnMovement { threshold: self.show_threshold };
+                            }
+                        });
+
+                    if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
+                        ui.label("Threshold");
+                        if px_drag(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0) {
+                            self.show_threshold = *threshold;
+                        }
+                    }
+
+                    if is_instant {
+                        ui.label("QuickTap / DoubleTap not available.");
+                    }
+                });
+
+                section(ui, &query, &mut shown, "Reveal animation",
+                    "animation fade none instant slide slideout duration start radius shape factor diamond square opacity", |ui| {
+                    let current = self.menu.settings.animations.reveal;
+                    egui::ComboBox::from_id_salt("reveal")
+                        .selected_text(reveal_label(current))
+                        .show_ui(ui, |ui| {
+                            for &r in ALL_REVEALS {
+                                ui.selectable_value(&mut self.menu.settings.animations.reveal, r, reveal_label(r));
+                            }
+                        });
+
+                    let reveal = self.menu.settings.animations.reveal;
+                    if matches!(reveal, RevealAnimation::Fade | RevealAnimation::SlideOut) {
+                        ui.label("Duration (ms)");
+                        let mut ms = self.menu.settings.animations.reveal_duration.as_millis() as u64;
+                        let def = d.animations.reveal_duration.as_millis() as u64;
+                        if drag_reset(ui, &mut ms, def, 0..=1000, 1.0) {
+                            self.menu.settings.animations.reveal_duration = Duration::from_millis(ms);
+                        }
+                    }
+
+                    if reveal == RevealAnimation::SlideOut {
+                        // Fade first, right under the main duration.
+                        let mut fade = self.menu.settings.animations.slide_fade.is_some();
+                        if ui.checkbox(&mut fade, "Fade while sliding").changed() {
+                            self.menu.settings.animations.slide_fade =
+                                fade.then(|| Duration::from_millis(self.slide_fade_ms));
+                        }
+                        ui.add_enabled_ui(fade, |ui| {
+                            ui.label("Fade duration (ms)");
+                            let def = d.animations.slide_fade.map_or(200, |f| f.as_millis() as u64);
+                            if drag_reset(ui, &mut self.slide_fade_ms, def, 0..=1000, 1.0) {
+                                self.menu.settings.animations.slide_fade = Some(Duration::from_millis(self.slide_fade_ms));
+                            }
+                        });
+
+                        ui.label("Start radius  (0 = from the centre)");
+                        px_drag(ui, &mut self.menu.settings.animations.slide_start_radius,
+                            d.animations.slide_start_radius, 0.0..=300.0);
+
+                        let mut own_shape = self.menu.settings.animations.slide_start_shape_factor.is_some();
+                        if ui.checkbox(&mut own_shape, "Own start shape").changed() {
+                            self.menu.settings.animations.slide_start_shape_factor =
+                                own_shape.then_some(self.slide_start_shape);
+                        }
+                        ui.add_enabled_ui(own_shape, |ui| {
+                            ui.label("Start shape  (−1 diamond · 0 circle · +1 square)");
+                            if drag_reset(ui, &mut self.slide_start_shape, DEFAULT_SLIDE_START_SHAPE, -1.0..=1.0, 0.01) {
+                                self.menu.settings.animations.slide_start_shape_factor = Some(self.slide_start_shape);
+                            }
+                        });
                     }
                 });
 
