@@ -301,6 +301,7 @@ To check in any build, or to show the problems in an editor, call `menu.check_bu
 ### Right-to-left and non-Latin scripts
 
 - `menu.settings.mirror_horizontal = true` flips the layout (East↔West, diagonals follow). Number keys and number hints follow the displayed positions, and `HintSide::Trailing` then means left of the label. Off by default.
+- The mnemonic underline works in right-to-left words: egui (no bidi) lays separately formatted text pieces out left to right, so the library feeds the split word in reverse and, for Arabic-script labels, adds zero-width joiners at the cuts so letters keep their joined forms.
 - In the render closure `b.rtl` is true while mirrored: lay out your own widgets in reverse (the demo puts a checkbox's box right of its text). `b.label_text().prefix(icon)` already puts the icon on the right.
 - `number_hints.digits = HintDigits::ArabicIndic` shows ٠١٢…, `HintDigits::Persian` shows ۰۱۲… (Persian/Urdu), instead of 0123….
 - Mnemonics work for any alphabetic script: they match typed characters, so they work with the active keyboard layout, and mnemonic generation and `mnemonic_text` are Unicode-aware (case folded; Hebrew final forms, Arabic alef variants, and Persian/Arabic yeh and kaf count as the same key; combining marks are skipped).

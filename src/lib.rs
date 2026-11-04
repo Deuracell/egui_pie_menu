@@ -1328,33 +1328,65 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
 
 fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: char, format: TextFormat) {
     let mnemonic_folded = fold_char(mnemonic);
-    let split = text
-        .char_indices()
-        .find(|(_, c)| fold_char(*c) == mnemonic_folded);
-
-    match split {
-        None => {
-            job.append(text, 0.0, format);
-        }
-        Some((byte_idx, c)) => {
-            let before = &text[..byte_idx];
-            let after = &text[byte_idx + c.len_utf8()..];
-            let ch_str = &text[byte_idx..byte_idx + c.len_utf8()];
-
-            let underline_format = TextFormat {
-                underline: Stroke::new(1.0, format.color),
-                ..format.clone()
-            };
-
-            if !before.is_empty() {
-                job.append(before, 0.0, format.clone());
-            }
-            job.append(ch_str, 0.0, underline_format);
-            if !after.is_empty() {
-                job.append(after, 0.0, format);
-            }
-        }
+    let Some((idx, c)) = text.char_indices().find(|(_, c)| fold_char(*c) == mnemonic_folded) else {
+        job.append(text, 0.0, format);
+        return;
+    };
+    // The underlined piece keeps the combining marks (accents, vowel points) of its letter.
+    let mut m_end = idx + c.len_utf8();
+    for mark in text[m_end..].chars().take_while(|&m| is_combining_mark(m)) {
+        m_end += mark.len_utf8();
     }
+    let underline_format = TextFormat { underline: Stroke::new(1.0, format.color), ..format.clone() };
+
+    let mut append = |piece: &str, format: &TextFormat| {
+        if !piece.is_empty() {
+            job.append(piece, 0.0, format.clone());
+        }
+    };
+    if !is_rtl_letter(c) {
+        append(&text[..idx], &format);
+        append(&text[idx..m_end], &underline_format);
+        append(&text[m_end..], &format);
+        return;
+    }
+
+    // Right-to-left letter. egui has no bidi: it reverses each run of right-to-left
+    // letters in place (punctuation and spaces stay put) but lays separately formatted
+    // pieces out left to right in the order given. A run split for the underline would come
+    // out with its pieces swapped (the mnemonic jumping to the far side), so the mnemonic's
+    // run goes in reversed: after, letter, before.
+    let in_run = |ch: char| is_rtl_letter(ch) || is_combining_mark(ch);
+    let ws = text[..idx].char_indices().rev().take_while(|(_, ch)| in_run(*ch)).last().map_or(idx, |(i, _)| i);
+    let we = text[m_end..].char_indices().find(|(_, ch)| !in_run(*ch)).map_or(text.len(), |(i, _)| m_end + i);
+    let (head, word_before, letter, word_after, tail) =
+        (&text[..ws], &text[ws..idx], &text[idx..m_end], &text[m_end..we], &text[we..]);
+    // In joining scripts (Arabic, Persian) a zero-width joiner on both sides of each cut
+    // keeps the letters' connected forms.
+    const ZWJ: char = '\u{200D}';
+    let joins = |a: Option<char>, b: Option<char>| matches!((a, b), (Some(a), Some(b)) if is_joining_letter(a) && is_joining_letter(b));
+    let join_before = joins(word_before.chars().last(), Some(c));
+    let join_after = joins(Some(c), word_after.chars().next());
+    let zwj = |on: bool| if on { ZWJ.to_string() } else { String::new() };
+
+    append(head, &format);
+    append(&format!("{}{word_after}", zwj(join_after && !word_after.is_empty())), &format);
+    append(&format!("{}{letter}{}", zwj(join_before), zwj(join_after)), &underline_format);
+    append(&format!("{word_before}{}", zwj(join_before && !word_before.is_empty())), &format);
+    append(tail, &format);
+}
+
+/// Letters of right-to-left scripts (Hebrew, Arabic, Syriac, Thaana, N'Ko and their
+/// presentation forms).
+fn is_rtl_letter(c: char) -> bool {
+    c.is_alphabetic()
+        && matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
+}
+
+/// Letters of the Arabic script (Arabic, Persian, Urdu, …), which join to their neighbours.
+fn is_joining_letter(c: char) -> bool {
+    c.is_alphabetic()
+        && matches!(c as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF)
 }
 
 /// Case-folds `c` and normalises letter variants that share a key:
@@ -2053,5 +2085,119 @@ mod intercardinal_height_tests {
         // Pointing at the drawn button's centre picks it.
         let centre = low.button_offset(&PieDirection::NorthEast, SIZE, r, 0.0);
         assert_eq!(PieMenu::pick_button(&b, centre, &dirs(&low)), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod rtl_mnemonic_tests {
+    use super::*;
+
+    fn fmt() -> TextFormat {
+        TextFormat { font_id: FontId::proportional(20.0), color: Color32::WHITE, ..Default::default() }
+    }
+
+    fn underlined(job: &LayoutJob) -> String {
+        job.sections.iter().filter(|s| s.format.underline != Stroke::NONE)
+            .map(|s| job.text[usize::from(s.byte_range.start)..usize::from(s.byte_range.end)].to_string()).collect()
+    }
+
+    #[test]
+    fn rtl_word_pieces_are_reversed_other_words_untouched() {
+        // "גלישת שורות", mnemonic ל in the first word: that word goes in as ישת | ל | ג.
+        let job = mnemonic_text("גלישת שורות", 'ל', fmt());
+        assert_eq!(job.text, "ישתלג שורות");
+        assert_eq!(underlined(&job), "ל");
+        // Latin text is unchanged.
+        let job = mnemonic_text("Paste Special", 's', fmt());
+        assert_eq!(job.text, "Paste Special");
+        assert_eq!(underlined(&job), "s");
+    }
+
+    #[test]
+    fn joining_scripts_get_zero_width_joiners_at_the_cuts() {
+        let job = mnemonic_text("نسخ", 'س', fmt());
+        assert_eq!(job.text, "\u{200D}خ\u{200D}س\u{200D}ن\u{200D}");
+        assert_eq!(underlined(&job), "\u{200D}س\u{200D}");
+        // Hebrew doesn't join: no joiners.
+        assert!(!mnemonic_text("העתק", 'ע', fmt()).text.contains('\u{200D}'));
+    }
+
+    #[test]
+    fn combining_marks_stay_with_the_underlined_letter() {
+        let job = mnemonic_text("café", 'e', fmt()); // precomposed é is its own letter: no match
+        assert_eq!(underlined(&job), "");
+        let job = mnemonic_text("cafe\u{0301}s", 'e', fmt());
+        assert_eq!(underlined(&job), "e\u{0301}");
+    }
+
+    /// Renders every demo RTL label with every mnemonic letter and checks egui draws each
+    /// letter exactly where it draws it in the unsplit label (same width: joins intact).
+    /// Needs system fonts with Hebrew/Arabic; skipped if none are installed.
+    #[test]
+    fn rtl_mnemonics_render_like_the_unsplit_label() {
+        let mut fonts = egui::FontDefinitions::default();
+        let mut found = 0;
+        for path in [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                found += 1;
+                fonts.font_data.insert(path.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push(path.into());
+            }
+        }
+        if found == 0 {
+            eprintln!("skipped: no Hebrew/Arabic system fonts");
+            return;
+        }
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        let layout = |job: LayoutJob| {
+            let g = ctx.fonts_mut(|f| f.layout_job(job));
+            for gl in g.rows.iter().flat_map(|r| r.glyphs.iter()).filter(|gl| gl.chr == '\u{200D}') {
+                assert_eq!(gl.advance_width, 0.0, "zero-width joiner is visible");
+            }
+            let mut v: Vec<(f32, char)> = g.rows.iter().flat_map(|r| r.glyphs.iter())
+                .filter(|gl| gl.advance_width > 0.0).map(|gl| (gl.pos.x, gl.chr)).collect();
+            v.sort_by(|a, b| a.0.total_cmp(&b.0));
+            (v.into_iter().map(|(_, c)| c).collect::<String>(), g.rect.width())
+        };
+        let labels = [
+            "העתק", "הדבק מיוחד", "בצע שוב", "שמור בשם…", "מחק לצמיתות", "גזור", "בטל שינוי", "גלישת שורות",
+            "نسخ", "لصق خاص", "إعادة", "حفظ باسم…", "حذف نهائي", "قص", "تراجع", "التفاف النص",
+            "کپی", "چسباندن ویژه", "انجام مجدد", "ذخیره با نام…", "حذف دائمی", "برش", "واگرد", "شکستن خط",
+        ];
+        let mut worst = 0.0f32;
+        for label in labels {
+            let mut plain = LayoutJob::default();
+            plain.append(label, 0.0, fmt());
+            let (target, width) = layout(plain);
+            for m in label.chars().filter(|c| is_mnemonic_letter(*c)) {
+                let job = mnemonic_text(label, m, fmt());
+                // The same pieces without joiners: what broken joins would look like.
+                let mut broken = LayoutJob::default();
+                for sec in &job.sections {
+                    let piece = &job.text[usize::from(sec.byte_range.start)..usize::from(sec.byte_range.end)];
+                    broken.append(&piece.replace('\u{200D}', ""), 0.0, sec.format.clone());
+                }
+                let (got, w) = layout(job);
+                assert_eq!(got, target, "{label} with mnemonic {m}");
+                let off = (w - width).abs();
+                // A cut can't be kerned across (up to ~2 px); broken joins usually cost far
+                // more (e.g. لصق خاص: −1.5 px with joiners, +14 px without). Some letters'
+                // joined and unjoined forms are nearly equally wide, hence the 2 px floor.
+                let (_, broken_w) = layout(broken);
+                let broken_off = (broken_w - width).abs();
+                assert!(off < 2.0 || off < broken_off / 3.0,
+                    "{label} with mnemonic {m}: width off by {off:.2} px (broken joins: {broken_off:.2} px)");
+                worst = worst.max(off);
+            }
+        }
+        eprintln!("worst width difference: {worst:.2} px");
+        assert!(worst < 3.0, "worst width difference {worst:.2} px");
     }
 }
