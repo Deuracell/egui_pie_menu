@@ -185,6 +185,8 @@ pub struct PieMenuInput {
     ///
     /// Set to `false` for Blender-style interaction, where selection is triggered
     /// by releasing the key that opened the menu rather than by a separate click.
+    /// When `false`, a click on the centre of a sub-pie does not go back either
+    /// (Backspace still does), so the menu ignores primary clicks entirely.
     pub select_on_primary_click: bool,
     /// Inputs that dismiss the menu without selecting a button.
     ///
