@@ -106,7 +106,7 @@ struct Demo {
     hint_color: Color32,
     /// Config index of each menu button (see `build_buttons`).
     button_map: Vec<usize>,
-    // Colour picker value for "Force label colour" (kept while it is off)
+    // Colour picker value for "Force contrast text" (kept while it is off)
     label_color: Color32,
     // Number hints (drawn inside the buttons) on/off
     show_hints: bool,
@@ -592,7 +592,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys side trailing after outside left right spacing gap color colour force", |ui| {
+                    "number hints digits keys side trailing after outside left right spacing gap color colour force contrast", |ui| {
                     ui.checkbox(&mut self.show_hints, "Show number hints");
                     ui.add_enabled_ui(self.show_hints, |ui| {
                         ui.label("Side");
@@ -610,7 +610,7 @@ impl eframe::App for Demo {
                             d.number_hints.spacing, 0.0..=40.0, 0.5);
 
                         let mut custom = self.menu.settings.number_hints.color.is_some();
-                        if ui.checkbox(&mut custom, "Force digit colour")
+                        if ui.checkbox(&mut custom, "Force contrast digits")
                             .on_hover_text("On: this colour whether hovered or not (Blender-style). Off: egui's widget colours (dimmer normally, brighter on hover). Independent of the label colour.")
                             .changed()
                         {
@@ -625,10 +625,10 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Buttons",
-                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color force blender", |ui| {
+                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color force contrast blender", |ui| {
                     ui.horizontal(|ui| {
                         let mut forced = self.menu.settings.text_color.is_some();
-                        if ui.checkbox(&mut forced, "Force label colour")
+                        if ui.checkbox(&mut forced, "Force contrast text")
                             .on_hover_text("On: this colour whether hovered or not (Blender-style, white by default). Off: egui's widget colours (dimmer normally, brighter on hover). Disabled buttons are greyed out either way.")
                             .changed()
                         {
