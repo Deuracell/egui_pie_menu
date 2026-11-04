@@ -1356,6 +1356,9 @@ fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: char, format:
     // pieces out left to right in the order given. A run split for the underline would come
     // out with its pieces swapped (the mnemonic jumping to the far side), so the mnemonic's
     // run goes in reversed: after, letter, before.
+    // Multi-word RTL labels still get egui's left-to-right word order; `unicode-bidi`
+    // could supply the visual word order (see the README's RTL notes). Remove this whole
+    // workaround once egui does bidi itself (the RTL render test should start failing).
     let in_run = |ch: char| is_rtl_letter(ch) || is_combining_mark(ch);
     let ws = text[..idx].char_indices().rev().take_while(|(_, ch)| in_run(*ch)).last().map_or(idx, |(i, _)| i);
     let we = text[m_end..].char_indices().find(|(_, ch)| !in_run(*ch)).map_or(text.len(), |(i, _)| m_end + i);
