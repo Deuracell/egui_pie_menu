@@ -108,8 +108,8 @@ struct Demo {
     button_map: Vec<usize>,
     /// Height of every pie button in the demo (both kinds), in px.
     button_height: f32,
-    // Slider value for "Diagonal height" (kept while it is off)
-    diagonal_height: f32,
+    // Slider value for "Intercardinal height" (kept while it is off)
+    intercardinal_height: f32,
     // Colour picker value for "Force contrast text" (kept while it is off)
     label_color: Color32,
     // Number hints (drawn inside the buttons) on/off
@@ -167,7 +167,7 @@ impl Demo {
             hint_color: Color32::WHITE,
             button_map,
             button_height: DEFAULT_BUTTON_HEIGHT,
-            diagonal_height: 0.5,
+            intercardinal_height: 0.5,
             label_color: Color32::WHITE,
             show_hints: false,
         }
@@ -454,16 +454,16 @@ impl eframe::App for Demo {
                     ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
                     slider_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
 
-                    let mut own_height = self.menu.settings.diagonal_height.is_some();
-                    if ui.checkbox(&mut own_height, "Diagonal height")
+                    let mut own_height = self.menu.settings.intercardinal_height.is_some();
+                    if ui.checkbox(&mut own_height, "Intercardinal height")
                         .on_hover_text("Place NE/SE/SW/NW at a fraction of the N/S height (0.5 = halfway between N/S and E/W); they slide along the layout shape. Off: at 45°.")
                         .changed()
                     {
-                        self.menu.settings.diagonal_height = own_height.then_some(self.diagonal_height);
+                        self.menu.settings.intercardinal_height = own_height.then_some(self.intercardinal_height);
                     }
                     ui.add_enabled_ui(own_height, |ui| {
-                        if slider_reset_with(ui, &mut self.diagonal_height, 0.5, 0.0..=1.0, |s| s.step_by(0.001).fixed_decimals(3)) {
-                            self.menu.settings.diagonal_height = Some(self.diagonal_height);
+                        if slider_reset_with(ui, &mut self.intercardinal_height, 0.5, 0.0..=1.0, |s| s.step_by(0.001).fixed_decimals(3)) {
+                            self.menu.settings.intercardinal_height = Some(self.intercardinal_height);
                         }
                     });
 

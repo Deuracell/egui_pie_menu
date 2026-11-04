@@ -341,7 +341,7 @@ pub struct PieMenuSettings {
     /// square or diamond per [`Self::shape_factor`]), keeping their inner corner on it, so
     /// lower diagonals also move outward. Hover picking and the centre highlight follow.
     /// `None` (default): diagonals sit at 45° on the shape.
-    pub diagonal_height: Option<f32>,
+    pub intercardinal_height: Option<f32>,
     /// Controls when the menu becomes visible and whether tap responses are possible.
     /// See [`ShowBehavior`].
     pub show_behavior: ShowBehavior,
@@ -381,7 +381,7 @@ impl Default for PieMenuSettings {
         Self {
             layout_radius: 100.0,
             shape_factor: 0.0,
-            diagonal_height: None,
+            intercardinal_height: None,
             show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
             screen_margin: 8.0,
             mouse_trigger_threshold: 12.0,

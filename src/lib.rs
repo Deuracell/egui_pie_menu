@@ -594,15 +594,15 @@ impl PieMenu {
     }
 
     /// Where on the layout shape (unit radius) a button's inner face/corner sits, as
-    /// displayed. Cardinals, and diagonals without [`PieMenuSettings::diagonal_height`],
-    /// use their fixed direction. With a diagonal height, a diagonal slides *along* the
+    /// displayed. Cardinals, and diagonals without [`PieMenuSettings::intercardinal_height`],
+    /// use their fixed direction. With an intercardinal height, a diagonal slides *along* the
     /// shape to the point that puts its centre at that height (so it follows the curve);
     /// this depends on the button's size and the radius. Its angle is also the angle used
     /// for hover picking and the centre highlight.
     fn layout_vec(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
         let v = Self::direction_vec(dir, sf);
         let diagonal = v.x.abs() > 0.5 && v.y.abs() > 0.5;
-        let (Some(t), true) = (self.settings.diagonal_height, diagonal && radius > 0.0) else {
+        let (Some(t), true) = (self.settings.intercardinal_height, diagonal && radius > 0.0) else {
             return v;
         };
         let hh = size.y / 2.0;
@@ -1004,7 +1004,7 @@ impl PieMenu {
         }
 
         // Update hover selection from mouse angle, against each button's displayed layout
-        // vector (which follows diagonal_height).
+        // vector (which follows intercardinal_height).
         let radius = self.settings.layout_radius;
         let dirs: Vec<Vec2> = buttons
             .iter()
@@ -1600,7 +1600,7 @@ mod selection_tests {
         ]
     }
 
-    /// Default layout vectors (no diagonal height), as displayed.
+    /// Default layout vectors (no intercardinal height), as displayed.
     fn dirs(b: &[PieButton], mirror: bool) -> Vec<Vec2> {
         b.iter().map(|b| PieMenu::direction_vec(&PieMenu::eff(&b.direction, mirror), 0.0)).collect()
     }
@@ -1946,7 +1946,7 @@ mod disabled_fade_tests {
 }
 
 #[cfg(test)]
-mod diagonal_height_tests {
+mod intercardinal_height_tests {
     use super::*;
 
     const SIZE: Vec2 = Vec2::new(80.0, 24.0);
@@ -1954,7 +1954,7 @@ mod diagonal_height_tests {
 
     fn menu(height: Option<f32>, sf: f32) -> PieMenu {
         let mut m = PieMenu::new();
-        m.settings.diagonal_height = height;
+        m.settings.intercardinal_height = height;
         m.settings.shape_factor = sf;
         m
     }
