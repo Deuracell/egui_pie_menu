@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
+use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintDigits, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -52,19 +52,22 @@ fn load_system_fonts(ctx: &egui::Context) -> String {
 struct Lang {
     name: &'static str,
     rtl: bool,
-    arabic_digits: bool,
+    digits: HintDigits,
     labels: [&'static str; 8],
 }
 
 const LANGS: &[Lang] = &[
-    Lang { name: "English", rtl: false, arabic_digits: false,
+    Lang { name: "English", rtl: false, digits: HintDigits::Western,
         labels: ["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Word wrap"] },
-    Lang { name: "Русский", rtl: false, arabic_digits: false,
+    Lang { name: "Русский", rtl: false, digits: HintDigits::Western,
         labels: ["Копировать", "Специальная вставка", "Повторить", "Сохранить как…", "Удалить навсегда", "Вырезать", "Отменить изменение", "Перенос слов"] },
-    Lang { name: "עברית", rtl: true, arabic_digits: false,
+    Lang { name: "עברית", rtl: true, digits: HintDigits::Western,
         labels: ["העתק", "הדבק מיוחד", "בצע שוב", "שמור בשם…", "מחק לצמיתות", "גזור", "בטל שינוי", "גלישת שורות"] },
-    Lang { name: "العربية", rtl: true, arabic_digits: true,
+    Lang { name: "العربية", rtl: true, digits: HintDigits::ArabicIndic,
         labels: ["نسخ", "لصق خاص", "إعادة", "حفظ باسم…", "حذف نهائي", "قص", "تراجع", "التفاف النص"] },
+    // Persian: Persian-only letters (پ چ ژ گ), Farsi yeh/keheh (ی ک) and Persian digits.
+    Lang { name: "فارسی", rtl: true, digits: HintDigits::Persian,
+        labels: ["کپی", "چسباندن ویژه", "انجام مجدد", "ذخیره با نام…", "حذف دائمی", "برش", "واگرد", "شکستن خط"] },
 ];
 
 struct Demo {
@@ -101,6 +104,10 @@ struct Demo {
     slide_fade_ms: u64,
     // Colour picker value for number hints (kept while "Custom colour" is off)
     hint_color: Color32,
+    // Colour picker value for hovered number hints (kept while "Custom hover colour" is off)
+    hint_hover_color: Color32,
+    /// Config index of each menu button (see `build_buttons`).
+    button_map: Vec<usize>,
     // Number hints on/off, and whether they go inside the buttons or are painted beside
     show_hints: bool,
     hints_inside: bool,
@@ -123,12 +130,12 @@ impl Demo {
             }
         }
         self.menu.settings.mirror_horizontal = l.rtl;
-        self.menu.settings.number_hints.arabic_indic_digits = l.arabic_digits;
+        self.menu.settings.number_hints.digits = l.digits;
     }
 
     fn new() -> Self {
         let button_configs = default_button_configs();
-        let buttons = build_buttons(&button_configs);
+        let (buttons, button_map) = build_buttons(&button_configs);
 
         let mut menu = PieMenu::new();
         menu.settings.input.auto_mnemonics = true; // so "Auto" buttons get a letter
@@ -155,6 +162,8 @@ impl Demo {
             slide_start_shape: DEFAULT_SLIDE_START_SHAPE,
             slide_fade_ms: 200,
             hint_color: Color32::GRAY,
+            hint_hover_color: Color32::WHITE,
+            button_map,
             show_hints: false,
             hints_inside: true,
         }
@@ -199,6 +208,8 @@ struct ButtonConfig {
     checked: bool,
     /// Disabled buttons cannot be selected (`PieButton::with_enabled`).
     enabled: bool,
+    /// Absent buttons are left out of the menu entirely (their direction is empty).
+    present: bool,
 }
 
 const DIR_NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -222,6 +233,7 @@ fn default_button_configs() -> Vec<ButtonConfig> {
         color: Color32::from_rgb(r, g, bl),
         checked: false,
         enabled: true,
+        present: true,
     };
     vec![
         b("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
@@ -236,8 +248,11 @@ fn default_button_configs() -> Vec<ButtonConfig> {
 }
 
 /// Builds the menu's buttons from the editor. The menu resolves the mnemonics itself.
-fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
-    configs.iter().enumerate()
+/// The menu's buttons from the present configs, plus each button's config index
+/// (button indices shift when a direction is left out).
+fn build_buttons(configs: &[ButtonConfig]) -> (Vec<PieButton>, Vec<usize>) {
+    let map: Vec<usize> = (0..configs.len()).filter(|&i| configs[i].present).collect();
+    let buttons = map.iter().map(|&i| (i, &configs[i]))
         .map(|(i, c)| {
             let b = PieButton::new(direction(i)).with_label(c.label.clone()).with_enabled(c.enabled);
             match (c.mnemonic, c.key.chars().next()) {
@@ -247,7 +262,8 @@ fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
                 (MnemonicMode::Key, None) | (MnemonicMode::None, _) => b.without_mnemonic(),
             }
         })
-        .collect()
+        .collect();
+    (buttons, map)
 }
 
 const ALL_REVEALS: &[RevealAnimation] = &[
@@ -368,14 +384,18 @@ impl eframe::App for Demo {
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         let d = PieMenuSettings::default(); // defaults for the reset buttons
-        self.buttons = build_buttons(&self.button_configs);
-        let mnemonics = self.menu.mnemonics(&self.buttons); // keys in effect, for editor + render
+        (self.buttons, self.button_map) = build_buttons(&self.button_configs);
+        // Keys in effect, per config (absent buttons have none), for the editor.
+        let mut mnemonics: Vec<Option<char>> = vec![None; self.button_configs.len()];
+        for (bi, m) in self.menu.mnemonics(&self.buttons).into_iter().enumerate() {
+            mnemonics[self.button_map[bi]] = m;
+        }
         // Problems (shared key / direction) are shown in red below; the menu stays closed
         // until they are fixed, because debug builds assert on them when it opens.
         let problems = self.menu.check_buttons(&self.buttons);
         let mut bad = [false; 8];
         for p in &problems {
-            for i in p.buttons() { bad[i] = true; }
+            for i in p.buttons() { bad[self.button_map[i]] = true; }
         }
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             // ── Search ───────────────────────────────────────────────
@@ -574,7 +594,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys inside beside painted side trailing after outside left right spacing gap color colour", |ui| {
+                    "number hints digits keys inside beside painted side trailing after outside left right spacing gap color colour hover", |ui| {
                     ui.checkbox(&mut self.show_hints, "Show number hints");
                     ui.add_enabled_ui(self.show_hints, |ui| {
                         ui.horizontal(|ui| {
@@ -598,7 +618,7 @@ impl eframe::App for Demo {
 
                         let mut custom = self.menu.settings.number_hints.color.is_some();
                         if ui.checkbox(&mut custom, "Custom colour")
-                            .on_hover_text("Off: inside uses a dimmed label colour; beside uses egui's weak text colour.")
+                            .on_hover_text("Off: egui's weak text colour (dimmed).")
                             .changed()
                         {
                             self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
@@ -606,6 +626,19 @@ impl eframe::App for Demo {
                         ui.add_enabled_ui(custom, |ui| {
                             if ui.color_edit_button_srgba(&mut self.hint_color).changed() {
                                 self.menu.settings.number_hints.color = Some(self.hint_color);
+                            }
+                        });
+
+                        let mut custom_hover = self.menu.settings.number_hints.hover_color.is_some();
+                        if ui.checkbox(&mut custom_hover, "Custom hover colour")
+                            .on_hover_text("Colour of the digit while its button is hovered. Off: egui's strong text colour.")
+                            .changed()
+                        {
+                            self.menu.settings.number_hints.hover_color = custom_hover.then_some(self.hint_hover_color);
+                        }
+                        ui.add_enabled_ui(custom_hover, |ui| {
+                            if ui.color_edit_button_srgba(&mut self.hint_hover_color).changed() {
+                                self.menu.settings.number_hints.hover_color = Some(self.hint_hover_color);
                             }
                         });
                     });
@@ -626,9 +659,16 @@ impl eframe::App for Demo {
                         } else {
                             title.into()
                         };
-                        egui::CollapsingHeader::new(title)
-                            .id_salt(("button_cfg", i))
-                            .show(ui, |ui| {
+                        // Checkbox left of the header: include the button, or leave its
+                        // direction empty. Clicking it doesn't expand/collapse the header.
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(), ui.make_persistent_id(("button_cfg", i)), false)
+                            .show_header(ui, |ui| {
+                                ui.checkbox(&mut cfg.present, "")
+                                    .on_hover_text("Include this button in the menu (untick to leave the direction empty)");
+                                ui.add_enabled(cfg.present, egui::Label::new(title));
+                            })
+                            .body(|ui| ui.add_enabled_ui(cfg.present, |ui| {
                                 egui::Grid::new(("button_grid", i)).num_columns(2).show(ui, |ui| {
                                     ui.label("Label");
                                     ui.add(egui::TextEdit::singleline(&mut cfg.label).desired_width(130.0));
@@ -691,11 +731,11 @@ impl eframe::App for Demo {
                                     ui.color_edit_button_srgba(&mut cfg.color);
                                     ui.end_row();
                                 });
-                            });
+                            }));
                     }
                 });
 
-                section(ui, &query, &mut shown, "Language / RTL", "language rtl right to left mirror hebrew arabic russian unicode", |ui| {
+                section(ui, &query, &mut shown, "Language / RTL", "language rtl right to left mirror hebrew arabic persian farsi russian unicode digits", |ui| {
                     let mut changed = false;
                     egui::ComboBox::from_id_salt("lang")
                         .selected_text(LANGS[self.lang].name)
@@ -719,6 +759,12 @@ impl eframe::App for Demo {
             });
         });
 
+        // The menu needs at least one button and no configuration problems.
+        let menu_ok = problems.is_empty() && !self.buttons.is_empty();
+        if !menu_ok {
+            self.menu_open = false;
+            self.pin_active = false;
+        }
         if !problems.is_empty() {
             egui::Window::new(RichText::new("⚠ Button configuration problem").color(Color32::RED))
                 .anchor(egui::Align2::CENTER_TOP, [0.0, 40.0])
@@ -763,7 +809,7 @@ impl eframe::App for Demo {
                 self.menu_open = false;
             }
             // Pinned: open once at the centre, visible straight away.
-            if self.pinned && problems.is_empty() {
+            if self.pinned && menu_ok {
                 if !self.pin_active {
                     self.pin_active = true;
                     self.space_open = false;
@@ -777,7 +823,7 @@ impl eframe::App for Demo {
             let pointer = ctx.input(|i| i.pointer.latest_pos());
             let pointer_in_viewport = pointer.is_some_and(|p| viewport.contains(p));
             let pointer_in_menu_area = pointer.is_some_and(|p| menu_area.contains(p));
-            if !self.pinned && !self.menu_open && problems.is_empty() {
+            if !self.pinned && !self.menu_open && menu_ok {
                 if let Some(pos) = ctx.input(|i| {
                     i.pointer.secondary_pressed().then(|| i.pointer.latest_pos()).flatten()
                 }) {
@@ -797,7 +843,7 @@ impl eframe::App for Demo {
                 }
             }
 
-            if self.menu_open && problems.is_empty() {
+            if self.menu_open && menu_ok {
                 // Pinned: the pointer only counts inside the viewport, below the top bar.
                 let mouse_pos = if self.pinned { pointer.filter(|_| pointer_in_menu_area) } else { pointer };
                 let key_down = if self.pinned {
@@ -826,12 +872,11 @@ impl eframe::App for Demo {
                 // them from `b.number_hint` in the closure below.
                 self.menu.settings.number_hints.show = self.show_hints && !self.hints_inside;
                 let hint_gap = self.menu.settings.number_hints.spacing;
-                let hint_color = self.menu.settings.number_hints.color;
 
                 match self.menu.show(ctx, &self.buttons, mouse_pos, key_down, Some("Edit"),
                     |ui, b| {
                         let (idx, hovered) = (b.idx, b.hovered);
-                        let cfg = &self.button_configs[idx];
+                        let cfg = &self.button_configs[self.button_map[idx]];
                         let (bg, fg) = if !b.enabled {
                             (cfg.color.gamma_multiply(0.25), Color32::DARK_GRAY)
                         } else if hovered {
@@ -839,10 +884,11 @@ impl eframe::App for Demo {
                         } else {
                             (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
                         };
-                        // Hint digit in a dimmed version of the label colour unless overridden.
+                        // Hint digit in the library's colour: dimmed normally, bright on hover
+                        // (Custom colour / Custom hover colour override each state).
                         let inside = self.show_hints && self.hints_inside;
                         let hint = b.number_hint.as_ref().filter(|_| inside).map(|h| {
-                            (RichText::new(&h.text).color(hint_color.unwrap_or(fg.gamma_multiply(0.55))), h.on_right)
+                            (RichText::new(&h.text).color(h.color), h.on_right)
                         });
 
                         // Icon + label, with the mnemonic underlined.
@@ -879,7 +925,7 @@ impl eframe::App for Demo {
                     })
                 {
                     PieMenuResponse::Selected(idx) => {
-                        let cfg = &mut self.button_configs[idx];
+                        let cfg = &mut self.button_configs[self.button_map[idx]];
                         self.last_action = if cfg.kind == ButtonKind::Checkbox {
                             cfg.checked = !cfg.checked;
                             format!("Selected: {} ({})", cfg.label, if cfg.checked { "on" } else { "off" })

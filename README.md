@@ -121,7 +121,7 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.hovered` | The pointer highlights this button |
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
-| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off or when `number_hints.show` makes the menu paint it beside the button |
+| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off or when `number_hints.show` makes the menu paint it beside the button. `h.color` follows hover (`number_hints.color` / `hover_color`) |
 | `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour and font follow the egui style; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
@@ -239,7 +239,8 @@ menu.settings.number_hints.show = true;
 menu.settings.number_hints.side = HintSide::Trailing;  // default: after the label in reading order; or Outside / Left / Right
 menu.settings.number_hints.spacing = 4.0;              // gap between button and digit (px)
 menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's weak text colour
-menu.settings.number_hints.arabic_indic_digits = true; // ٠١٢…
+menu.settings.number_hints.hover_color = Some(Color32::WHITE); // default None = egui's strong text colour
+menu.settings.number_hints.digits = HintDigits::ArabicIndic; // ٠١٢… (Persian: ۰۱۲…)
 ```
 
 ### Pinned / persistent menus
@@ -249,6 +250,8 @@ menu.open(center);
 menu.reveal();                              // visible immediately, regardless of ShowBehavior
 menu.settings.block_background = false;     // keep the rest of the UI clickable while it is open
 ```
+
+Keyboard: a blocking menu (`block_background = true`) takes keyboard focus away from any focused widget, so digits and mnemonics never end up in a text field. A non-blocking menu leaves typing alone: while egui wants keyboard input (a text field is focused), number keys and mnemonics go to that widget instead of the menu.
 
 Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN`/disabled radius, zero-width strokes or arcs) no longer panic.
 
@@ -268,7 +271,8 @@ let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */
 ```rust
 PieButton::new(PieDirection::North).with_label("Cut").with_enabled(false)
 // skipped by mouse, number keys and mnemonics; no generated mnemonic.
-// In the render closure `b.enabled` tells you to grey it out.
+// The render closure runs with the Ui disabled (egui's greyed look, no hover outline);
+// `b.enabled` is there if you want your own disabled styling too.
 
 menu.hovered(); // Option<usize>: the currently highlighted button
 ```
@@ -284,8 +288,8 @@ To check in any build, or to show the problems in an editor, call `menu.check_bu
 ### Right-to-left and non-Latin scripts
 
 - `menu.settings.mirror_horizontal = true` flips the layout (East↔West, diagonals follow). Number keys and number hints follow the displayed positions, and `HintSide::Trailing` then means left of the label. Off by default.
-- `number_hints.arabic_indic_digits = true` shows ٠١٢… instead of 0123….
-- Mnemonics work for any alphabetic script: they match typed characters, so they work with the active keyboard layout, and mnemonic generation and `mnemonic_text` are Unicode-aware (case folded; Hebrew final forms and Arabic alef variants count as the same key; combining marks are skipped).
+- `number_hints.digits = HintDigits::ArabicIndic` shows ٠١٢…, `HintDigits::Persian` shows ۰۱۲… (Persian/Urdu), instead of 0123….
+- Mnemonics work for any alphabetic script: they match typed characters, so they work with the active keyboard layout, and mnemonic generation and `mnemonic_text` are Unicode-aware (case folded; Hebrew final forms, Arabic alef variants, and Persian/Arabic yeh and kaf count as the same key; combining marks are skipped).
 - **Text rendering is egui's job.** As of egui 0.36 text is shaped (Arabic letters join), but there is **no bidi** support, so mixed left-to-right/right-to-left labels display in the wrong order, and egui's default fonts do not include Arabic or Hebrew glyphs — add a font via `ctx.set_fonts` (the demo loads system fonts). Keep each label single-script until egui gains bidi.
 
 ### Highlight shapes

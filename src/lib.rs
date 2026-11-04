@@ -360,8 +360,12 @@ impl From<LabelText> for egui::WidgetText {
 /// (or [`PieMenu::number_hint`] outside the render closure).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NumberHint {
-    /// The digit, already converted to Arabic-Indic if that setting is on.
+    /// The digit, already converted to the [`PieMenuNumberHints::digits`] style.
     pub text: String,
+    /// Colour to draw the digit in, from [`PieMenuNumberHints::color`], or
+    /// [`PieMenuNumberHints::hover_color`] when the button is hovered (inside the render
+    /// closure; [`PieMenu::number_hint`] always gives the normal colour).
+    pub color: Color32,
     /// Whether the digit goes after (right of) the label rather than before it,
     /// resolved from [`PieMenuNumberHints::side`].
     pub on_right: bool,
@@ -457,20 +461,40 @@ impl PieMenu {
     /// button instead; use one or the other. Call it before [`PieMenu::show`] (which
     /// borrows the menu mutably) and move the results into the render closure.
     pub fn number_hint(&self, button: &PieButton) -> Option<NumberHint> {
+        self.number_hint_styled(button, false, &egui::Visuals::dark())
+    }
+
+    /// [`Self::number_hint`] with the colour resolved for `hovered` against `visuals`.
+    /// Outside `show`, the theme is unknown, so the dark visuals stand in when no
+    /// explicit colour is set.
+    fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
+        let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
         self.settings.input.use_numpad_keys.then(|| NumberHint {
-            text: self.hint_digit(&Self::eff(&button.direction, self.settings.mirror_horizontal)).to_string(),
-            on_right: self.hint_on_right(&Self::eff(&button.direction, self.settings.mirror_horizontal)),
+            text: self.hint_digit(&dir).to_string(),
+            color: self.hint_color(hovered, visuals),
+            on_right: self.hint_on_right(&dir),
         })
     }
 
-    /// The hint digit for a direction, honouring `arabic_indic_digits`.
+    /// The hint colour for a (non-)hovered button.
+    fn hint_color(&self, hovered: bool, visuals: &egui::Visuals) -> Color32 {
+        let hints = &self.settings.number_hints;
+        if hovered {
+            hints.hover_color.unwrap_or_else(|| visuals.strong_text_color())
+        } else {
+            hints.color.unwrap_or_else(|| visuals.weak_text_color())
+        }
+    }
+
+    /// The hint digit for a direction, in the [`PieMenuNumberHints::digits`] style.
     fn hint_digit(&self, dir: &PieDirection) -> char {
         let digit = Self::direction_digit(dir);
-        if self.settings.number_hints.arabic_indic_digits {
-            char::from_u32('٠' as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
-        } else {
-            digit
-        }
+        let zero = match self.settings.number_hints.digits {
+            HintDigits::Western => return digit,
+            HintDigits::ArabicIndic => '٠',
+            HintDigits::Persian => '۰',
+        };
+        char::from_u32(zero as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
     }
 
     /// Whether the hint goes on the right of the button, from [`PieMenuNumberHints::side`].
@@ -866,9 +890,25 @@ impl PieMenu {
             );
         }
 
+        // Keyboard ownership. A blocking menu takes keyboard focus away, so a text field
+        // that was focused when the menu opened stops receiving keys from the next frame
+        // (this frame it already ran, so consuming keys below would be too late).
+        // A non-blocking (pinned) menu leaves typing alone: while egui wants keyboard
+        // input, number keys and mnemonics go to that widget, not the menu.
+        let keys_for_menu = if self.settings.block_background {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            true
+        } else {
+            !ctx.egui_wants_keyboard_input()
+        };
+
         // Numpad key selection. The key (and its text event) is consumed so the digit
         // does not also reach other handlers or text fields.
-        if self.settings.input.use_numpad_keys {
+        if keys_for_menu && self.settings.input.use_numpad_keys {
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
                 let dir = Self::eff(&button.direction, mirror);
                 let key = Self::direction_numpad(&dir);
@@ -893,7 +933,7 @@ impl PieMenu {
         }
 
         // Mnemonic key selection — consume matched events so other handlers never see them.
-        if self.settings.input.use_mnemonic_keys {
+        if keys_for_menu && self.settings.input.use_mnemonic_keys {
             let mnemonics = self.mnemonics(buttons);
             for (idx, mnemonic) in mnemonics.iter().enumerate() {
                 if !buttons[idx].enabled {
@@ -1093,10 +1133,7 @@ impl PieMenu {
         // Draw buttons via caller-provided closure inside floating Areas
         // Resolved once per frame for the view handed to the render closure.
         let mnemonics = self.mnemonics(buttons);
-        let number_hints: Vec<Option<NumberHint>> = buttons
-            .iter()
-            .map(|b| if self.settings.number_hints.show { None } else { self.number_hint(b) })
-            .collect();
+        let visuals = ctx.global_style().visuals.clone();
         let (text_color, body_font) = {
             let style = ctx.global_style();
             (
@@ -1179,9 +1216,7 @@ impl PieMenu {
                 } else {
                     (button_center.x - hw - hints.spacing, egui::Align2::RIGHT_CENTER)
                 };
-                let color = hints
-                    .color
-                    .unwrap_or_else(|| ctx.global_style().visuals.weak_text_color());
+                let color = self.hint_color(is_hovered, &visuals);
                 let digit = self.hint_digit(&Self::eff(&button.direction, mirror));
                 painter.text(
                     Pos2::new(x, button_center.y),
@@ -1206,13 +1241,21 @@ impl PieMenu {
                     // would wrap instead of widening the button. Don't wrap; let it grow.
                     // Explicit newlines still work, and the closure can override this.
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    // Disabled: egui's disabled look, and no hover outline on the widget.
+                    if !button.enabled {
+                        ui.disable();
+                    }
                     render_button(ui, &ButtonView {
                         idx,
                         hovered: is_hovered,
                         enabled: button.enabled,
                         button,
                         mnemonic: mnemonics[idx],
-                        number_hint: number_hints[idx].clone(),
+                        number_hint: if self.settings.number_hints.show {
+                            None
+                        } else {
+                            self.number_hint_styled(button, is_hovered, &visuals)
+                        },
                         text_color,
                         body_font: body_font.clone(),
                     })
@@ -1319,6 +1362,9 @@ fn fold_char(c: char) -> char {
         'ף' => 'פ',
         'ץ' => 'צ',
         'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
+        // Persian keyboards type Farsi yeh/keheh where Arabic ones type yeh/kaf.
+        'ی' | 'ى' => 'ي',
+        'ک' => 'ك',
         _ => c,
     }
 }
@@ -1718,5 +1764,123 @@ mod unicode_tests {
         m.settings.mirror_horizontal = true;
         assert_eq!(m.number_hint(&east).unwrap().text, "4"); // East is shown on the west side
         assert!(!m.number_hint(&east).unwrap().on_right); // Trailing = left when mirrored
+    }
+}
+
+#[cfg(test)]
+mod finding_tests {
+    use super::*;
+
+    fn north() -> PieButton {
+        PieButton::new(PieDirection::North).with_label("Copy")
+    }
+
+    #[test]
+    fn hint_digit_styles() {
+        let mut m = PieMenu::new();
+        let n = PieDirection::North; // number key 8
+        assert_eq!(m.hint_digit(&n), '8');
+        m.settings.number_hints.digits = HintDigits::ArabicIndic;
+        assert_eq!(m.hint_digit(&n), '٨');
+        m.settings.number_hints.digits = HintDigits::Persian;
+        assert_eq!(m.hint_digit(&n), '۸');
+    }
+
+    #[test]
+    fn hint_colour_follows_hover() {
+        let mut m = PieMenu::new();
+        let v = egui::Visuals::dark();
+        let normal = m.number_hint_styled(&north(), false, &v).unwrap();
+        let hovered = m.number_hint_styled(&north(), true, &v).unwrap();
+        assert_eq!(normal.color, v.weak_text_color());
+        assert_eq!(hovered.color, v.strong_text_color());
+        assert_ne!(normal.color, hovered.color);
+        m.settings.number_hints.color = Some(Color32::RED);
+        m.settings.number_hints.hover_color = Some(Color32::GREEN);
+        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::RED);
+        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::GREEN);
+        // The public helper gives the normal (non-hovered) colour.
+        assert_eq!(m.number_hint(&north()).unwrap().color, Color32::RED);
+    }
+
+    #[test]
+    fn persian_and_arabic_yeh_kaf_fold_together() {
+        assert_eq!(fold_char('ی'), fold_char('ي'));
+        assert_eq!(fold_char('ى'), fold_char('ي'));
+        assert_eq!(fold_char('ک'), fold_char('ك'));
+    }
+
+    /// Runs one frame: a focused-or-not text field drawn first (like the demo's
+    /// sidebar), then the menu. Returns the menu response and the field's text.
+    fn frame(
+        ctx: &egui::Context,
+        m: &mut PieMenu,
+        text: &mut String,
+        focus: bool,
+        events: Vec<egui::Event>,
+    ) -> PieMenuResponse {
+        let buttons = vec![north()];
+        let mut resp = PieMenuResponse::None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let r = ui.text_edit_singleline(text);
+            if focus {
+                r.request_focus();
+            }
+            resp = m.show(ui.ctx(), &buttons, None, true, None, |ui, _| {
+                ui.label("x");
+            });
+        });
+        out.textures_delta.clear();
+        resp
+    }
+
+    fn digit8() -> Vec<egui::Event> {
+        vec![
+            egui::Event::Key {
+                key: Key::Num8,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("8".into()),
+        ]
+    }
+
+    #[test]
+    fn blocking_menu_takes_focus_from_text_field() {
+        let ctx = egui::Context::default();
+        let mut m = PieMenu::new();
+        let mut text = String::new();
+        m.open(Pos2::new(400.0, 300.0));
+        m.reveal();
+        frame(&ctx, &mut m, &mut text, true, vec![]); // field focused, menu opens
+        assert!(ctx.memory(|mem| mem.focused().is_none()), "menu should clear focus");
+        let resp = frame(&ctx, &mut m, &mut text, false, digit8());
+        assert_eq!(resp, PieMenuResponse::Selected(0));
+        assert!(text.is_empty(), "digit leaked into the text field: {text:?}");
+    }
+
+    #[test]
+    fn non_blocking_menu_leaves_typing_to_focused_field() {
+        let ctx = egui::Context::default();
+        let mut m = PieMenu::new();
+        m.settings.block_background = false;
+        let mut text = String::new();
+        m.open(Pos2::new(400.0, 300.0));
+        m.reveal();
+        frame(&ctx, &mut m, &mut text, true, vec![]);
+        let resp = frame(&ctx, &mut m, &mut text, true, digit8());
+        assert_eq!(resp, PieMenuResponse::None, "typing selected a pie button");
+        assert_eq!(text, "8");
+        // Without a focused field the key selects as before.
+        ctx.memory_mut(|mem| mem.stop_text_input());
+        let resp = frame(&ctx, &mut m, &mut text, false, digit8());
+        assert_eq!(resp, PieMenuResponse::Selected(0));
     }
 }
