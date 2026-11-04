@@ -745,7 +745,7 @@ impl eframe::App for Demo {
                 });
 
                 if shown == 0 {
-                    ui.label(RichText::new("No matching settings.").italics().color(Color32::GRAY));
+                    ui.label(RichText::new("No matching settings.").italics().color(ui.visuals().weak_text_color()));
                 }
 
                 ui.separator();
@@ -780,7 +780,12 @@ impl eframe::App for Demo {
             let viewport = ui.max_rect();
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.pinned, "Pin pie-menu");
-                ui.label("·  Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss (Esc also unpins)");
+                ui.separator();
+                // egui's own theme switch (System / Dark / Light), so the default text colours,
+                // which come from the theme, can be checked in both.
+                egui::widgets::global_theme_preference_buttons(ui);
+                ui.separator();
+                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss (Esc also unpins)");
             });
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -790,7 +795,7 @@ impl eframe::App for Demo {
                 egui::Align2::CENTER_TOP,
                 &self.last_action,
                 egui::FontId::proportional(18.0),
-                Color32::LIGHT_GRAY,
+                ui.visuals().text_color(),
             );
             // Pinned menu: the pointer counts only below this top area, so the pin
             // checkbox never hovers or clicks a pie button.
