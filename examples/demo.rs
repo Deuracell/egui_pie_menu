@@ -984,7 +984,13 @@ impl eframe::App for Demo {
                                             ui.set_min_height(button_h);
                                             if let Some((h, false)) = &hint { ui.label(h.clone()); }
                                             let mut display = cfg.checked;
-                                            ui.checkbox(&mut display, text);
+                                            if b.rtl {
+                                                // Right-to-left: the box goes right of its text.
+                                                ui.label(text);
+                                                ui.add(egui::Checkbox::without_text(&mut display));
+                                            } else {
+                                                ui.checkbox(&mut display, text);
+                                            }
                                             if let Some((h, true)) = &hint { ui.label(h.clone()); }
                                         },
                                     );

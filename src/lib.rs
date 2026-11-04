@@ -281,6 +281,10 @@ pub struct ButtonView<'a> {
     pub mnemonic: Option<char>,
     /// A number-key hint to draw inside your own button. `None` when number keys are off.
     pub number_hint: Option<NumberHint>,
+    /// Right-to-left: [`PieMenuSettings::mirror_horizontal`] is on. Lay out your own widgets
+    /// in reverse (e.g. a checkbox's box right of its text); [`Self::label_text`] already
+    /// puts its prefix (icon) on the right.
+    pub rtl: bool,
     text_color: Color32,
     body_font: FontId,
 }
@@ -298,6 +302,7 @@ impl ButtonView<'_> {
             mnemonic: self.mnemonic,
             color: self.text_color,
             font: self.body_font.clone(),
+            rtl: self.rtl,
         }
     }
 }
@@ -311,6 +316,7 @@ pub struct LabelText {
     mnemonic: Option<char>,
     color: Color32,
     font: FontId,
+    rtl: bool,
 }
 
 impl LabelText {
@@ -326,21 +332,37 @@ impl LabelText {
         self
     }
 
-    /// Text placed before the label, never underlined (e.g. an icon: `"🗑  "`).
+    /// Text placed before the label in reading order, never underlined (e.g. an icon:
+    /// `"🗑  "`). Right-to-left (see [`Self::rtl`]) it goes on the right of the label, with
+    /// its trailing spacing moved to face the label.
     pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
         self.prefix = prefix.into();
+        self
+    }
+
+    /// Right-to-left: put the prefix on the right. Set from [`ButtonView::rtl`] by
+    /// [`ButtonView::label_text`]; override it here. egui lays text out left to right (no
+    /// bidi), so this only moves the prefix; keep each label single-script.
+    pub fn rtl(mut self, rtl: bool) -> Self {
+        self.rtl = rtl;
         self
     }
 
     fn to_job(&self) -> LayoutJob {
         let format = TextFormat { color: self.color, font_id: self.font.clone(), ..Default::default() };
         let mut job = LayoutJob::default();
-        if !self.prefix.is_empty() {
+        if !self.rtl && !self.prefix.is_empty() {
             job.append(&self.prefix, 0.0, format.clone());
         }
         match self.mnemonic {
-            Some(m) => append_mnemonic_text(&mut job, &self.text, m, format),
-            None => job.append(&self.text, 0.0, format),
+            Some(m) => append_mnemonic_text(&mut job, &self.text, m, format.clone()),
+            None => job.append(&self.text, 0.0, format.clone()),
+        }
+        if self.rtl && !self.prefix.is_empty() {
+            // "🗑  " → "  🗑": the spacing that separated icon and label stays between them.
+            let icon = self.prefix.trim_end();
+            job.append(&self.prefix[icon.len()..], 0.0, format.clone());
+            job.append(icon, 0.0, format);
         }
         job
     }
@@ -1239,6 +1261,7 @@ impl PieMenu {
                         button,
                         mnemonic: mnemonics[idx],
                         number_hint: self.number_hint_styled(button, is_hovered, &visuals),
+                        rtl: mirror,
                         text_color: button_text_color(self.settings.text_color, &visuals, is_hovered, button.enabled),
                         body_font: body_font.clone(),
                     })
@@ -1529,7 +1552,17 @@ mod button_view_tests {
             mnemonic,
             color: Color32::WHITE,
             font: FontId::default(),
+            rtl: false,
         }
+    }
+
+    #[test]
+    fn rtl_puts_the_prefix_on_the_right() {
+        let job = label("🗑  ", Some('p')).rtl(true).to_job();
+        assert_eq!(job.text, "Copy  🗑");
+        let underlined: Vec<_> = job.sections.iter().filter(|s| s.format.underline != Stroke::NONE).collect();
+        assert_eq!(underlined.len(), 1, "still only the mnemonic is underlined");
+        assert_eq!(label("", None).rtl(true).to_job().text, "Copy");
     }
 
     #[test]
