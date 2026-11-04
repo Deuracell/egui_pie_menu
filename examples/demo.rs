@@ -324,8 +324,24 @@ fn slider_reset<N: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<N>,
     step: f64,
 ) -> bool {
+    slider_reset_with(ui, value, default, range, |s| s.step_by(step))
+}
+
+/// A slider for a value in pixels: whole pixels, shown without decimals, "px" suffix.
+fn px_slider(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    slider_reset_with(ui, value, default, range, |s| s.step_by(1.0).fixed_decimals(0).suffix(" px"))
+}
+
+/// [`slider_reset`] with the slider configured by `configure`.
+fn slider_reset_with<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    value: &mut N,
+    default: N,
+    range: std::ops::RangeInclusive<N>,
+    configure: impl for<'s> FnOnce(egui::Slider<'s>) -> egui::Slider<'s>,
+) -> bool {
     ui.horizontal(|ui| {
-        let mut changed = ui.add(egui::Slider::new(value, range).step_by(step)).changed();
+        let mut changed = ui.add(configure(egui::Slider::new(&mut *value, range))).changed();
         if reset_button(ui, *value == default) {
             *value = default;
             changed = true;
@@ -446,23 +462,23 @@ impl eframe::App for Demo {
                         self.menu.settings.diagonal_height = own_height.then_some(self.diagonal_height);
                     }
                     ui.add_enabled_ui(own_height, |ui| {
-                        if slider_reset(ui, &mut self.diagonal_height, 0.5, 0.0..=1.0, 0.01) {
+                        if slider_reset_with(ui, &mut self.diagonal_height, 0.5, 0.0..=1.0, |s| s.step_by(0.001).fixed_decimals(3)) {
                             self.menu.settings.diagonal_height = Some(self.diagonal_height);
                         }
                     });
 
                     ui.label("Radius");
-                    slider_reset(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0, 1.0);
+                    px_slider(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0);
 
-                    ui.label("Button height (px)")
+                    ui.label("Button height")
                         .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
-                    slider_reset(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0, 1.0);
+                    px_slider(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
                 });
 
                 section(ui, &query, &mut shown, "Center background", "radius fill color colour stroke width", |ui| {
                     ui.label("Radius");
                     let def = d.center_indicator.background_radius.get();
-                    if slider_reset(ui, &mut self.bg_radius, def, 0.0..=60.0, 0.5) {
+                    if px_slider(ui, &mut self.bg_radius, def, 0.0..=60.0) {
                         self.menu.settings.center_indicator.background_radius = SmartFloat::new(self.bg_radius);
                     }
 
@@ -470,8 +486,8 @@ impl eframe::App for Demo {
                     ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
 
                     ui.label("Stroke width");
-                    slider_reset(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
-                        d.center_indicator.background_stroke.width, 0.0..=10.0, 0.5);
+                    px_slider(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
+                        d.center_indicator.background_stroke.width, 0.0..=10.0);
 
                     ui.label("Stroke color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_stroke.color);
@@ -494,7 +510,7 @@ impl eframe::App for Demo {
 
                     ui.label("Radius");
                     let def = d.center_indicator.highlight_radius.get();
-                    if slider_reset(ui, &mut self.highlight_radius, def, 1.0..=60.0, 0.5) {
+                    if px_slider(ui, &mut self.highlight_radius, def, 1.0..=60.0) {
                         self.menu.settings.center_indicator.highlight_radius = SmartFloat::new(self.highlight_radius);
                     }
 
@@ -505,15 +521,15 @@ impl eframe::App for Demo {
                     }
 
                     ui.label("Circle radius");
-                    slider_reset(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
-                        d.center_indicator.highlight_circle_radius, 1.0..=40.0, 0.5);
+                    px_slider(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
+                        d.center_indicator.highlight_circle_radius, 1.0..=40.0);
 
                     ui.label("Fill color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
 
                     ui.label("Stroke width");
-                    slider_reset(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
-                        d.center_indicator.highlight_stroke.width, 0.0..=10.0, 0.5);
+                    px_slider(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
+                        d.center_indicator.highlight_stroke.width, 0.0..=10.0);
 
                     ui.label("Stroke color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_stroke.color);
@@ -558,8 +574,8 @@ impl eframe::App for Demo {
                         });
 
                         ui.label("Start radius  (0 = from the centre)");
-                        slider_reset(ui, &mut self.menu.settings.animations.slide_start_radius,
-                            d.animations.slide_start_radius, 0.0..=300.0, 1.0);
+                        px_slider(ui, &mut self.menu.settings.animations.slide_start_radius,
+                            d.animations.slide_start_radius, 0.0..=300.0);
 
                         let mut own_shape = self.menu.settings.animations.slide_start_shape_factor.is_some();
                         if ui.checkbox(&mut own_shape, "Own start shape").changed() {
@@ -583,8 +599,8 @@ impl eframe::App for Demo {
                     ui.label("Background color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.label.background_color);
                     ui.label("Stroke width");
-                    slider_reset(ui, &mut self.menu.settings.label.background_stroke.width,
-                        d.label.background_stroke.width, 0.0..=4.0, 0.5);
+                    px_slider(ui, &mut self.menu.settings.label.background_stroke.width,
+                        d.label.background_stroke.width, 0.0..=4.0);
                     ui.label("Stroke color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.label.background_stroke.color);
                 });
@@ -605,8 +621,8 @@ impl eframe::App for Demo {
                         });
 
                     if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
-                        ui.label("Threshold (px)");
-                        if slider_reset(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0, 0.5) {
+                        ui.label("Threshold");
+                        if px_slider(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0) {
                             self.show_threshold = *threshold;
                         }
                     }
@@ -630,9 +646,9 @@ impl eframe::App for Demo {
                                 }
                             });
 
-                        ui.label("Spacing (px)");
-                        slider_reset(ui, &mut self.menu.settings.number_hints.spacing,
-                            d.number_hints.spacing, 0.0..=40.0, 0.5);
+                        ui.label("Spacing");
+                        px_slider(ui, &mut self.menu.settings.number_hints.spacing,
+                            d.number_hints.spacing, 0.0..=40.0);
 
                         let mut custom = self.menu.settings.number_hints.color.is_some();
                         if ui.checkbox(&mut custom, "Force contrast digits")
