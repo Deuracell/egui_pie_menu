@@ -121,7 +121,7 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.hovered` | The pointer highlights this button |
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
-| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off or when `number_hints.show` makes the menu paint it beside the button. `h.color` follows hover (`number_hints.color` / `hover_color`) |
+| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off or when `number_hints.show` makes the menu paint it beside the button. `h.color` is `number_hints.color` with more contrast while hovered |
 | `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour and font follow the egui style; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
@@ -239,7 +239,6 @@ menu.settings.number_hints.show = true;
 menu.settings.number_hints.side = HintSide::Trailing;  // default: after the label in reading order; or Outside / Left / Right
 menu.settings.number_hints.spacing = 4.0;              // gap between button and digit (px)
 menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's weak text colour
-menu.settings.number_hints.hover_color = Some(Color32::WHITE); // default None = egui's strong text colour
 menu.settings.number_hints.digits = HintDigits::ArabicIndic; // ٠١٢… (Persian: ۰۱۲…)
 ```
 

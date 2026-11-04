@@ -104,8 +104,6 @@ struct Demo {
     slide_fade_ms: u64,
     // Colour picker value for number hints (kept while "Custom colour" is off)
     hint_color: Color32,
-    // Colour picker value for hovered number hints (kept while "Custom hover colour" is off)
-    hint_hover_color: Color32,
     /// Config index of each menu button (see `build_buttons`).
     button_map: Vec<usize>,
     // Number hints on/off, and whether they go inside the buttons or are painted beside
@@ -162,7 +160,6 @@ impl Demo {
             slide_start_shape: DEFAULT_SLIDE_START_SHAPE,
             slide_fade_ms: 200,
             hint_color: Color32::GRAY,
-            hint_hover_color: Color32::WHITE,
             button_map,
             show_hints: false,
             hints_inside: true,
@@ -594,7 +591,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys inside beside painted side trailing after outside left right spacing gap color colour hover", |ui| {
+                    "number hints digits keys inside beside painted side trailing after outside left right spacing gap color colour", |ui| {
                     ui.checkbox(&mut self.show_hints, "Show number hints");
                     ui.add_enabled_ui(self.show_hints, |ui| {
                         ui.horizontal(|ui| {
@@ -618,7 +615,7 @@ impl eframe::App for Demo {
 
                         let mut custom = self.menu.settings.number_hints.color.is_some();
                         if ui.checkbox(&mut custom, "Custom colour")
-                            .on_hover_text("Off: egui's weak text colour (dimmed).")
+                            .on_hover_text("Off: egui's weak text colour (dimmed). Either way the digit brightens on hover.")
                             .changed()
                         {
                             self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
@@ -626,19 +623,6 @@ impl eframe::App for Demo {
                         ui.add_enabled_ui(custom, |ui| {
                             if ui.color_edit_button_srgba(&mut self.hint_color).changed() {
                                 self.menu.settings.number_hints.color = Some(self.hint_color);
-                            }
-                        });
-
-                        let mut custom_hover = self.menu.settings.number_hints.hover_color.is_some();
-                        if ui.checkbox(&mut custom_hover, "Custom hover colour")
-                            .on_hover_text("Colour of the digit while its button is hovered. Off: egui's strong text colour.")
-                            .changed()
-                        {
-                            self.menu.settings.number_hints.hover_color = custom_hover.then_some(self.hint_hover_color);
-                        }
-                        ui.add_enabled_ui(custom_hover, |ui| {
-                            if ui.color_edit_button_srgba(&mut self.hint_hover_color).changed() {
-                                self.menu.settings.number_hints.hover_color = Some(self.hint_hover_color);
                             }
                         });
                     });
@@ -884,8 +868,8 @@ impl eframe::App for Demo {
                         } else {
                             (cfg.color.gamma_multiply(0.6), Color32::LIGHT_GRAY)
                         };
-                        // Hint digit in the library's colour: dimmed normally, bright on hover
-                        // (Custom colour / Custom hover colour override each state).
+                        // Hint digit in the library's colour (the normal or custom colour,
+                        // with more contrast while hovered).
                         let inside = self.show_hints && self.hints_inside;
                         let hint = b.number_hint.as_ref().filter(|_| inside).map(|h| {
                             (RichText::new(&h.text).color(h.color), h.on_right)

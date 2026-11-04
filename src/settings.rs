@@ -235,15 +235,13 @@ pub struct PieMenuNumberHints {
     /// [`PieMenuInput::use_numpad_keys`] is on. To put the digit *inside* your button
     /// instead (so the button grows to fit it), leave this off and use
     /// [`crate::PieMenu::number_hint`] in your render closure. `side`, `spacing` and
-    /// `digits` apply to both; `font` only to the painted digit. The colours are applied to
+    /// `digits` apply to both; `font` only to the painted digit. The colour is applied to
     /// the painted digit and passed on in [`crate::NumberHint::color`] for digits you draw.
     pub show: bool,
     /// Digit colour. `None` (default) uses egui's weak text colour: a dimmed version of
-    /// the default label colour that follows the light/dark theme.
+    /// the default label colour that follows the light/dark theme. On a hovered button the
+    /// digit gets more contrast automatically (brighter in a dark theme, darker in a light one).
     pub color: Option<Color32>,
-    /// Digit colour while its button is hovered. `None` (default) uses egui's strong text
-    /// colour, so the digit brightens along with the hovered button.
-    pub hover_color: Option<Color32>,
     /// Digit font.
     pub font: FontId,
     /// Gap between the button's edge and the digit, in logical pixels.
@@ -290,7 +288,6 @@ impl Default for PieMenuNumberHints {
             color: None,
             font: FontId::proportional(11.0),
             spacing: 4.0,
-            hover_color: None,
             side: HintSide::Trailing,
             digits: HintDigits::Western,
         }

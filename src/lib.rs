@@ -362,14 +362,18 @@ impl From<LabelText> for egui::WidgetText {
 pub struct NumberHint {
     /// The digit, already converted to the [`PieMenuNumberHints::digits`] style.
     pub text: String,
-    /// Colour to draw the digit in, from [`PieMenuNumberHints::color`], or
-    /// [`PieMenuNumberHints::hover_color`] when the button is hovered (inside the render
-    /// closure; [`PieMenu::number_hint`] always gives the normal colour).
+    /// Colour to draw the digit in, from [`PieMenuNumberHints::color`], with more contrast
+    /// when the button is hovered (inside the render closure; [`PieMenu::number_hint`]
+    /// always gives the normal colour).
     pub color: Color32,
     /// Whether the digit goes after (right of) the label rather than before it,
     /// resolved from [`PieMenuNumberHints::side`].
     pub on_right: bool,
 }
+
+/// How much brighter (dark theme) or darker (light theme) a number hint gets on a hovered
+/// button: the inverse of a 0.6 dim, the same step as a button going from dimmed to full colour.
+const HINT_HOVER_FACTOR: f32 = 1.0 / 0.6;
 
 pub struct PieMenu {
     pub id: egui::Id,
@@ -476,14 +480,18 @@ impl PieMenu {
         })
     }
 
-    /// The hint colour for a (non-)hovered button.
+    /// The hint colour for a (non-)hovered button: the configured (or weak text) colour,
+    /// given more contrast when hovered by [`HINT_HOVER_FACTOR`]: brighter in a dark theme,
+    /// darker in a light one.
     fn hint_color(&self, hovered: bool, visuals: &egui::Visuals) -> Color32 {
-        let hints = &self.settings.number_hints;
-        if hovered {
-            hints.hover_color.unwrap_or_else(|| visuals.strong_text_color())
-        } else {
-            hints.color.unwrap_or_else(|| visuals.weak_text_color())
+        let base = self.settings.number_hints.color.unwrap_or_else(|| visuals.weak_text_color());
+        if !hovered {
+            return base;
         }
+        let factor = if visuals.dark_mode { HINT_HOVER_FACTOR } else { 1.0 / HINT_HOVER_FACTOR };
+        let [r, g, b, a] = base.to_srgba_unmultiplied();
+        let scale = |c: u8| (c as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        Color32::from_rgba_unmultiplied(scale(r), scale(g), scale(b), a)
     }
 
     /// The hint digit for a direction, in the [`PieMenuNumberHints::digits`] style.
@@ -1790,17 +1798,20 @@ mod finding_tests {
     fn hint_colour_follows_hover() {
         let mut m = PieMenu::new();
         let v = egui::Visuals::dark();
+        let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
         let normal = m.number_hint_styled(&north(), false, &v).unwrap();
         let hovered = m.number_hint_styled(&north(), true, &v).unwrap();
         assert_eq!(normal.color, v.weak_text_color());
-        assert_eq!(hovered.color, v.strong_text_color());
-        assert_ne!(normal.color, hovered.color);
-        m.settings.number_hints.color = Some(Color32::RED);
-        m.settings.number_hints.hover_color = Some(Color32::GREEN);
-        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::RED);
-        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::GREEN);
+        assert!(lum(hovered.color) > lum(normal.color), "dark theme: hover brightens");
+        // A custom colour gets the same treatment.
+        m.settings.number_hints.color = Some(Color32::from_rgb(120, 60, 30));
+        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::from_rgb(120, 60, 30));
+        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::from_rgb(200, 100, 50));
+        // Light theme: hover darkens (more contrast on a light background).
+        let light = egui::Visuals::light();
+        assert_eq!(m.number_hint_styled(&north(), true, &light).unwrap().color, Color32::from_rgb(72, 36, 18));
         // The public helper gives the normal (non-hovered) colour.
-        assert_eq!(m.number_hint(&north()).unwrap().color, Color32::RED);
+        assert_eq!(m.number_hint(&north()).unwrap().color, Color32::from_rgb(120, 60, 30));
     }
 
     #[test]
