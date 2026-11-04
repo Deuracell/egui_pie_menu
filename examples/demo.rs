@@ -83,7 +83,7 @@ struct Demo {
     /// True while the open menu was opened by holding Space (not right-click).
     space_open: bool,
 
-    // Mirrored f32 values for SmartFloat settings (sliders need plain f32)
+    // Mirrored f32 values for SmartFloat settings (drag values need plain f32)
     bg_radius: f32,
     highlight_radius: f32,
     highlight_angle_deg: f32,
@@ -92,15 +92,15 @@ struct Demo {
     button_configs: Vec<ButtonConfig>,
     buttons: Vec<PieButton>,
 
-    // Mirror for show threshold slider (only active in OnMovement mode)
+    // Mirror for show threshold drag value (only active in OnMovement mode)
     show_threshold: f32,
 
     // Side-panel search query
     search: String,
 
-    // Mirror for the slide-out start shape slider (kept while "Own start shape" is off)
+    // Mirror for the slide-out start shape drag value (kept while "Own start shape" is off)
     slide_start_shape: f32,
-    // Mirror for the slide-out fade duration slider (kept while "Fade while sliding" is off)
+    // Mirror for the slide-out fade duration drag value (kept while "Fade while sliding" is off)
     slide_fade_ms: u64,
     // Colour picker value for number hints (kept while "Custom colour" is off)
     hint_color: Color32,
@@ -108,7 +108,7 @@ struct Demo {
     button_map: Vec<usize>,
     /// Height of every pie button in the demo (both kinds), in px.
     button_height: f32,
-    // Slider value for "Intercardinal height" (kept while it is off)
+    // Drag value for "Intercardinal height" (kept while it is off)
     intercardinal_height: f32,
     // Colour picker value for "Force contrast text" (kept while it is off)
     label_color: Color32,
@@ -316,32 +316,43 @@ fn reset_button(ui: &mut egui::Ui, is_default: bool) -> bool {
         .clicked()
 }
 
-/// A slider with a reset button beside it. Returns true if the value changed.
-fn slider_reset<N: egui::emath::Numeric>(
+/// A drag value with a reset button beside it, decimals and drag speed from `step`.
+/// Returns true if the value changed.
+fn drag_reset<N: egui::emath::Numeric>(
     ui: &mut egui::Ui,
     value: &mut N,
     default: N,
     range: std::ops::RangeInclusive<N>,
     step: f64,
 ) -> bool {
-    slider_reset_with(ui, value, default, range, |s| s.step_by(step))
+    // Decimals from the step (1 → 0, 0.01 → 2, …); drag speed: one step per pixel, but
+    // at least 1/300 of the range so wide ranges (e.g. 0–1000 ms) stay quick to drag.
+    let decimals = (-step.log10()).ceil().max(0.0) as usize;
+    let span = range.end().to_f64() - range.start().to_f64();
+    let speed = step.max(span / 300.0);
+    drag_reset_with(ui, value, default, range, |d| d.speed(speed).fixed_decimals(decimals))
 }
 
-/// A slider for a value in pixels: whole pixels, shown without decimals, "px" suffix.
-fn px_slider(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::RangeInclusive<f32>) -> bool {
-    slider_reset_with(ui, value, default, range, |s| s.step_by(1.0).fixed_decimals(0).suffix(" px"))
+/// A drag value in pixels: whole pixels, shown without decimals, "px" suffix.
+fn px_drag(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    let changed = drag_reset_with(ui, value, default, range, |d| d.speed(1.0).fixed_decimals(0).suffix(" px"));
+    if changed {
+        *value = value.round();
+    }
+    changed
 }
 
-/// [`slider_reset`] with the slider configured by `configure`.
-fn slider_reset_with<N: egui::emath::Numeric>(
+/// A [`egui::DragValue`] (drag to change, click to type) plus a reset button, with the
+/// drag value configured by `configure`. Returns true if the value changed.
+fn drag_reset_with<N: egui::emath::Numeric>(
     ui: &mut egui::Ui,
     value: &mut N,
     default: N,
     range: std::ops::RangeInclusive<N>,
-    configure: impl for<'s> FnOnce(egui::Slider<'s>) -> egui::Slider<'s>,
+    configure: impl for<'s> FnOnce(egui::DragValue<'s>) -> egui::DragValue<'s>,
 ) -> bool {
     ui.horizontal(|ui| {
-        let mut changed = ui.add(configure(egui::Slider::new(&mut *value, range))).changed();
+        let mut changed = ui.add(configure(egui::DragValue::new(&mut *value).range(range))).changed();
         if reset_button(ui, *value == default) {
             *value = default;
             changed = true;
@@ -452,7 +463,7 @@ impl eframe::App for Demo {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height button size", |ui| {
                     ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
-                    slider_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
+                    drag_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
 
                     let mut own_height = self.menu.settings.intercardinal_height.is_some();
                     if ui.checkbox(&mut own_height, "Intercardinal height")
@@ -462,23 +473,23 @@ impl eframe::App for Demo {
                         self.menu.settings.intercardinal_height = own_height.then_some(self.intercardinal_height);
                     }
                     ui.add_enabled_ui(own_height, |ui| {
-                        if slider_reset_with(ui, &mut self.intercardinal_height, 0.5, 0.0..=1.0, |s| s.step_by(0.001).fixed_decimals(3)) {
+                        if drag_reset_with(ui, &mut self.intercardinal_height, 0.5, 0.0..=1.0, |d| d.speed(0.001).fixed_decimals(3)) {
                             self.menu.settings.intercardinal_height = Some(self.intercardinal_height);
                         }
                     });
 
                     ui.label("Radius");
-                    px_slider(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0);
+                    px_drag(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0);
 
                     ui.label("Button height")
                         .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
-                    px_slider(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
+                    px_drag(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
                 });
 
                 section(ui, &query, &mut shown, "Center background", "radius fill color colour stroke width", |ui| {
                     ui.label("Radius");
                     let def = d.center_indicator.background_radius.get();
-                    if px_slider(ui, &mut self.bg_radius, def, 0.0..=60.0) {
+                    if px_drag(ui, &mut self.bg_radius, def, 0.0..=60.0) {
                         self.menu.settings.center_indicator.background_radius = SmartFloat::new(self.bg_radius);
                     }
 
@@ -486,7 +497,7 @@ impl eframe::App for Demo {
                     ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
 
                     ui.label("Stroke width");
-                    px_slider(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
+                    px_drag(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
                         d.center_indicator.background_stroke.width, 0.0..=10.0);
 
                     ui.label("Stroke color");
@@ -510,25 +521,25 @@ impl eframe::App for Demo {
 
                     ui.label("Radius");
                     let def = d.center_indicator.highlight_radius.get();
-                    if px_slider(ui, &mut self.highlight_radius, def, 1.0..=60.0) {
+                    if px_drag(ui, &mut self.highlight_radius, def, 1.0..=60.0) {
                         self.menu.settings.center_indicator.highlight_radius = SmartFloat::new(self.highlight_radius);
                     }
 
                     ui.label("Arc angle (°)");
                     let def = d.center_indicator.highlight_angle.to_degrees();
-                    if slider_reset(ui, &mut self.highlight_angle_deg, def, 5.0..=360.0, 1.0) {
+                    if drag_reset(ui, &mut self.highlight_angle_deg, def, 5.0..=360.0, 1.0) {
                         self.menu.settings.center_indicator.highlight_angle = self.highlight_angle_deg.to_radians();
                     }
 
                     ui.label("Circle radius");
-                    px_slider(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
+                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
                         d.center_indicator.highlight_circle_radius, 1.0..=40.0);
 
                     ui.label("Fill color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
 
                     ui.label("Stroke width");
-                    px_slider(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
+                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
                         d.center_indicator.highlight_stroke.width, 0.0..=10.0);
 
                     ui.label("Stroke color");
@@ -553,7 +564,7 @@ impl eframe::App for Demo {
                         ui.label("Duration (ms)");
                         let mut ms = self.menu.settings.animations.reveal_duration.as_millis() as u64;
                         let def = d.animations.reveal_duration.as_millis() as u64;
-                        if slider_reset(ui, &mut ms, def, 0..=1000, 1.0) {
+                        if drag_reset(ui, &mut ms, def, 0..=1000, 1.0) {
                             self.menu.settings.animations.reveal_duration = Duration::from_millis(ms);
                         }
                     }
@@ -568,13 +579,13 @@ impl eframe::App for Demo {
                         ui.add_enabled_ui(fade, |ui| {
                             ui.label("Fade duration (ms)");
                             let def = d.animations.slide_fade.map_or(200, |f| f.as_millis() as u64);
-                            if slider_reset(ui, &mut self.slide_fade_ms, def, 0..=1000, 1.0) {
+                            if drag_reset(ui, &mut self.slide_fade_ms, def, 0..=1000, 1.0) {
                                 self.menu.settings.animations.slide_fade = Some(Duration::from_millis(self.slide_fade_ms));
                             }
                         });
 
                         ui.label("Start radius  (0 = from the centre)");
-                        px_slider(ui, &mut self.menu.settings.animations.slide_start_radius,
+                        px_drag(ui, &mut self.menu.settings.animations.slide_start_radius,
                             d.animations.slide_start_radius, 0.0..=300.0);
 
                         let mut own_shape = self.menu.settings.animations.slide_start_shape_factor.is_some();
@@ -584,7 +595,7 @@ impl eframe::App for Demo {
                         }
                         ui.add_enabled_ui(own_shape, |ui| {
                             ui.label("Start shape  (−1 diamond · 0 circle · +1 square)");
-                            if slider_reset(ui, &mut self.slide_start_shape, DEFAULT_SLIDE_START_SHAPE, -1.0..=1.0, 0.01) {
+                            if drag_reset(ui, &mut self.slide_start_shape, DEFAULT_SLIDE_START_SHAPE, -1.0..=1.0, 0.01) {
                                 self.menu.settings.animations.slide_start_shape_factor = Some(self.slide_start_shape);
                             }
                         });
@@ -599,7 +610,7 @@ impl eframe::App for Demo {
                     ui.label("Background color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.label.background_color);
                     ui.label("Stroke width");
-                    px_slider(ui, &mut self.menu.settings.label.background_stroke.width,
+                    px_drag(ui, &mut self.menu.settings.label.background_stroke.width,
                         d.label.background_stroke.width, 0.0..=4.0);
                     ui.label("Stroke color");
                     ui.color_edit_button_srgba(&mut self.menu.settings.label.background_stroke.color);
@@ -622,7 +633,7 @@ impl eframe::App for Demo {
 
                     if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
                         ui.label("Threshold");
-                        if px_slider(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0) {
+                        if px_drag(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0) {
                             self.show_threshold = *threshold;
                         }
                     }
@@ -647,7 +658,7 @@ impl eframe::App for Demo {
                             });
 
                         ui.label("Spacing");
-                        px_slider(ui, &mut self.menu.settings.number_hints.spacing,
+                        px_drag(ui, &mut self.menu.settings.number_hints.spacing,
                             d.number_hints.spacing, 0.0..=40.0);
 
                         let mut custom = self.menu.settings.number_hints.color.is_some();
