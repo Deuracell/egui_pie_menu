@@ -235,19 +235,36 @@ pub struct PieMenuNumberHints {
     /// [`PieMenuInput::use_numpad_keys`] is on. To put the digit *inside* your button
     /// instead (so the button grows to fit it), leave this off and use
     /// [`crate::PieMenu::number_hint`] in your render closure. `side`, `spacing` and
-    /// `arabic_indic_digits` apply to both; `color` and `font` only to the painted digit.
+    /// `digits` apply to both; `font` only to the painted digit. The colours are applied to
+    /// the painted digit and passed on in [`crate::NumberHint::color`] for digits you draw.
     pub show: bool,
     /// Digit colour. `None` (default) uses egui's weak text colour: a dimmed version of
     /// the default label colour that follows the light/dark theme.
     pub color: Option<Color32>,
+    /// Digit colour while its button is hovered. `None` (default) uses egui's strong text
+    /// colour, so the digit brightens along with the hovered button.
+    pub hover_color: Option<Color32>,
     /// Digit font.
     pub font: FontId,
     /// Gap between the button's edge and the digit, in logical pixels.
     pub spacing: f32,
     /// Which side of the button the digit is drawn on.
     pub side: HintSide,
-    /// Draw Arabic-Indic digits (٠١٢٣…) instead of Western ones.
-    pub arabic_indic_digits: bool,
+    /// Which digits to draw (Western, Arabic-Indic or Persian).
+    pub digits: HintDigits,
+}
+
+/// Digit shapes used for number hints. The keys pressed are the same in every case;
+/// only the drawn digit changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HintDigits {
+    /// 0123456789 (default).
+    #[default]
+    Western,
+    /// ٠١٢٣٤٥٦٧٨٩, used with Arabic.
+    ArabicIndic,
+    /// ۰۱۲۳۴۵۶۷۸۹ (Extended Arabic-Indic), used with Persian and Urdu.
+    Persian,
 }
 
 /// Side of a button on which a number hint is drawn.
@@ -273,8 +290,9 @@ impl Default for PieMenuNumberHints {
             color: None,
             font: FontId::proportional(11.0),
             spacing: 4.0,
+            hover_color: None,
             side: HintSide::Trailing,
-            arabic_indic_digits: false,
+            digits: HintDigits::Western,
         }
     }
 }
