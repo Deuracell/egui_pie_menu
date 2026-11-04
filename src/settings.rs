@@ -233,11 +233,11 @@ pub enum RevealAnimation {
 /// [`PieMenuInput::use_numpad_keys`] is on.
 #[derive(Clone, Debug)]
 pub struct PieMenuNumberHints {
-    /// Digit colour at full strength. `None` (default) uses egui's strong text colour
-    /// (white in a dark theme, black in a light one). Dimmed according to [`Self::dim`].
+    /// Force the digit colour, whether hovered or not (Blender-style). `None` (default)
+    /// uses egui's widget text colours like the labels: `widgets.inactive` normally,
+    /// `widgets.hovered` on the hovered button. Independent of
+    /// [`PieMenuSettings::text_color`]. Disabled buttons are faded by egui either way.
     pub color: Option<Color32>,
-    /// When the digit is dimmed; independent of [`PieMenuSettings::dim_text`].
-    pub dim: DimText,
     /// Suggested gap between the label and the digit, in logical pixels (for your closure).
     pub spacing: f32,
     /// Which side of the label the digit goes on.
@@ -257,17 +257,6 @@ pub enum HintDigits {
     ArabicIndic,
     /// ۰۱۲۳۴۵۶۷۸۹ (Extended Arabic-Indic), used with Persian and Urdu.
     Persian,
-}
-
-/// When button text is dimmed (moved towards the theme's background colour: darker in a
-/// dark theme, lighter in a light one). Disabled buttons are always dimmed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DimText {
-    /// Full colour on the hovered button, dimmed on the others (default).
-    #[default]
-    WhenNotHovered,
-    /// Always full colour unless the button is disabled (Blender-style).
-    OnlyWhenDisabled,
 }
 
 /// Side of the label on which a number hint is drawn.
@@ -290,7 +279,6 @@ impl Default for PieMenuNumberHints {
     fn default() -> Self {
         Self {
             color: None,
-            dim: DimText::WhenNotHovered,
             spacing: 4.0,
             side: HintSide::Trailing,
             digits: HintDigits::Western,
@@ -372,9 +360,12 @@ pub struct PieMenuSettings {
     pub mirror_horizontal: bool,
     /// Optional number-key hints next to the buttons.
     pub number_hints: PieMenuNumberHints,
-    /// When button labels ([`crate::ButtonView::label_text`]) are dimmed. Number hints
-    /// have their own [`PieMenuNumberHints::dim`].
-    pub dim_text: DimText,
+    /// Force the label colour of [`crate::ButtonView::label_text`], whether hovered or
+    /// not (Blender-style: `Some(Color32::WHITE)`). `None` (default) uses egui's widget
+    /// text colours: `widgets.inactive` normally, `widgets.hovered` on the hovered button,
+    /// so the app's theme applies. Disabled buttons are faded by egui either way.
+    /// Number hints have their own [`PieMenuNumberHints::color`].
+    pub text_color: Option<Color32>,
 }
 
 impl Default for PieMenuSettings {
@@ -392,7 +383,7 @@ impl Default for PieMenuSettings {
             block_background: true,
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
-            dim_text: DimText::WhenNotHovered,
+            text_color: None,
         }
     }
 }

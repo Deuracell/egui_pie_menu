@@ -97,8 +97,8 @@ if self.menu_open {
 
     match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"), |ui, b| {
         // `b` is a `ButtonView`: index, hover state, resolved mnemonic and number hint.
-        // The label comes from the button; its mnemonic (if any) is underlined, and it is
-        // full colour when hovered, dimmed otherwise (see `settings.dim_text`).
+        // The label comes from the button; its mnemonic (if any) is underlined, and its
+        // colour follows egui's widget states for the pie's hover (see "Text colour").
         ui.label(b.label_text());
     }) {
         PieMenuResponse::Selected(idx) => {
@@ -121,8 +121,8 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.hovered` | The pointer highlights this button |
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
-| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color` is already dimmed or full per `number_hints.dim` |
-| `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Full or dimmed per `settings.dim_text` (always dimmed when disabled), egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
+| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color` is resolved for the button's state (see "Text colour") |
+| `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour per "Text colour" below, egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
 
@@ -230,7 +230,7 @@ let hint_gap = menu.settings.number_hints.spacing;
 // let label = b.label_text();
 // let btn = match &b.number_hint {
 //     Some(h) => {
-//         let digit = egui::RichText::new(&h.text).color(h.color); // dimmed/full per number_hints.dim
+//         let digit = egui::RichText::new(&h.text).color(h.color); // resolved for hover/disabled
 //         if h.on_right { egui::Button::new((label, digit)) } else { egui::Button::new((digit, label)) }
 //     }
 //     None => egui::Button::new(label),
@@ -238,19 +238,22 @@ let hint_gap = menu.settings.number_hints.spacing;
 
 menu.settings.number_hints.side = HintSide::Trailing;  // default: after the label in reading order; or Outside / Left / Right
 menu.settings.number_hints.spacing = 4.0;              // suggested gap between label and digit (px)
-menu.settings.number_hints.color = Some(Color32::GRAY); // full-strength colour; default None = egui's strong text colour
-menu.settings.number_hints.dim = DimText::WhenNotHovered; // or OnlyWhenDisabled; independent of settings.dim_text
+menu.settings.number_hints.color = Some(Color32::WHITE); // force the digit colour (Blender-style); default None = egui's widget colours
 menu.settings.number_hints.digits = HintDigits::ArabicIndic; // ٠١٢… (Persian: ۰۱۲…)
 ```
 
-### Text dimming
+### Text colour
 
-`settings.dim_text` (labels) and `settings.number_hints.dim` (digits) choose when text is dimmed, independently:
+By default, labels (`b.label_text()`) and digits (`h.color`) use egui's widget text colours, so the app's theme applies: `visuals.widgets.inactive` normally and `visuals.widgets.hovered` on the button the pie highlights — the same dim/bright step as an egui button under the mouse.
 
-- `DimText::WhenNotHovered` (default): full colour on the hovered button, dimmed on the others.
-- `DimText::OnlyWhenDisabled`: always full colour, like Blender's pie menus.
+To force a colour whether hovered or not (Blender-style white text), set it, independently for labels and digits:
 
-Disabled buttons are always dimmed. Dimming moves the colour 40% of the way towards the theme's panel colour, so it gets darker in a dark theme and lighter in a light one.
+```rust
+menu.settings.text_color = Some(Color32::WHITE);              // labels
+menu.settings.number_hints.color = Some(Color32::WHITE);      // digits
+```
+
+Disabled buttons are greyed out with egui's `Visuals::gray_out` either way. (Their render closure also runs in a disabled `Ui`, but egui does not fade text that carries an explicit colour, which `label_text()` does.)
 
 ### Pinned / persistent menus
 

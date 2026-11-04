@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{DimText, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintDigits, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
+use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintDigits, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -106,6 +106,8 @@ struct Demo {
     hint_color: Color32,
     /// Config index of each menu button (see `build_buttons`).
     button_map: Vec<usize>,
+    // Colour picker value for "Force label colour" (kept while it is off)
+    label_color: Color32,
     // Number hints (drawn inside the buttons) on/off
     show_hints: bool,
 }
@@ -158,8 +160,9 @@ impl Demo {
             search: String::new(),
             slide_start_shape: DEFAULT_SLIDE_START_SHAPE,
             slide_fade_ms: 200,
-            hint_color: Color32::GRAY,
+            hint_color: Color32::WHITE,
             button_map,
+            label_color: Color32::WHITE,
             show_hints: false,
         }
     }
@@ -333,21 +336,6 @@ fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)
         Some((h, false)) => egui::Button::new((h, label)).gap(gap),
         None             => egui::Button::new(label),
     }
-}
-
-/// "Dim label" / "Dim digit" choice.
-fn dim_text_combo(ui: &mut egui::Ui, id: &str, value: &mut DimText) {
-    let label = |d: DimText| match d {
-        DimText::WhenNotHovered => "When not hovered",
-        DimText::OnlyWhenDisabled => "Only when disabled (Blender)",
-    };
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(label(*value))
-        .show_ui(ui, |ui| {
-            for d in [DimText::WhenNotHovered, DimText::OnlyWhenDisabled] {
-                ui.selectable_value(value, d, label(d));
-            }
-        });
 }
 
 const ALL_HINT_SIDES: &[HintSide] = &[HintSide::Trailing, HintSide::Outside, HintSide::Left, HintSide::Right];
@@ -604,7 +592,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys side trailing after outside left right spacing gap color colour dim", |ui| {
+                    "number hints digits keys side trailing after outside left right spacing gap color colour force", |ui| {
                     ui.checkbox(&mut self.show_hints, "Show number hints");
                     ui.add_enabled_ui(self.show_hints, |ui| {
                         ui.label("Side");
@@ -621,12 +609,9 @@ impl eframe::App for Demo {
                         slider_reset(ui, &mut self.menu.settings.number_hints.spacing,
                             d.number_hints.spacing, 0.0..=40.0, 0.5);
 
-                        ui.label("Dim digit");
-                        dim_text_combo(ui, "dim_digit", &mut self.menu.settings.number_hints.dim);
-
                         let mut custom = self.menu.settings.number_hints.color.is_some();
-                        if ui.checkbox(&mut custom, "Custom colour")
-                            .on_hover_text("Off: egui's strong text colour. Dimmed per \"Dim digit\".")
+                        if ui.checkbox(&mut custom, "Force digit colour")
+                            .on_hover_text("On: this colour whether hovered or not (Blender-style). Off: egui's widget colours (dimmer normally, brighter on hover). Independent of the label colour.")
                             .changed()
                         {
                             self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
@@ -640,10 +625,20 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Buttons",
-                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color dim blender", |ui| {
+                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color force blender", |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Dim label");
-                        dim_text_combo(ui, "dim_label", &mut self.menu.settings.dim_text);
+                        let mut forced = self.menu.settings.text_color.is_some();
+                        if ui.checkbox(&mut forced, "Force label colour")
+                            .on_hover_text("On: this colour whether hovered or not (Blender-style, white by default). Off: egui's widget colours (dimmer normally, brighter on hover). Disabled buttons are greyed out either way.")
+                            .changed()
+                        {
+                            self.menu.settings.text_color = forced.then_some(self.label_color);
+                        }
+                        ui.add_enabled_ui(forced, |ui| {
+                            if ui.color_edit_button_srgba(&mut self.label_color).changed() {
+                                self.menu.settings.text_color = Some(self.label_color);
+                            }
+                        });
                     });
                     ui.checkbox(&mut self.menu.settings.input.auto_mnemonics, "Auto mnemonics")
                         .on_hover_text("Generate mnemonics from labels for buttons set to Auto");
@@ -880,8 +875,8 @@ impl eframe::App for Demo {
                         } else {
                             cfg.color.gamma_multiply(0.6)
                         };
-                        // Label and digit colours come from the library: full or dimmed per
-                        // the "Dim label" / "Dim digit" settings (disabled is always dimmed).
+                        // Label and digit colours come from the library: egui's widget colours
+                        // for the hover state, or the forced colour; disabled is greyed out.
                         let hint = b.number_hint.as_ref().filter(|_| self.show_hints).map(|h| {
                             (RichText::new(&h.text).color(h.color), h.on_right)
                         });

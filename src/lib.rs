@@ -287,9 +287,10 @@ pub struct ButtonView<'a> {
 
 impl ButtonView<'_> {
     /// The button's label with its mnemonic (if any) underlined, ready for
-    /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's strong text colour,
-    /// dimmed per [`PieMenuSettings::dim_text`] (and always when disabled); the font is
-    /// egui's body font. Override with [`LabelText::color`] / [`LabelText::font`].
+    /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's widget text colour
+    /// for the button's state (`inactive` / `hovered`), or [`PieMenuSettings::text_color`]
+    /// when set; the font is egui's body font. Override with [`LabelText::color`] /
+    /// [`LabelText::font`].
     pub fn label_text(&self) -> LabelText {
         LabelText {
             prefix: String::new(),
@@ -361,28 +362,22 @@ impl From<LabelText> for egui::WidgetText {
 pub struct NumberHint {
     /// The digit, already converted to the [`PieMenuNumberHints::digits`] style.
     pub text: String,
-    /// The digit's colour: [`PieMenuNumberHints::color`] (or egui's strong text colour),
-    /// dimmed per [`PieMenuNumberHints::dim`] for this button's hover/enabled state.
+    /// The digit's colour: [`PieMenuNumberHints::color`] when set, else egui's widget text
+    /// colour for the button's state (`inactive` / `hovered`).
     pub color: Color32,
     /// Whether the digit goes after (right of) the label rather than before it,
     /// resolved from [`PieMenuNumberHints::side`].
     pub on_right: bool,
 }
 
-/// How far dimmed text moves towards the theme's background colour (0.4: e.g. white
-/// becomes light grey on a dark theme).
-const TEXT_DIM: f32 = 0.4;
-
-/// `color` for a button in the given state: full when enabled and (hovered, or `rule`
-/// only dims disabled buttons), else moved [`TEXT_DIM`] of the way towards `bg`.
-fn dimmed_text(color: Color32, bg: Color32, rule: DimText, hovered: bool, enabled: bool) -> Color32 {
-    let full = enabled && (hovered || rule == DimText::OnlyWhenDisabled);
-    if full {
-        return color;
-    }
-    let [r, g, b, a] = color.to_srgba_unmultiplied();
-    let mix = |c: u8, t: u8| (c as f32 + (t as f32 - c as f32) * TEXT_DIM).round() as u8;
-    Color32::from_rgba_unmultiplied(mix(r, bg.r()), mix(g, bg.g()), mix(b, bg.b()), a)
+/// Button text colour: the forced colour if any, else egui's widget text colour for the
+/// state (`hovered` = the pie's highlighted button). Disabled buttons get egui's
+/// `Visuals::gray_out` of that colour: the text carries an explicit colour, which egui's
+/// disabled `Ui` does not fade by itself.
+fn button_text_color(forced: Option<Color32>, visuals: &egui::Visuals, hovered: bool, enabled: bool) -> Color32 {
+    let state = if hovered && enabled { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
+    let color = forced.unwrap_or(state.fg_stroke.color);
+    if enabled { color } else { visuals.gray_out(color) }
 }
 
 pub struct PieMenu {
@@ -483,13 +478,7 @@ impl PieMenu {
         let hints = &self.settings.number_hints;
         self.settings.input.use_numpad_keys.then(|| NumberHint {
             text: self.hint_digit(&dir).to_string(),
-            color: dimmed_text(
-                hints.color.unwrap_or_else(|| visuals.strong_text_color()),
-                visuals.panel_fill,
-                hints.dim,
-                hovered,
-                button.enabled,
-            ),
+            color: button_text_color(hints.color, visuals, hovered, button.enabled),
             on_right: self.hint_on_right(&dir),
         })
     }
@@ -1236,13 +1225,7 @@ impl PieMenu {
                         button,
                         mnemonic: mnemonics[idx],
                         number_hint: self.number_hint_styled(button, is_hovered, &visuals),
-                        text_color: dimmed_text(
-                            visuals.strong_text_color(),
-                            visuals.panel_fill,
-                            self.settings.dim_text,
-                            is_hovered,
-                            button.enabled,
-                        ),
+                        text_color: button_text_color(self.settings.text_color, &visuals, is_hovered, button.enabled),
                         body_font: body_font.clone(),
                     })
                 });
@@ -1773,45 +1756,35 @@ mod finding_tests {
     }
 
     #[test]
-    fn text_dimming_rules() {
-        let bg = Color32::from_gray(30);
-        let white = Color32::WHITE;
-        let dim = Color32::from_gray(165); // 40% of the way from 255 to 30
-        use DimText::*;
-        // (rule, hovered, enabled) -> full colour?
-        assert_eq!(dimmed_text(white, bg, WhenNotHovered, true, true), white);
-        assert_eq!(dimmed_text(white, bg, WhenNotHovered, false, true), dim);
-        assert_eq!(dimmed_text(white, bg, OnlyWhenDisabled, false, true), white);
-        // Disabled is always dimmed, hovered or not, under either rule.
-        for rule in [WhenNotHovered, OnlyWhenDisabled] {
-            for hovered in [false, true] {
-                assert_eq!(dimmed_text(white, bg, rule, hovered, false), dim);
-            }
+    fn text_colours_follow_egui_widget_states() {
+        let v = egui::Visuals::dark();
+        let (inactive, hovered) = (v.widgets.inactive.fg_stroke.color, v.widgets.hovered.fg_stroke.color);
+        assert_ne!(inactive, hovered, "the theme distinguishes the states");
+        assert_eq!(button_text_color(None, &v, false, true), inactive);
+        assert_eq!(button_text_color(None, &v, true, true), hovered);
+        // Forced (Blender-style): the same colour whether hovered or not.
+        for h in [false, true] {
+            assert_eq!(button_text_color(Some(Color32::WHITE), &v, h, true), Color32::WHITE);
         }
-        // Light theme: black text dims towards the light background (lighter).
-        assert_eq!(
-            dimmed_text(Color32::BLACK, Color32::from_gray(250), WhenNotHovered, false, true),
-            Color32::from_gray(100)
-        );
+        // Disabled: egui's grey-out, also for a forced colour, hovered or not.
+        for h in [false, true] {
+            assert_eq!(button_text_color(None, &v, h, false), v.gray_out(inactive));
+            assert_eq!(button_text_color(Some(Color32::WHITE), &v, h, false), v.gray_out(Color32::WHITE));
+        }
+        assert_ne!(v.gray_out(Color32::WHITE), Color32::WHITE);
     }
 
     #[test]
-    fn hint_and_label_dimming_are_independent() {
+    fn label_and_digit_colours_are_independent() {
         let mut m = PieMenu::new();
         let v = egui::Visuals::dark();
-        let full = v.strong_text_color();
-        m.settings.dim_text = DimText::WhenNotHovered;
-        m.settings.number_hints.dim = DimText::OnlyWhenDisabled;
-        // The digit stays full on a non-hovered button…
-        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, full);
-        // …but is dimmed on a disabled one.
-        let disabled = north().with_enabled(false);
-        assert_ne!(m.number_hint_styled(&disabled, true, &v).unwrap().color, full);
-        // A custom digit colour is the full colour and dims the same way.
-        m.settings.number_hints.dim = DimText::WhenNotHovered;
-        m.settings.number_hints.color = Some(Color32::from_rgb(200, 100, 50));
-        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::from_rgb(200, 100, 50));
-        assert_ne!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::from_rgb(200, 100, 50));
+        m.settings.text_color = Some(Color32::WHITE); // labels forced …
+        // … digits still follow egui's states.
+        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, v.widgets.inactive.fg_stroke.color);
+        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, v.widgets.hovered.fg_stroke.color);
+        m.settings.number_hints.color = Some(Color32::RED);
+        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::RED);
+        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::RED);
     }
 
     #[test]
@@ -1893,5 +1866,48 @@ mod finding_tests {
         ctx.memory_mut(|mem| mem.stop_text_input());
         let resp = frame(&ctx, &mut m, &mut text, false, digit8());
         assert_eq!(resp, PieMenuResponse::Selected(0));
+    }
+}
+
+#[cfg(test)]
+mod disabled_fade_tests {
+    use super::*;
+
+    /// The label colour reaches the painted text: forced white on an enabled button,
+    /// egui's grey-out of it on a disabled one (egui's disabled `Ui` alone would leave an
+    /// explicitly coloured label untouched).
+    #[test]
+    fn disabled_button_text_is_greyed_out() {
+        let painted = |enabled: bool| {
+            let ctx = egui::Context::default();
+            let buttons = vec![PieButton::new(PieDirection::North).with_label("Cut").with_enabled(enabled)];
+            let mut m = PieMenu::new();
+            m.settings.text_color = Some(Color32::WHITE);
+            m.open(Pos2::new(400.0, 300.0));
+            m.reveal();
+            fn find(shape: &egui::Shape) -> Option<Color32> {
+                match shape {
+                    egui::Shape::Text(t) if t.galley.text() == "Cut" => t.galley.job.sections.first().map(|s| s.format.color),
+                    egui::Shape::Vec(v) => v.iter().find_map(find),
+                    _ => None,
+                }
+            }
+            // New Areas skip painting on their first (sizing) frame.
+            let mut found = None;
+            for _ in 0..3 {
+                let mut out = ctx.run_ui(Default::default(), |ui| {
+                    m.show(ui.ctx(), &buttons, None, true, None, |ui, b| {
+                        ui.label(b.label_text());
+                    });
+                });
+                out.textures_delta.clear();
+                found = out.shapes.iter().find_map(|s| find(&s.shape)).or(found);
+            }
+            (found.expect("label painted"), ctx.global_style().visuals.clone())
+        };
+        let (on, _) = painted(true);
+        let (off, v) = painted(false);
+        assert_eq!(on, Color32::WHITE);
+        assert_eq!(off, v.gray_out(Color32::WHITE));
     }
 }
