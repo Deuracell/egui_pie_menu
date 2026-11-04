@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintDigits, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
+use egui_pie_menu::{DimText, PieButton, PieDirection, PieMenu, PieMenuHighlightShape, HintDigits, HintSide, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SmartFloat};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -335,6 +335,21 @@ fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)
     }
 }
 
+/// "Dim label" / "Dim digit" choice.
+fn dim_text_combo(ui: &mut egui::Ui, id: &str, value: &mut DimText) {
+    let label = |d: DimText| match d {
+        DimText::WhenNotHovered => "When not hovered",
+        DimText::OnlyWhenDisabled => "Only when disabled (Blender)",
+    };
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(label(*value))
+        .show_ui(ui, |ui| {
+            for d in [DimText::WhenNotHovered, DimText::OnlyWhenDisabled] {
+                ui.selectable_value(value, d, label(d));
+            }
+        });
+}
+
 const ALL_HINT_SIDES: &[HintSide] = &[HintSide::Trailing, HintSide::Outside, HintSide::Left, HintSide::Right];
 
 fn hint_side_label(s: HintSide) -> &'static str {
@@ -589,7 +604,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys side trailing after outside left right spacing gap color colour", |ui| {
+                    "number hints digits keys side trailing after outside left right spacing gap color colour dim", |ui| {
                     ui.checkbox(&mut self.show_hints, "Show number hints");
                     ui.add_enabled_ui(self.show_hints, |ui| {
                         ui.label("Side");
@@ -606,9 +621,12 @@ impl eframe::App for Demo {
                         slider_reset(ui, &mut self.menu.settings.number_hints.spacing,
                             d.number_hints.spacing, 0.0..=40.0, 0.5);
 
+                        ui.label("Dim digit");
+                        dim_text_combo(ui, "dim_digit", &mut self.menu.settings.number_hints.dim);
+
                         let mut custom = self.menu.settings.number_hints.color.is_some();
                         if ui.checkbox(&mut custom, "Custom colour")
-                            .on_hover_text("Off: egui's weak text colour (dimmed). Either way the digit gets more contrast against the button on hover.")
+                            .on_hover_text("Off: egui's strong text colour. Dimmed per \"Dim digit\".")
                             .changed()
                         {
                             self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
@@ -622,7 +640,11 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Buttons",
-                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color", |ui| {
+                    "buttons label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color dim blender", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Dim label");
+                        dim_text_combo(ui, "dim_label", &mut self.menu.settings.dim_text);
+                    });
                     ui.checkbox(&mut self.menu.settings.input.auto_mnemonics, "Auto mnemonics")
                         .on_hover_text("Generate mnemonics from labels for buttons set to Auto");
                     if ui.button("Reset buttons").clicked() {
@@ -858,15 +880,14 @@ impl eframe::App for Demo {
                         } else {
                             cfg.color.gamma_multiply(0.6)
                         };
-                        let fg = if b.enabled { Color32::LIGHT_GRAY } else { Color32::DARK_GRAY };
-                        // Hovered: label and digit both get more contrast against the button
-                        // colour (lighter on a dark button, darker on a light one).
+                        // Label and digit colours come from the library: full or dimmed per
+                        // the "Dim label" / "Dim digit" settings (disabled is always dimmed).
                         let hint = b.number_hint.as_ref().filter(|_| self.show_hints).map(|h| {
-                            (RichText::new(&h.text).color(h.color_on(bg)), h.on_right)
+                            (RichText::new(&h.text).color(h.color), h.on_right)
                         });
 
                         // Icon + label, with the mnemonic underlined.
-                        let mut label = b.label_text().color(fg).contrast_on(bg);
+                        let mut label = b.label_text();
                         if !cfg.icon.is_empty() {
                             label = label.prefix(format!("{}  ", cfg.icon));
                         }

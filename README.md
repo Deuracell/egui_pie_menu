@@ -97,9 +97,9 @@ if self.menu_open {
 
     match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"), |ui, b| {
         // `b` is a `ButtonView`: index, hover state, resolved mnemonic and number hint.
-        let color = if b.hovered { Color32::WHITE } else { Color32::LIGHT_GRAY };
-        // The label comes from the button; its mnemonic (if any) is underlined.
-        ui.label(b.label_text().color(color));
+        // The label comes from the button; its mnemonic (if any) is underlined, and it is
+        // full colour when hovered, dimmed otherwise (see `settings.dim_text`).
+        ui.label(b.label_text());
     }) {
         PieMenuResponse::Selected(idx) => {
             println!("selected button {idx}");
@@ -121,8 +121,8 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.hovered` | The pointer highlights this button |
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
-| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color_on(bg)` gives its colour with more contrast against `bg` while hovered |
-| `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour and font follow the egui style; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
+| `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color` is already dimmed or full per `number_hints.dim` |
+| `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Full or dimmed per `settings.dim_text` (always dimmed when disabled), egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
 
@@ -227,23 +227,30 @@ menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade
 // Inside your button (it grows to fit): use `b.number_hint` in the render closure.
 let hint_gap = menu.settings.number_hints.spacing;
 // … in the render closure:
-// let bg = if b.hovered { BUTTON } else { BUTTON.gamma_multiply(0.6) };
-// let label = b.label_text().contrast_on(bg);          // more contrast against bg while hovered
+// let label = b.label_text();
 // let btn = match &b.number_hint {
 //     Some(h) => {
-//         let digit = egui::RichText::new(&h.text).color(h.color_on(bg)); // same rule as the label
+//         let digit = egui::RichText::new(&h.text).color(h.color); // dimmed/full per number_hints.dim
 //         if h.on_right { egui::Button::new((label, digit)) } else { egui::Button::new((digit, label)) }
 //     }
 //     None => egui::Button::new(label),
-// }.gap(hint_gap).fill(bg);
+// }.gap(hint_gap);
 
 menu.settings.number_hints.side = HintSide::Trailing;  // default: after the label in reading order; or Outside / Left / Right
 menu.settings.number_hints.spacing = 4.0;              // suggested gap between label and digit (px)
-menu.settings.number_hints.color = Some(Color32::GRAY); // default None = egui's weak text colour
+menu.settings.number_hints.color = Some(Color32::GRAY); // full-strength colour; default None = egui's strong text colour
+menu.settings.number_hints.dim = DimText::WhenNotHovered; // or OnlyWhenDisabled; independent of settings.dim_text
 menu.settings.number_hints.digits = HintDigits::ArabicIndic; // ٠١٢… (Persian: ۰۱۲…)
 ```
 
-`more_contrast(color, bg, amount)` is the rule behind `contrast_on` / `color_on`: it moves `color` towards white or black, whichever contrasts more with `bg` (WCAG contrast), so hovered text gets lighter on dark buttons and darker on light ones. `HOVER_CONTRAST` (0.6) is the amount used on hover.
+### Text dimming
+
+`settings.dim_text` (labels) and `settings.number_hints.dim` (digits) choose when text is dimmed, independently:
+
+- `DimText::WhenNotHovered` (default): full colour on the hovered button, dimmed on the others.
+- `DimText::OnlyWhenDisabled`: always full colour, like Blender's pie menus.
+
+Disabled buttons are always dimmed. Dimming moves the colour 40% of the way towards the theme's panel colour, so it gets darker in a dark theme and lighter in a light one.
 
 ### Pinned / persistent menus
 
