@@ -8,7 +8,7 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 - Caller-owned button content — render any egui widget inside each button slot
 - Draws on the `Tooltip` layer, floating above all panels and unclipped
 - Automatic screen-edge clamping: the whole menu shifts rather than clipping individual buttons
-- Configurable layout shape: circle, square, or diamond via `shape_factor`
+- Configurable layout shape: circle, square, or diamond via `shape_factor`, and the height of the diagonal buttons via `diagonal_height`
 - Center indicator with arc, slice, and/or dot highlight driven by mouse distance
 - Optional title label above the center indicator
 - Keyboard support: number keys 1–9 (numpad or number row) and per-button mnemonic keys with underline rendering helper
@@ -183,6 +183,7 @@ use egui_pie_menu::ShowBehavior;
 
 menu.settings.layout_radius = 120.0;
 menu.settings.shape_factor  = 0.0;   // -1 diamond · 0 circle · +1 square
+menu.settings.diagonal_height = Some(0.5); // NE/SE/SW/NW halfway between the N/S and E/W rows; None = from shape_factor
 menu.settings.screen_margin = 8.0;   // minimum gap from screen edge in px
 
 // Show immediately — QuickTap/DoubleTap are never returned

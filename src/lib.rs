@@ -577,6 +577,37 @@ impl PieMenu {
         }
     }
 
+    /// [`Self::direction_vec`] with the diagonals' vertical component replaced by
+    /// `diagonal_height` (a fraction of the North/South distance) when set. Used for the
+    /// pointer-picking angle and the centre highlight, so they follow the drawn layout.
+    fn layout_vec(dir: &PieDirection, shape_factor: f32, diagonal_height: Option<f32>) -> Vec2 {
+        let v = Self::direction_vec(dir, shape_factor);
+        match diagonal_height {
+            Some(t) if v.x.abs() > 0.5 && v.y.abs() > 0.5 => Vec2::new(v.x, v.y.signum() * t.clamp(0.0, 1.0)),
+            _ => v,
+        }
+    }
+
+    /// Offset of a button's centre from the menu centre, for a layout `radius` and shape
+    /// factor `sf`. The button is pushed outward by half its size on each axis it points
+    /// along, so its inner face/corner sits on the layout circle (diagonals: unless
+    /// [`PieMenuSettings::diagonal_height`] sets their height).
+    fn button_offset(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
+        let dv = Self::direction_vec(dir, sf);
+        let dn = dv.normalized();
+        // 0.5 threshold: diagonal components are ~0.707, cardinal near-zero components are
+        // floating-point noise (~1e-17) and must not contribute.
+        let side = |c: f32| if c > 0.5 { 1.0 } else if c < -0.5 { -1.0 } else { 0.0 };
+        let (sx, sy) = (side(dn.x), side(dn.y));
+        let (hw, hh) = (size.x / 2.0, size.y / 2.0);
+        let mut offset = dv * radius + Vec2::new(hw * sx, hh * sy);
+        // A North/South button of this size has its centre at radius + hh.
+        if let (Some(t), true) = (self.settings.diagonal_height, sx != 0.0 && sy != 0.0) {
+            offset.y = sy * t.clamp(0.0, 1.0) * (radius + hh);
+        }
+        offset
+    }
+
     fn direction_digit(dir: &PieDirection) -> char {
         match dir {
             PieDirection::North => '8',
@@ -600,10 +631,16 @@ impl PieMenu {
     /// centre) points at, or `None`. Empty directions are skipped: the pointer snaps to
     /// the closest available button. On an exact tie (e.g. straight down between East
     /// and West buttons) the earlier button in the slice wins.
-    fn pick_button(buttons: &[PieButton], mouse_vec: Vec2, shape_factor: f32, mirror: bool) -> Option<usize> {
+    fn pick_button(
+        buttons: &[PieButton],
+        mouse_vec: Vec2,
+        shape_factor: f32,
+        diagonal_height: Option<f32>,
+        mirror: bool,
+    ) -> Option<usize> {
         let angle = mouse_vec.y.atan2(mouse_vec.x);
         let dir_angle = |d: &PieDirection| {
-            let v = Self::direction_vec(d, shape_factor);
+            let v = Self::layout_vec(d, shape_factor, diagonal_height);
             v.y.atan2(v.x)
         };
         buttons
@@ -811,26 +848,8 @@ impl PieMenu {
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
         for (idx, button) in buttons.iter().enumerate() {
-            let dv = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
-            let dn = dv.normalized();
             let sz = self.button_sizes[idx];
-            let hw = sz.x / 2.0;
-            let hh = sz.y / 2.0;
-            let sx = if dn.x > 0.5 {
-                1.0
-            } else if dn.x < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-            let sy = if dn.y > 0.5 {
-                1.0
-            } else if dn.y < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-            let offset = dv * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
+            let offset = self.button_offset(&Self::eff(&button.direction, mirror), sz, self.settings.layout_radius, shape_factor);
             bb_min = bb_min.min(offset - sz / 2.0);
             bb_max = bb_max.max(offset + sz / 2.0);
         }
@@ -974,7 +993,7 @@ impl PieMenu {
             if mouse_vec.length() <= self.settings.mouse_trigger_threshold {
                 return None;
             }
-            Self::pick_button(buttons, mouse_vec, shape_factor, mirror)
+            Self::pick_button(buttons, mouse_vec, shape_factor, self.settings.diagonal_height, mirror)
         });
 
         // Center highlight — progress driven by mouse distance from center.
@@ -995,7 +1014,7 @@ impl PieMenu {
                 self.selected_index
                     .and_then(|idx| buttons.get(idx))
                     .map(|b| {
-                        let v = Self::direction_vec(&Self::eff(&b.direction, mirror), shape_factor);
+                        let v = Self::layout_vec(&Self::eff(&b.direction, mirror), shape_factor, self.settings.diagonal_height);
                         v.y.atan2(v.x)
                     })
                     .unwrap_or(0.0)
@@ -1134,35 +1153,12 @@ impl PieMenu {
         let body_font = ctx.global_style().text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
 
         for (idx, button) in buttons.iter().enumerate() {
-            let dir_vec = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
-            let dir_norm = dir_vec.normalized();
-
-            // Push the button outward so its inner face/corner sits on the layout circle.
-            // Each axis is offset independently: X by ±hw, Y by ±hh, based on the sign of
-            // the direction. This keeps NE/NW at the same Y and SE/SW at the same Y even
-            // when button widths differ, and the inner corner still lands exactly on the circle.
+            // Each axis is offset independently (see `button_offset`), which keeps NE/NW at
+            // the same Y and SE/SW at the same Y even when button widths differ.
+            let eff_dir = Self::eff(&button.direction, mirror);
             let cached_size = self.button_sizes[idx];
-            let hw = cached_size.x / 2.0;
-            let hh = cached_size.y / 2.0;
-            // Use 0.5 as threshold: diagonal components are ~0.707, cardinal near-zero
-            // components are floating-point noise (~1e-17) and must not contribute.
-            let sx = if dir_norm.x > 0.5 {
-                1.0
-            } else if dir_norm.x < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-            let sy = if dir_norm.y > 0.5 {
-                1.0
-            } else if dir_norm.y < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-
             let button_center =
-                center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
+                center + self.button_offset(&eff_dir, cached_size, self.settings.layout_radius, shape_factor);
             let is_hovered = self.selected_index == Some(idx);
 
             // Reveal animation: movement and opacity progress, each 0..1.
@@ -1192,9 +1188,7 @@ impl PieMenu {
                 let start_sf = anim.slide_start_shape_factor.unwrap_or(shape_factor);
                 let sf = start_sf + (shape_factor - start_sf) * eased;
                 let scale = if end_radius > 0.0 { radius / end_radius } else { 1.0 };
-                let offset = Self::direction_vec(&Self::eff(&button.direction, mirror), sf) * end_radius
-                    + Vec2::new(hw * sx, hh * sy);
-                center + offset * scale
+                center + self.button_offset(&eff_dir, cached_size, end_radius, sf) * scale
             } else {
                 button_center
             };
@@ -1587,7 +1581,7 @@ mod selection_tests {
     }
 
     fn pick(b: &[PieButton], v: Vec2) -> Option<usize> {
-        PieMenu::pick_button(b, v, 0.0, false)
+        PieMenu::pick_button(b, v, 0.0, None, false)
     }
 
     #[test]
@@ -1670,8 +1664,8 @@ mod selection_tests {
     fn mirror_applies_to_picking() {
         let b = btns(); // W, NW, E
         // Mirrored: the East button is displayed on the west side.
-        assert_eq!(PieMenu::pick_button(&b, Vec2::new(-10.0, 0.0), 0.0, true), Some(2));
-        assert_eq!(PieMenu::pick_button(&b, Vec2::new(10.0, 0.0), 0.0, true), Some(0));
+        assert_eq!(PieMenu::pick_button(&b, Vec2::new(-10.0, 0.0), 0.0, None, true), Some(2));
+        assert_eq!(PieMenu::pick_button(&b, Vec2::new(10.0, 0.0), 0.0, None, true), Some(0));
     }
 
     #[test]
@@ -1909,5 +1903,52 @@ mod disabled_fade_tests {
         let (off, v) = painted(false);
         assert_eq!(on, Color32::WHITE);
         assert_eq!(off, v.gray_out(Color32::WHITE));
+    }
+}
+
+#[cfg(test)]
+mod diagonal_height_tests {
+    use super::*;
+
+    const SIZE: Vec2 = Vec2::new(80.0, 24.0);
+
+    #[test]
+    fn default_keeps_the_inner_corner_on_the_circle() {
+        let m = PieMenu::new();
+        let r = m.settings.layout_radius;
+        let ne = m.button_offset(&PieDirection::NorthEast, SIZE, r, 0.0);
+        let d = std::f32::consts::FRAC_1_SQRT_2 * r;
+        assert!((ne - Vec2::new(d + 40.0, -d - 12.0)).length() < 1e-3, "{ne:?}");
+    }
+
+    #[test]
+    fn half_puts_diagonals_halfway_between_rows() {
+        let mut m = PieMenu::new();
+        m.settings.diagonal_height = Some(0.5);
+        let r = m.settings.layout_radius;
+        let n = m.button_offset(&PieDirection::North, SIZE, r, 0.0);
+        let e = m.button_offset(&PieDirection::East, SIZE, r, 0.0);
+        for (dir, sign) in [
+            (PieDirection::NorthEast, 1.0), (PieDirection::NorthWest, 1.0),
+            (PieDirection::SouthEast, -1.0), (PieDirection::SouthWest, -1.0),
+        ] {
+            let o = m.button_offset(&dir, SIZE, r, 0.0);
+            assert!((o.y - sign * (n.y + e.y) / 2.0).abs() < 1e-3, "{dir:?}: {o:?}");
+        }
+        // Cardinals don't move; horizontal placement of diagonals doesn't either.
+        assert!((n - Vec2::new(0.0, -(r + 12.0))).length() < 1e-3, "{n:?}");
+        let ne_default = PieMenu::new().button_offset(&PieDirection::NorthEast, SIZE, r, 0.0);
+        assert_eq!(m.button_offset(&PieDirection::NorthEast, SIZE, r, 0.0).x, ne_default.x);
+    }
+
+    #[test]
+    fn picking_follows_the_lowered_diagonals() {
+        let b = vec![PieButton::new(PieDirection::East), PieButton::new(PieDirection::NorthEast)];
+        let a = 20f32.to_radians();
+        let mouse = Vec2::new(a.cos(), -a.sin()); // 20° above East
+        // At 45° the boundary is 22.5°, so 20° still picks East …
+        assert_eq!(PieMenu::pick_button(&b, mouse, 0.0, None, false), Some(0));
+        // … lowered to half height (~35°) the boundary is ~17.6°, so it picks NorthEast.
+        assert_eq!(PieMenu::pick_button(&b, mouse, 0.0, Some(0.5), false), Some(1));
     }
 }
