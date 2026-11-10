@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{HintDigits, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter};
+use egui_pie_menu::{ButtonProblem, HintDigits, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -113,6 +113,8 @@ struct Demo {
     show_hints: bool,
     // Drag value for the sub-pie hover delay (kept while "Navigate on hover" is off)
     sub_hover_ms: u64,
+    // Drag value for the fan-out radius (kept while "Own radius" is off)
+    fan_radius: f32,
 }
 
 impl Demo {
@@ -137,7 +139,7 @@ impl Demo {
 
     fn new() -> Self {
         let button_configs = default_button_configs();
-        let buttons = build_buttons(&button_configs);
+        let buttons = build_buttons(&button_configs, SubPieStyle::Replace, false);
 
         let mut menu = PieMenu::new().with_title("Edit");
         menu.settings.input.auto_mnemonics = true; // so "Auto" buttons get a letter
@@ -167,6 +169,7 @@ impl Demo {
             label_color: Color32::WHITE,
             show_hints: false,
             sub_hover_ms: DEFAULT_SUB_HOVER_MS,
+            fan_radius: 100.0,
         }
     }
 }
@@ -221,6 +224,8 @@ struct ButtonConfig {
     children: Vec<ButtonConfig>,
     /// A back button (`PieButton::back`): inside a sub-pie it returns to the parent pie.
     back: bool,
+    /// How this button's sub-pie is shown; `None` follows the menu's style.
+    style: Option<SubPieStyle>,
 }
 
 impl ButtonConfig {
@@ -240,30 +245,40 @@ impl ButtonConfig {
             submenu: false,
             children: Vec::new(),
             back: false,
+            style: None,
         }
     }
 
+    /// Whether this button's sub-pie fans out, given the menu's style.
+    fn fans(&self, menu_style: SubPieStyle) -> bool {
+        self.submenu && self.style.unwrap_or(menu_style) == SubPieStyle::FanOut
+    }
+
     /// Eight sub-pie buttons in this button's colour for a parent sitting in direction
-    /// `dir` (index into `DIR_NAMES`): the four cardinal ones present, labelled from
-    /// `labels` (N, E, S, W), plus a back button opposite the parent's direction, so it
-    /// points back the way the sub-pie was entered.
-    fn sub_pie(&self, dir: usize, labels: [&str; 4]) -> Vec<ButtonConfig> {
+    /// `dir` (index into `DIR_NAMES`). Five are present, labelled from `labels`, in the
+    /// directions a fan-out may use (`PieDirection::fan_out_slots`), so the same sub-pie
+    /// works in both styles. Opposite the parent's direction sits a back button, pointing
+    /// back the way the sub-pie was entered; a fan-out leaves it out (see `shown`).
+    fn sub_pie(&self, dir: usize, labels: [&str; 5]) -> Vec<ButtonConfig> {
+        let slots = PieDirection::ALL[dir].fan_out_slots();
         let back_dir = (dir + 4) % 8;
         (0..8)
             .map(|i| {
                 if i == back_dir {
                     return ButtonConfig { back: true, ..ButtonConfig::new("Back", self.color) };
                 }
-                let label = if i % 2 == 0 { labels[i / 2].to_string() } else { format!("{} {}", self.label, DIR_NAMES[i]) };
-                ButtonConfig { present: i % 2 == 0, ..ButtonConfig::new(label, self.color) }
+                match slots.iter().position(|d| *d == PieDirection::ALL[i]) {
+                    Some(slot) => ButtonConfig::new(labels[slot], self.color),
+                    None => ButtonConfig { present: false, ..ButtonConfig::new(format!("{} {}", self.label, DIR_NAMES[i]), self.color) },
+                }
             })
             .collect()
     }
 
     /// Generic sub-pie buttons for a button (in direction `dir`) that had none yet.
     fn default_sub_pie(&self, dir: usize) -> Vec<ButtonConfig> {
-        let l = |d: &str| format!("{} {d}", self.label);
-        self.sub_pie(dir, [&l("N"), &l("E"), &l("S"), &l("W")])
+        let l = |n: usize| format!("{} {n}", self.label);
+        self.sub_pie(dir, [&l(1), &l(2), &l(3), &l(4), &l(5)])
     }
 }
 
@@ -281,7 +296,7 @@ fn default_button_configs() -> Vec<ButtonConfig> {
     // "Paste Special" (NE) opens a sub-pie, with a back button in the opposite direction (SW).
     let mut paste = b("Paste Special", "", "Ctrl+Shift+V", Some('p'), (70, 130, 180));
     paste.submenu = true;
-    paste.children = paste.sub_pie(1, ["As Text", "Values Only", "Formatting", "As Link"]);
+    paste.children = paste.sub_pie(1, ["As Text", "Values Only", "Formatting", "As Link", "As Image"]);
     vec![
         b("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
         paste,
@@ -294,17 +309,28 @@ fn default_button_configs() -> Vec<ButtonConfig> {
     ]
 }
 
-/// Builds one level's buttons from the present configs, sub-pies included. Button indices
-/// skip absent configs (see [`nth_present`]). The menu resolves the mnemonics itself.
-fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
-    configs.iter().enumerate().filter(|(_, c)| c.present)
-        .map(|(i, c)| {
+/// Config indices of a level's buttons, in button order: the present configs. A fan-out
+/// (`in_fan`) also leaves out back buttons: it has no room for one (the direction back to
+/// the parent is blocked) and closes by moving the pointer back instead.
+fn shown(configs: &[ButtonConfig], in_fan: bool) -> impl Iterator<Item = usize> + '_ {
+    (0..configs.len()).filter(move |&i| configs[i].present && !(in_fan && configs[i].back))
+}
+
+/// Builds one level's buttons from its shown configs (see [`shown`]), sub-pies included.
+/// `menu_style` is the menu's sub-pie style and `in_fan` whether this level is a fan-out.
+/// The menu resolves the mnemonics itself.
+fn build_buttons(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool) -> Vec<PieButton> {
+    shown(configs, in_fan)
+        .map(|i| {
+            let c = &configs[i];
             let mut b = PieButton::new(PieDirection::ALL[i]).with_label(c.label.clone()).with_enabled(c.enabled);
             if c.back {
-                b.kind = egui_pie_menu::PieButtonKind::Back;
+                b = PieButton { label: b.label, enabled: b.enabled, ..PieButton::back(b.direction) };
             }
             if c.submenu {
-                b = b.with_children(build_buttons(&c.children));
+                b = b
+                    .with_children(build_buttons(&c.children, menu_style, c.fans(menu_style)))
+                    .with_sub_pie_style(c.style);
             }
             match (c.mnemonic, c.key.chars().next()) {
                 (MnemonicMode::Auto, _)       => b,
@@ -316,53 +342,54 @@ fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
         .collect()
 }
 
-/// Config index of the `n`th button of a level (absent configs have no button).
-fn nth_present(configs: &[ButtonConfig], n: usize) -> Option<usize> {
-    configs.iter().enumerate().filter(|(_, c)| c.present).nth(n).map(|(i, _)| i)
-}
-
-/// The configs along `route` (button indices from the root, as in `PieMenu::path` and
+/// The configs along `route` (button indices from the root, as in `ButtonView::path` and
 /// `PieMenu::selected_path`), or `None` if the route no longer matches the editor.
-fn route_configs<'a>(mut configs: &'a [ButtonConfig], route: &[usize]) -> Option<Vec<&'a ButtonConfig>> {
+fn route_configs<'a>(
+    mut configs: &'a [ButtonConfig],
+    route: &[usize],
+    menu_style: SubPieStyle,
+) -> Option<Vec<&'a ButtonConfig>> {
     let mut out = Vec::new();
+    let mut in_fan = false;
     for (step, &n) in route.iter().enumerate() {
-        let cfg = &configs[nth_present(configs, n)?];
+        let cfg = &configs[shown(configs, in_fan).nth(n)?];
         out.push(cfg);
         if step + 1 < route.len() {
             if !cfg.submenu {
                 return None;
             }
+            in_fan = cfg.fans(menu_style);
             configs = &cfg.children;
         }
     }
     Some(out)
 }
 
-/// The configs of the sub-pie level reached by `path` (the root level if it is empty or stale).
-fn level_configs<'a>(root: &'a [ButtonConfig], path: &[usize]) -> &'a [ButtonConfig] {
-    match route_configs(root, path).as_deref() {
-        Some([.., parent]) if parent.submenu && parent.children.iter().any(|c| c.present) => &parent.children,
-        _ => root,
-    }
-}
-
 /// The config of the button at the end of `route`, for changing it.
-fn config_at_mut<'a>(mut configs: &'a mut [ButtonConfig], route: &[usize]) -> Option<&'a mut ButtonConfig> {
+fn config_at_mut<'a>(
+    mut configs: &'a mut [ButtonConfig],
+    route: &[usize],
+    menu_style: SubPieStyle,
+) -> Option<&'a mut ButtonConfig> {
     let (&last, parents) = route.split_last()?;
+    let mut in_fan = false;
     for &n in parents {
-        let i = nth_present(configs, n)?;
+        let i = shown(configs, in_fan).nth(n)?;
+        in_fan = configs[i].fans(menu_style);
         configs = &mut configs[i].children;
     }
-    let i = nth_present(configs, last)?;
+    let i = shown(configs, in_fan).nth(last)?;
     Some(&mut configs[i])
 }
 
-/// Problems (shared key / direction) of every level, each prefixed with its sub-pie's name.
+/// Problems (shared key / direction, bad fan-out children) of every level, each prefixed
+/// with its sub-pie's name. A fan-out's children are checked as part of their parent's level.
 fn collect_problems(menu: &PieMenu, configs: &[ButtonConfig], level: &str, out: &mut Vec<String>) {
-    for p in menu.check_buttons(&build_buttons(configs)) {
+    let style = menu.settings.sub_pie_style;
+    for p in menu.check_buttons(&build_buttons(configs, style, false)) {
         out.push(if level.is_empty() { p.to_string() } else { format!("{level}: {p}") });
     }
-    for c in configs.iter().filter(|c| c.present && c.submenu) {
+    for c in configs.iter().filter(|c| c.present && c.submenu && !c.fans(style)) {
         let name = if level.is_empty() { c.label.clone() } else { format!("{level} › {}", c.label) };
         collect_problems(menu, &c.children, &name, out);
     }
@@ -522,26 +549,49 @@ fn hint_side_label(s: HintSide) -> &'static str {
     }
 }
 
+/// What the editor of a fan-out's children needs from the parent level.
+struct FanInfo {
+    /// Direction index of the button that opens the fan.
+    dir: usize,
+    /// The problems among the fan's children (from the parent's `ButtonProblem::InFanOut`).
+    problems: Vec<ButtonProblem>,
+}
+
 /// The button editor for one level: a collapsible entry per direction. Buttons with a
-/// sub-pie nest the same editor for their children.
-fn button_list_editor(ui: &mut egui::Ui, menu: &PieMenu, configs: &mut [ButtonConfig]) {
+/// sub-pie nest the same editor for their children; `fan` is set when this level is a
+/// fan-out.
+fn button_list_editor(ui: &mut egui::Ui, menu: &PieMenu, configs: &mut [ButtonConfig], fan: Option<FanInfo>) {
+    let style = menu.settings.sub_pie_style;
     // This level's buttons as the menu will see them: the mnemonic in effect per config
-    // (absent buttons have none) and the configs with a problem, shown in red.
-    let buttons = build_buttons(configs);
-    let config_of: Vec<usize> = (0..configs.len()).filter(|&i| configs[i].present).collect();
+    // (configs without a button have none) and the configs with a problem, shown in red.
+    let buttons = build_buttons(configs, style, fan.is_some());
+    let config_of: Vec<usize> = shown(configs, fan.is_some()).collect();
+    let mut button_of: Vec<Option<usize>> = vec![None; configs.len()];
     let mut mnemonics: Vec<Option<char>> = vec![None; configs.len()];
     for (bi, m) in menu.mnemonics(&buttons).into_iter().enumerate() {
         mnemonics[config_of[bi]] = m;
+        button_of[config_of[bi]] = Some(bi);
     }
+    let problems = match &fan {
+        Some(fan) => fan.problems.clone(),
+        None => menu.check_buttons(&buttons),
+    };
     let mut bad = vec![false; configs.len()];
-    for p in menu.check_buttons(&buttons) {
+    for p in &problems {
         for i in p.buttons() {
             bad[config_of[i]] = true;
         }
     }
     for (i, cfg) in configs.iter_mut().enumerate() {
         let assigned = mnemonics[i];
-        let title = format!("{} · {}{}", DIR_NAMES[i], cfg.label, if cfg.submenu { "  ▶" } else if cfg.back { "  ◀" } else { "" });
+        // In a fan-out: the three directions facing the parent cannot be used, and a back
+        // button is left out.
+        let note = match &fan {
+            Some(f) if PieDirection::ALL[f.dir].blocks_fan_out(PieDirection::ALL[i]) => "  (faces the parent)",
+            Some(_) if cfg.back => "  (not in a fan-out)",
+            _ => "",
+        };
+        let title = format!("{} · {}{}{note}", DIR_NAMES[i], cfg.label, if cfg.submenu { "  ▶" } else if cfg.back { "  ◀" } else { "" });
         let title: egui::WidgetText = if bad[i] {
             RichText::new(format!("⚠ {title}")).color(Color32::RED).into()
         } else {
@@ -625,21 +675,53 @@ fn button_list_editor(ui: &mut egui::Ui, menu: &PieMenu, configs: &mut [ButtonCo
                     ui.end_row();
 
                     ui.label("Sub-pie");
-                    if ui.checkbox(&mut cfg.submenu, "")
-                        .on_hover_text("Selecting this button opens its own pie of buttons (Backspace or a click on the centre goes back)")
-                        .changed()
-                        && cfg.submenu
-                        && cfg.children.is_empty()
-                    {
-                        cfg.children = cfg.default_sub_pie(i);
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut cfg.submenu, "")
+                            .on_hover_text("Selecting this button opens its own pie of buttons")
+                            .changed()
+                            && cfg.submenu
+                            && cfg.children.is_empty()
+                        {
+                            cfg.children = cfg.default_sub_pie(i);
+                        }
+                        // How it is shown: the menu's style (Sub-pies section) or its own.
+                        let label = |s: Option<SubPieStyle>| match s {
+                            None => "Menu style",
+                            Some(SubPieStyle::Replace) => "Replace",
+                            Some(SubPieStyle::FanOut) => "Fan-out",
+                        };
+                        ui.add_enabled_ui(cfg.submenu, |ui| {
+                            egui::ComboBox::from_id_salt(("sub_pie_style", i))
+                                .width(80.0)
+                                .selected_text(label(cfg.style))
+                                .show_ui(ui, |ui| {
+                                    for s in [None, Some(SubPieStyle::Replace), Some(SubPieStyle::FanOut)] {
+                                        ui.selectable_value(&mut cfg.style, s, label(s));
+                                    }
+                                });
+                        });
+                    });
                     ui.end_row();
                 });
                 if cfg.submenu {
-                    // The same editor again, for this button's sub-pie (to any depth).
-                    egui::CollapsingHeader::new("Sub-pie buttons")
+                    // The same editor again, for this button's sub-pie (to any depth). A
+                    // fan-out's children get their problems from this level's check.
+                    let child_fan = cfg.fans(style).then(|| FanInfo {
+                        dir: i,
+                        problems: problems
+                            .iter()
+                            .filter_map(|p| match p {
+                                ButtonProblem::InFanOut { parent, problem } if Some(*parent) == button_of[i] => {
+                                    Some((**problem).clone())
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    });
+                    let heading = if child_fan.is_some() { "Fan-out buttons" } else { "Sub-pie buttons" };
+                    egui::CollapsingHeader::new(heading)
                         .id_salt(("sub_pie", i))
-                        .show(ui, |ui| button_list_editor(ui, menu, &mut cfg.children));
+                        .show(ui, |ui| button_list_editor(ui, menu, &mut cfg.children, child_fan));
                 }
             }));
     }
@@ -654,7 +736,7 @@ impl eframe::App for Demo {
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         let d = PieMenuSettings::default(); // defaults for the reset buttons
-        self.buttons = build_buttons(&self.button_configs);
+        self.buttons = build_buttons(&self.button_configs, self.menu.settings.sub_pie_style, false);
         // Problems (shared key / direction) in any level are shown in red in the editor;
         // the menu stays closed until they are fixed, because debug builds assert on them
         // when the level opens.
@@ -777,11 +859,45 @@ impl eframe::App for Demo {
                     if ui.button("Reset buttons").clicked() {
                         self.button_configs = default_button_configs();
                     }
-                    button_list_editor(ui, &self.menu, &mut self.button_configs);
+                    button_list_editor(ui, &self.menu, &mut self.button_configs, None);
                 });
 
                 section(ui, &query, &mut shown, "Sub-pies",
-                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back", |ui| {
+                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius", |ui| {
+                    ui.label("Style")
+                        .on_hover_text("Replace: a sub-pie takes its parent's place, one level at a time. Fan-out: it opens around its button while the parent stays visible (up to five buttons, none facing the parent). A button can override this in the Button list.");
+                    let style_label = |s: SubPieStyle| match s {
+                        SubPieStyle::Replace => "Replace the parent",
+                        SubPieStyle::FanOut => "Fan out beside the parent",
+                    };
+                    egui::ComboBox::from_id_salt("sub_pie_style_menu")
+                        .selected_text(style_label(self.menu.settings.sub_pie_style))
+                        .show_ui(ui, |ui| {
+                            for s in [SubPieStyle::Replace, SubPieStyle::FanOut] {
+                                ui.selectable_value(&mut self.menu.settings.sub_pie_style, s, style_label(s));
+                            }
+                        });
+
+                    ui.label(RichText::new("Fan-out").strong());
+                    ui.label("Delay before it opens (ms)");
+                    let mut ms = self.menu.settings.fan_out_delay.as_millis() as u64;
+                    if drag_reset(ui, &mut ms, 0, 0..=2000, 1.0) {
+                        self.menu.settings.fan_out_delay = Duration::from_millis(ms);
+                    }
+                    let mut own_radius = self.menu.settings.fan_out_radius.is_some();
+                    if ui.checkbox(&mut own_radius, "Own radius")
+                        .on_hover_text("Distance from the opening button's centre to the fan's buttons. Off: the menu's radius.")
+                        .changed()
+                    {
+                        self.menu.settings.fan_out_radius = own_radius.then_some(self.fan_radius);
+                    }
+                    ui.add_enabled_ui(own_radius, |ui| {
+                        if px_drag(ui, &mut self.fan_radius, d.layout_radius, 40.0..=200.0) {
+                            self.menu.settings.fan_out_radius = Some(self.fan_radius);
+                        }
+                    });
+
+                    ui.label(RichText::new("Replace").strong());
                     ui.label("Centre of a sub-pie")
                         .on_hover_text("Where a sub-pie opens: at the pointer, in place of its parent, or at the button that opened it (the back button then points at the parent).");
                     let label = |c: SubPieCenter| match c {
@@ -1019,7 +1135,7 @@ impl eframe::App for Demo {
                 // which come from the theme, can be checked in both.
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  ▶ opens a sub-pie (◀, Backspace or centre click: back)  ·  Pinned: only Esc unpins");
+                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  ▶ opens a sub-pie (◀, Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
             });
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -1087,18 +1203,21 @@ impl eframe::App for Demo {
             let hint_gap = self.menu.settings.number_hints.spacing;
             let button_h = self.button_height;
 
-            // The level being shown this frame: the root, or the open sub-pie, whose
-            // parent's label becomes the title.
-            let path = self.menu.path().to_vec();
-            let level = level_configs(&self.button_configs, &path);
-            let parent = route_configs(&self.button_configs, &path).and_then(|r| r.last().copied());
+            // The title is the open (replace-style) sub-pie's parent, or "Edit" at the root.
+            let style = self.menu.settings.sub_pie_style;
+            let parent = route_configs(&self.button_configs, self.menu.path(), style).and_then(|r| r.last().copied());
             self.menu.title = Some(parent.map_or("Edit", |c| c.label.as_str()).to_string());
+            let configs = &self.button_configs;
 
             // Does nothing while the menu is closed; closes itself on any response but
             // `None` (a pinned menu stays open after a selection).
             let response = self.menu.show(ctx, &self.buttons, key_down, |ui, b| {
-                let (idx, hovered) = (b.idx, b.hovered);
-                let cfg = &level[nth_present(level, idx).expect("a button per present config")];
+                // `b.path` is the button's route from the root, whichever ring it is in
+                // (the level shown, or a fan-out open beside it).
+                let Some(cfg) = route_configs(configs, b.path, style).and_then(|r| r.last().copied()) else {
+                    return;
+                };
+                let hovered = b.hovered;
                 let bg = if !b.enabled {
                     cfg.color.gamma_multiply(0.25)
                 } else if hovered {
@@ -1170,10 +1289,10 @@ impl eframe::App for Demo {
                 PieMenuResponse::Selected(_) => {
                     // The full route from the root: "Paste Special › As Text".
                     let route = self.menu.selected_path().to_vec();
-                    let name = route_configs(&self.button_configs, &route)
+                    let name = route_configs(&self.button_configs, &route, style)
                         .map(|r| r.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(" › "))
                         .unwrap_or_default();
-                    if let Some(cfg) = config_at_mut(&mut self.button_configs, &route) {
+                    if let Some(cfg) = config_at_mut(&mut self.button_configs, &route, style) {
                         self.last_action = if cfg.kind == ButtonKind::Checkbox {
                             cfg.checked = !cfg.checked;
                             format!("Selected: {name} ({})", if cfg.checked { "on" } else { "off" })
