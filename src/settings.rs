@@ -43,6 +43,30 @@ impl PieDirection {
         }
     }
 
+    /// Position in [`PieDirection::ALL`] (clockwise from North).
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|d| *d == self).unwrap_or(0)
+    }
+
+    /// The five directions a fan-out sub-pie opened by a button in this direction may
+    /// use, counter-clockwise to clockwise around "straight ahead" (this direction): the
+    /// other three face back at the parent pie and are blocked.
+    ///
+    /// ```
+    /// use egui_pie_menu::PieDirection::*;
+    /// assert_eq!(East.fan_out_slots(), [North, NorthEast, East, SouthEast, South]);
+    /// ```
+    pub fn fan_out_slots(self) -> [PieDirection; 5] {
+        [6, 7, 0, 1, 2].map(|step| Self::ALL[(self.index() + step) % 8])
+    }
+
+    /// Whether `child` is one of the three directions a fan-out sub-pie opened by a
+    /// button in this direction cannot use: straight back at the parent
+    /// ([`Self::opposite`]) and its two neighbours.
+    pub fn blocks_fan_out(self, child: PieDirection) -> bool {
+        !self.fan_out_slots().contains(&child)
+    }
+
     /// The direction reflected across the vertical axis (East↔West, NE↔NW, SE↔SW).
     pub fn mirrored(&self) -> PieDirection {
         match self {
@@ -174,6 +198,25 @@ pub enum PieMenuDismissInput {
     Key(Key),
     /// A mouse button click.
     PointerButton(PointerButton),
+}
+
+/// How a button's sub-pie is shown. The two styles are not interchangeable designs: pick
+/// one for the menu with [`PieMenuSettings::sub_pie_style`]; a single button can override
+/// it ([`crate::PieButton::with_fan_out`], [`crate::PieButton::with_sub_pie_style`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubPieStyle {
+    /// The sub-pie replaces its parent: one level is on screen at a time, to any depth.
+    /// See [`SubPieCenter`], [`crate::PieButton::back`] and
+    /// [`PieMenuSettings::sub_pie_hover_delay`].
+    #[default]
+    Replace,
+    /// The sub-pie fans out around the button that opens it while the parent stays
+    /// visible (greyed out). It holds up to five buttons: the three directions facing
+    /// the parent are blocked ([`PieDirection::fan_out_slots`]), and its buttons cannot
+    /// have sub-pies of their own. It opens when the pointer reaches its button
+    /// ([`PieMenuSettings::fan_out_delay`]) and closes when the pointer returns to the
+    /// parent. While open it has the keyboard: number keys and mnemonics reach only it.
+    FanOut,
 }
 
 /// Where a sub-pie is centred when it opens (and where its parent reappears on going back).
@@ -404,13 +447,22 @@ pub struct PieMenuSettings {
     pub block_background: bool,
     /// Where a sub-pie is centred when it opens. See [`SubPieCenter`].
     pub sub_pie_center: SubPieCenter,
-    /// Follow a button that leads to another pie once the pointer has rested on it this
+    /// [`SubPieStyle::Replace`]:
+    /// follow a button that leads to another pie once the pointer has rested on it this
     /// long, without a click, key or release: a sub-pie button opens its sub-pie, and a
     /// [`crate::PieButton::back`] button inside a sub-pie returns to the parent. The button
     /// the pointer already points at when a level opens is ignored until the pointer has
     /// left it once, so a resting pointer never bounces between levels.
     /// `None` (default): off.
     pub sub_pie_hover_delay: Option<Duration>,
+    /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].
+    pub sub_pie_style: SubPieStyle,
+    /// [`SubPieStyle::FanOut`]: how long the pointer must rest on the opening button
+    /// before its fan opens. Default: zero (opens as the pointer reaches the button).
+    pub fan_out_delay: Duration,
+    /// [`SubPieStyle::FanOut`]: distance from the opening button's centre to the inner
+    /// edge of the fan's buttons. `None` (default): the same as [`Self::layout_radius`].
+    pub fan_out_radius: Option<f32>,
     /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
     /// right-to-left UIs. Number keys and number hints follow the *displayed* positions,
     /// and [`HintSide::Trailing`] then means "left of the label". Off by default.
@@ -441,6 +493,9 @@ impl Default for PieMenuSettings {
             block_background: true,
             sub_pie_center: SubPieCenter::Pointer,
             sub_pie_hover_delay: None,
+            sub_pie_style: SubPieStyle::Replace,
+            fan_out_delay: Duration::ZERO,
+            fan_out_radius: None,
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
             text_color: None,

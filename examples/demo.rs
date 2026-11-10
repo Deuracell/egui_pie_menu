@@ -300,7 +300,9 @@ fn build_buttons(configs: &[ButtonConfig]) -> Vec<PieButton> {
     configs.iter().enumerate().filter(|(_, c)| c.present)
         .map(|(i, c)| {
             let mut b = PieButton::new(PieDirection::ALL[i]).with_label(c.label.clone()).with_enabled(c.enabled);
-            b.back = c.back;
+            if c.back {
+                b.kind = egui_pie_menu::PieButtonKind::Back;
+            }
             if c.submenu {
                 b = b.with_children(build_buttons(&c.children));
             }
