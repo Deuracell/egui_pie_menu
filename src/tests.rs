@@ -254,7 +254,7 @@ mod subpie_tests {
     #[test]
     fn back_button_at_the_root_is_an_ordinary_button() {
         let root = vec![PieButton::back(PieDirection::South)];
-        assert!(root[0].back && root[0].label == "Back");
+        assert!(root[0].is_back() && root[0].label == "Back");
         let ctx = egui::Context::default();
         let mut m = PieMenu::new();
         m.open(CENTER);
@@ -668,5 +668,266 @@ mod disabled_fade_tests {
         let (off, v) = painted(false);
         assert_eq!(on, Color32::WHITE);
         assert_eq!(off, v.gray_out(Color32::WHITE));
+    }
+}
+
+mod fan_out_tests {
+    use super::*;
+
+    const CENTER: Pos2 = Pos2::new(400.0, 300.0);
+
+    /// East opens a fan-out of three buttons (North, East, South); North is a plain button.
+    fn buttons() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::East).with_label("More").with_fan_out(vec![
+                PieButton::new(PieDirection::North).with_label("Above"),
+                PieButton::new(PieDirection::East).with_label("Beyond"),
+                PieButton::new(PieDirection::South).with_label("Under"),
+            ]),
+            PieButton::new(PieDirection::North).with_label("Plain"),
+        ]
+    }
+
+    /// What one frame drew: each button's path and whether it was shown hovered.
+    type Drawn = Vec<(Vec<usize>, bool)>;
+
+    struct Rig {
+        ctx: egui::Context,
+        menu: PieMenu,
+        buttons: Vec<PieButton>,
+        time: f64,
+    }
+
+    impl Rig {
+        fn new(buttons: Vec<PieButton>) -> Self {
+            let mut menu = PieMenu::new();
+            menu.settings.animations.reveal = RevealAnimation::None;
+            menu.open(CENTER);
+            menu.reveal();
+            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0 };
+            rig.frame(None, true, &[]); // lays the buttons out
+            rig.frame(None, true, &[]);
+            rig
+        }
+
+        fn frame(&mut self, pointer: Option<Pos2>, key_down: bool, keys: &[Key]) -> (PieMenuResponse, Drawn) {
+            let events = keys
+                .iter()
+                .map(|&key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
+                .collect();
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let (mut resp, mut drawn) = (PieMenuResponse::None, Drawn::new());
+            let (menu, buttons) = (&mut self.menu, &self.buttons);
+            let mut out = self.ctx.run_ui(input, |ui| {
+                resp = menu.show_with_pointer(ui.ctx(), buttons, pointer, key_down, |ui, b| {
+                    drawn.push((b.path.to_vec(), b.hovered));
+                    ui.label(b.label_text());
+                });
+            });
+            out.textures_delta.clear();
+            (resp, drawn)
+        }
+
+        /// Moves the pointer there and lets the menu settle (open and lay out a fan).
+        fn point(&mut self, pointer: Pos2) -> Drawn {
+            self.frame(Some(pointer), true, &[]);
+            self.frame(Some(pointer), true, &[]);
+            self.frame(Some(pointer), true, &[]).1
+        }
+
+        /// Centre of the fan's opening button ("More", East).
+        fn trigger(&self) -> Pos2 {
+            self.menu.button_centers[0]
+        }
+    }
+
+    fn paths(drawn: &Drawn) -> Vec<Vec<usize>> {
+        drawn.iter().map(|(p, _)| p.clone()).collect()
+    }
+
+    #[test]
+    fn opens_when_the_pointer_reaches_the_button_and_draws_both_rings() {
+        let mut rig = Rig::new(buttons());
+        // Pointing east but still well inside the ring: no fan yet.
+        let drawn = rig.point(Pos2::new(450.0, 300.0));
+        assert_eq!(rig.menu.open_fan_out(), None);
+        assert_eq!(paths(&drawn), [vec![0], vec![1]]);
+        // Out at the ring: the fan opens, and the parent is still drawn.
+        let drawn = rig.point(Pos2::new(505.0, 300.0));
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)), "on the opening button nothing in the fan is hovered");
+        assert_eq!(paths(&drawn), [vec![0], vec![1], vec![0, 0], vec![0, 1], vec![0, 2]]);
+        assert_eq!(rig.menu.hovered(), Some(0));
+        assert!(rig.menu.path().is_empty(), "a fan-out is not a level of its own");
+    }
+
+    #[test]
+    fn pointer_picks_fan_children_and_release_selects_with_the_full_path() {
+        let mut rig = Rig::new(buttons());
+        rig.point(Pos2::new(505.0, 300.0));
+        let fan_center = rig.trigger();
+        let drawn = rig.point(fan_center + Vec2::new(0.0, -80.0));
+        assert_eq!(rig.menu.open_fan_out(), Some((0, Some(0))), "north of the fan centre: Above");
+        // The fan child is drawn hovered, the opening button too, the other parent button never.
+        let hovered: Vec<_> = drawn.iter().filter(|(_, h)| *h).map(|(p, _)| p.clone()).collect();
+        assert_eq!(hovered, [vec![0], vec![0, 0]]);
+        rig.point(fan_center + Vec2::new(120.0, 0.0));
+        assert_eq!(rig.menu.open_fan_out(), Some((0, Some(1))), "east of the fan centre: Beyond");
+        let (resp, _) = rig.frame(Some(fan_center + Vec2::new(120.0, 0.0)), false, &[]);
+        assert_eq!(resp, PieMenuResponse::Selected(1));
+        assert_eq!(rig.menu.selected_path(), &[0, 1]);
+        assert!(!rig.menu.is_open());
+    }
+
+    #[test]
+    fn closes_when_the_pointer_returns_to_the_parent() {
+        let mut rig = Rig::new(buttons());
+        rig.point(Pos2::new(505.0, 300.0));
+        assert!(rig.menu.open_fan_out().is_some());
+        // Back inside the ring, still pointing east: the fan closes and does not reopen.
+        let drawn = rig.point(Pos2::new(450.0, 300.0));
+        assert_eq!(rig.menu.open_fan_out(), None);
+        assert_eq!(paths(&drawn), [vec![0], vec![1]]);
+        assert_eq!(rig.menu.hovered(), Some(0));
+    }
+
+    #[test]
+    fn pointing_back_at_the_parent_from_the_fan_hovers_nothing() {
+        let mut rig = Rig::new(buttons());
+        rig.frame(None, true, &[Key::Num6]); // open by key: the pointer has not been out there
+        let fan_center = rig.trigger();
+        // West of the fan centre (towards the parent), outside the opening button itself.
+        let toward_parent = fan_center - Vec2::new(60.0, 0.0);
+        rig.point(toward_parent);
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)), "the sector facing the parent picks nothing");
+        // Just off that sector, the nearest fan child is picked as usual.
+        rig.point(fan_center + Vec2::new(-10.0, -70.0));
+        assert_eq!(rig.menu.open_fan_out(), Some((0, Some(0))));
+    }
+
+    #[test]
+    fn open_fan_has_the_keys_to_itself() {
+        let mut rig = Rig::new(buttons());
+        // 6 (East) opens the fan rather than selecting anything.
+        assert_eq!(rig.frame(None, true, &[Key::Num6]).0, PieMenuResponse::None);
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        rig.frame(None, true, &[]);
+        // 8 is North: the fan's "Above", not the parent's "Plain".
+        assert_eq!(rig.frame(None, true, &[Key::Num8]).0, PieMenuResponse::Selected(0));
+        assert_eq!(rig.menu.selected_path(), &[0, 0]);
+
+        // Mnemonics likewise: "p" is nobody's in the fan, so the parent's "Plain" is not selected.
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.input.auto_mnemonics = true;
+        rig.frame(None, true, &[Key::Num6]);
+        assert_eq!(rig.frame(None, true, &[Key::P]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::U]).0, PieMenuResponse::Selected(2), "Under");
+        assert_eq!(rig.menu.selected_path(), &[0, 2]);
+    }
+
+    #[test]
+    fn key_opened_fan_closes_when_pointing_at_another_parent_button_or_on_backspace() {
+        let mut rig = Rig::new(buttons());
+        rig.frame(None, true, &[Key::Num6]);
+        // Pointing at the fan's own button from inside the ring keeps it open …
+        rig.point(Pos2::new(450.0, 300.0));
+        assert!(rig.menu.open_fan_out().is_some());
+        // … pointing at another parent button closes it.
+        rig.point(Pos2::new(400.0, 250.0));
+        assert_eq!(rig.menu.open_fan_out(), None);
+        assert_eq!(rig.menu.hovered(), Some(1));
+
+        rig.frame(None, true, &[Key::Num6]);
+        assert!(rig.menu.open_fan_out().is_some());
+        assert_eq!(rig.frame(None, true, &[Key::Backspace]).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
+    }
+
+    #[test]
+    fn delay_holds_the_fan_back() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.fan_out_delay = Duration::from_millis(500);
+        let at_ring = Pos2::new(505.0, 300.0);
+        rig.time = 1.0;
+        rig.point(at_ring);
+        rig.time = 1.4;
+        rig.point(at_ring);
+        assert_eq!(rig.menu.open_fan_out(), None, "not yet");
+        rig.time = 1.6;
+        rig.point(at_ring);
+        assert!(rig.menu.open_fan_out().is_some());
+    }
+
+    #[test]
+    fn menu_style_decides_unless_the_button_overrides_it() {
+        let children = || vec![PieButton::new(PieDirection::North)];
+        let follows = PieButton::new(PieDirection::East).with_children(children());
+        let fan = PieButton::new(PieDirection::East).with_fan_out(children());
+        let replace = follows.clone().with_sub_pie_style(Some(SubPieStyle::Replace));
+        let mut m = PieMenu::new();
+        assert!(!m.opens_fan(&follows) && m.opens_fan(&fan) && !m.opens_fan(&replace));
+        m.settings.sub_pie_style = SubPieStyle::FanOut;
+        assert!(m.opens_fan(&follows) && m.opens_fan(&fan) && !m.opens_fan(&replace));
+        assert!(!m.opens_fan(&PieButton::new(PieDirection::East)), "no children, no fan");
+
+        // A replace-style button in the same menu still replaces the level.
+        let mut rig = Rig::new(vec![replace]);
+        rig.frame(None, true, &[Key::Num6]);
+        assert_eq!(rig.menu.path(), &[0]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    #[test]
+    fn back_button_in_a_fan_closes_it() {
+        let mut rig = Rig::new(vec![PieButton::new(PieDirection::East).with_fan_out(vec![
+            PieButton::back(PieDirection::North),
+            PieButton::new(PieDirection::South),
+        ])]);
+        rig.frame(None, true, &[Key::Num6]);
+        assert!(rig.menu.open_fan_out().is_some());
+        assert_eq!(rig.frame(None, true, &[Key::Num8]).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
+    }
+
+    #[test]
+    fn problems_cover_blocked_directions_and_nesting() {
+        let m = PieMenu::new();
+        let level = vec![
+            PieButton::new(PieDirection::North),
+            PieButton::new(PieDirection::East).with_fan_out(vec![
+                PieButton::new(PieDirection::North),
+                PieButton::new(PieDirection::West), // straight back at the parent
+                PieButton::new(PieDirection::NorthWest), // its neighbour
+                PieButton::new(PieDirection::South).with_children(vec![PieButton::new(PieDirection::South)]),
+                PieButton::new(PieDirection::North), // same direction as the first
+            ]),
+        ];
+        let in_fan = |problem| ButtonProblem::InFanOut { parent: 1, problem: Box::new(problem) };
+        let problems = m.check_buttons(&level);
+        assert_eq!(
+            problems,
+            vec![
+                in_fan(ButtonProblem::SharedDirection { first: 0, second: 4, direction: PieDirection::North }),
+                in_fan(ButtonProblem::BlockedDirection { button: 1, direction: PieDirection::West }),
+                in_fan(ButtonProblem::BlockedDirection { button: 2, direction: PieDirection::NorthWest }),
+                in_fan(ButtonProblem::NestedInFanOut { button: 3 }),
+            ]
+        );
+        assert_eq!(problems[1].buttons(), [1]);
+        assert_eq!(problems[1].to_string(), "in the fan-out of button 1: button 1 is in direction West, which faces the parent pie");
+        // The same children under a replace-style button are an ordinary level: no fan problems.
+        let replace = vec![level[1].clone().with_sub_pie_style(Some(SubPieStyle::Replace))];
+        assert!(m.check_buttons(&replace).is_empty());
+
+        for parent in PieDirection::ALL {
+            let slots = parent.fan_out_slots();
+            assert_eq!(slots[2], parent, "straight ahead is the middle slot");
+            assert!(parent.blocks_fan_out(parent.opposite()));
+            assert_eq!(PieDirection::ALL.iter().filter(|d| parent.blocks_fan_out(**d)).count(), 3);
+        }
     }
 }

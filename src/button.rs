@@ -9,6 +9,23 @@ use crate::settings::PieDirection;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId};
 
+/// What a button does when it is selected.
+#[derive(Clone, Debug, Default)]
+pub enum PieButtonKind {
+    /// An ordinary button: selecting it produces [`PieMenuResponse::Selected`].
+    #[default]
+    Action,
+    /// Opens a sub-pie of `children`. `style` overrides
+    /// [`PieMenuSettings::sub_pie_style`] for this button; `None` follows it.
+    SubPie { children: Vec<PieButton>, style: Option<SubPieStyle> },
+    /// A cluster: several buttons sharing one direction. See [`PieButton::cluster`].
+    Cluster(Vec<PieButton>),
+    /// A back button: inside a sub-pie it returns to the parent level (like Backspace);
+    /// in a fan-out it closes the fan. At the root level, where there is nothing to go
+    /// back to, it is selected like an [`PieButtonKind::Action`].
+    Back,
+}
+
 /// A single button slot in the pie menu.
 ///
 /// Defines *where* the button sits (`direction`), its keyboard mnemonic and the
@@ -24,16 +41,14 @@ pub struct PieButton {
     /// The text shown on the button, used to generate a mnemonic for
     /// [`Mnemonic::Auto`]. Rendering is still up to the closure.
     pub label: String,
-    /// Buttons of the sub-pie opened by this button. Empty for a plain button.
-    pub children: Vec<PieButton>,
+    /// What selecting the button does: an action (default), a sub-pie, a cluster or
+    /// going back. Usually set through [`PieButton::with_children`],
+    /// [`PieButton::with_fan_out`], [`PieButton::cluster`] or [`PieButton::back`].
+    pub kind: PieButtonKind,
     /// A disabled button is never highlighted or selected (mouse, number keys,
     /// mnemonic) and gets no generated mnemonic. It is still drawn by your closure;
     /// check [`ButtonView::enabled`] to grey it out.
     pub enabled: bool,
-    /// A back button: selecting it inside a sub-pie returns to the parent level instead of
-    /// producing [`PieMenuResponse::Selected`] (like Backspace). At the root level, where
-    /// there is nothing to go back to, it is selected like any other button.
-    pub back: bool,
 }
 
 impl PieButton {
@@ -43,18 +58,46 @@ impl PieButton {
             direction,
             mnemonic: Mnemonic::Auto,
             label: String::new(),
-            children: Vec::new(),
+            kind: PieButtonKind::Action,
             enabled: true,
-            back: false,
         }
     }
 
     /// Creates a back button at `direction`, labelled "Back": selecting it inside a
-    /// sub-pie returns to the parent level. See [`PieButton::back`]. Put it opposite the
+    /// sub-pie returns to the parent level. See [`PieButtonKind::Back`]. Put it opposite the
     /// button that opens the sub-pie ([`PieDirection::opposite`]) so that, with
     /// [`SubPieCenter::Button`], it points back at the parent.
     pub fn back(direction: PieDirection) -> Self {
-        Self { back: true, label: "Back".to_string(), ..Self::new(direction) }
+        Self { kind: PieButtonKind::Back, label: "Back".to_string(), ..Self::new(direction) }
+    }
+
+    /// Creates a cluster at `direction`: `items` share that direction, drawn as a column.
+    /// The direction itself selects nothing (pointing at it and releasing does nothing);
+    /// each item is selected by a click on it or by its mnemonic. The items' own
+    /// directions are ignored.
+    pub fn cluster(direction: PieDirection, items: Vec<PieButton>) -> Self {
+        Self { kind: PieButtonKind::Cluster(items), ..Self::new(direction) }
+    }
+
+    /// The buttons of this button's sub-pie; empty unless it is a [`PieButtonKind::SubPie`].
+    pub fn children(&self) -> &[PieButton] {
+        match &self.kind {
+            PieButtonKind::SubPie { children, .. } => children,
+            _ => &[],
+        }
+    }
+
+    /// The items of this cluster; empty unless it is a [`PieButtonKind::Cluster`].
+    pub fn cluster_items(&self) -> &[PieButton] {
+        match &self.kind {
+            PieButtonKind::Cluster(items) => items,
+            _ => &[],
+        }
+    }
+
+    /// Whether this is a back button ([`PieButtonKind::Back`]).
+    pub fn is_back(&self) -> bool {
+        matches!(self.kind, PieButtonKind::Back)
     }
 
     /// Enables or disables this button. See [`PieButton::enabled`].
@@ -69,13 +112,32 @@ impl PieButton {
         self
     }
 
-    /// Makes this button open a sub-pie containing `children` when selected.
+    /// Makes this button open a sub-pie containing `children` when selected, shown in the
+    /// menu's [`PieMenuSettings::sub_pie_style`].
     ///
-    /// Inside a sub-pie, Backspace or a click on the centre goes back one level.
-    /// Use [`PieMenu::current_buttons`] to get the buttons currently shown, and
-    /// [`PieMenu::selected_path`] to learn which leaf was chosen.
+    /// Replace style: inside the sub-pie, Backspace or a click on the centre goes back one
+    /// level. The render closure's [`ButtonView::path`] says where each button sits, and
+    /// [`PieMenu::selected_path`] which leaf was chosen.
     pub fn with_children(mut self, children: Vec<PieButton>) -> Self {
-        self.children = children;
+        self.kind = PieButtonKind::SubPie { children, style: None };
+        self
+    }
+
+    /// Makes this button open `children` as a fan-out ([`SubPieStyle::FanOut`]) whatever
+    /// the menu's style is. The children use ordinary directions, but not the three facing
+    /// the parent ([`PieDirection::fan_out_slots`] lists the five that work), and cannot
+    /// have sub-pies of their own; [`PieMenu::check_buttons`] reports both.
+    pub fn with_fan_out(mut self, children: Vec<PieButton>) -> Self {
+        self.kind = PieButtonKind::SubPie { children, style: Some(SubPieStyle::FanOut) };
+        self
+    }
+
+    /// Overrides the menu's [`PieMenuSettings::sub_pie_style`] for this button's sub-pie
+    /// (`None`: follow the menu again). Does nothing on a button without one.
+    pub fn with_sub_pie_style(mut self, style: Option<SubPieStyle>) -> Self {
+        if let PieButtonKind::SubPie { style: own, .. } = &mut self.kind {
+            *own = style;
+        }
         self
     }
 
@@ -94,21 +156,32 @@ impl PieButton {
 
 /// A problem with the buttons of one pie level, from [`PieMenu::check_buttons`].
 ///
-/// Indices refer to the slice that was checked.
+/// Indices refer to the slice that was checked; inside [`ButtonProblem::InFanOut`] they
+/// refer to that fan-out's children.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ButtonProblem {
     /// Two buttons occupy the same direction.
     SharedDirection { first: usize, second: usize, direction: PieDirection },
     /// Two enabled buttons have the same mnemonic key.
     DuplicateMnemonic { first: usize, second: usize, key: char },
+    /// A fan-out child sits in one of the three directions facing the parent pie
+    /// (see [`PieDirection::fan_out_slots`]).
+    BlockedDirection { button: usize, direction: PieDirection },
+    /// A fan-out child has a sub-pie or is a cluster: a fan-out holds plain buttons only.
+    NestedInFanOut { button: usize },
+    /// A problem among the fan-out children of button `parent`.
+    InFanOut { parent: usize, problem: Box<ButtonProblem> },
 }
 
 impl ButtonProblem {
-    /// The two button indices involved.
-    pub fn buttons(&self) -> [usize; 2] {
+    /// The indices of the buttons involved, in the slice that was checked (for
+    /// [`ButtonProblem::InFanOut`]: the fan-out's button).
+    pub fn buttons(&self) -> Vec<usize> {
         match self {
             ButtonProblem::SharedDirection { first, second, .. }
-            | ButtonProblem::DuplicateMnemonic { first, second, .. } => [*first, *second],
+            | ButtonProblem::DuplicateMnemonic { first, second, .. } => vec![*first, *second],
+            ButtonProblem::BlockedDirection { button, .. } | ButtonProblem::NestedInFanOut { button } => vec![*button],
+            ButtonProblem::InFanOut { parent, .. } => vec![*parent],
         }
     }
 }
@@ -122,8 +195,36 @@ impl std::fmt::Display for ButtonProblem {
             ButtonProblem::DuplicateMnemonic { first, second, key } => {
                 write!(f, "buttons {first} and {second} share the mnemonic '{key}'")
             }
+            ButtonProblem::BlockedDirection { button, direction } => {
+                write!(f, "button {button} is in direction {direction:?}, which faces the parent pie")
+            }
+            ButtonProblem::NestedInFanOut { button } => {
+                write!(f, "button {button} has a sub-pie or is a cluster, which a fan-out cannot hold")
+            }
+            ButtonProblem::InFanOut { parent, problem } => {
+                write!(f, "in the fan-out of button {parent}: {problem}")
+            }
         }
     }
+}
+
+/// Problems with the children of a fan-out opened by a button in direction `parent`:
+/// the ordinary level problems, children in a blocked direction, and nesting.
+pub(crate) fn fan_out_problems(
+    parent: PieDirection,
+    children: &[PieButton],
+    mnemonics: &[Option<char>],
+) -> Vec<ButtonProblem> {
+    let mut problems = button_problems(children, mnemonics);
+    for (i, child) in children.iter().enumerate() {
+        if parent.blocks_fan_out(child.direction) {
+            problems.push(ButtonProblem::BlockedDirection { button: i, direction: child.direction });
+        }
+        if matches!(child.kind, PieButtonKind::SubPie { .. } | PieButtonKind::Cluster(_)) {
+            problems.push(ButtonProblem::NestedInFanOut { button: i });
+        }
+    }
+    problems
 }
 
 /// Problems with the buttons of one pie level: several buttons in one direction, or
@@ -159,8 +260,13 @@ pub(crate) fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>])
 /// [`PieMenu::show`]. Everything is resolved for the level currently shown, so you never
 /// have to precompute mnemonics or hints.
 pub struct ButtonView<'a> {
-    /// Index of the button within the level being shown (what `Selected(idx)` returns).
+    /// Index of the button within its level (what `Selected(idx)` returns): the level
+    /// being shown, an open fan-out's children, or a cluster's items.
     pub idx: usize,
+    /// The full route to this button from the root level, its own index last: `[idx]` at
+    /// the root, `[parent, idx]` in that button's sub-pie or fan-out, and so on. Tells a
+    /// parent's buttons from an open fan-out's, which are on screen together.
+    pub path: &'a [usize],
     /// Whether the pointer currently highlights this button.
     pub hovered: bool,
     /// Whether the button can be selected (`false`: grey it out).
