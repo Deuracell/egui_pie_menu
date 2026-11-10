@@ -112,7 +112,8 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 
 | Field / method | Meaning |
 |---|---|
-| `b.idx` | Index within the level shown (what `Selected(idx)` returns) |
+| `b.idx` | Index within the button's own level (what `Selected(idx)` returns) |
+| `b.path` | The full route to the button from the root level, own index last (tells a parent's buttons from an open fan-out's) |
 | `b.hovered` | The pointer highlights this button |
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
@@ -288,21 +289,56 @@ Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the 
 ### Sub-pies
 
 ```rust
-// Selecting a button with children opens them. Backspace or a click on the centre goes back.
-// Inside the render closure use `menu.current_buttons(&root)` for labels; after `Selected`,
-// `menu.selected_path()` is the full route to the leaf.
-// Mnemonics are computed per level: `menu.mnemonics(menu.current_buttons(&root))`.
+// Selecting a button with children opens them as a sub-pie.
 let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */])];
 ```
 
-A sub-pie can carry its own way back, and you choose where it opens and whether hovering opens it:
+`Selected(idx)` is the chosen button's index within its own level; `menu.selected_path()` is the full route to it from the root. In the render closure `b.path` is each button's route (own index last) and `b.button` the button itself, so you never need to look the level up.
+
+There are two styles, which are different designs and not meant to be mixed lightly. Choose one for the menu; a single button can override it:
+
+```rust
+menu.settings.sub_pie_style = SubPieStyle::Replace;   // default; or SubPieStyle::FanOut
+PieButton::new(dir).with_fan_out(children);            // this button fans out whatever the menu says
+PieButton::new(dir).with_children(children).with_sub_pie_style(Some(SubPieStyle::Replace));
+```
+
+| `SubPieStyle` | What happens | Depth | Way back |
+|---|---|---|---|
+| `Replace` (default) | The sub-pie takes its parent's place: one level on screen at a time | any | Backspace, a click on the centre, or a back button |
+| `FanOut` | The sub-pie opens around its button while the parent stays visible, greyed out | one (a fan's buttons cannot have sub-pies) | move the pointer back to the parent, or Backspace |
+
+#### Fan-out
+
+```rust
+let dir = PieDirection::East;
+let root = vec![PieButton::new(dir).with_label("More").with_fan_out(vec![
+    PieButton::new(PieDirection::North).with_label("Above"),   // ordinary directions …
+    PieButton::new(PieDirection::East).with_label("Beyond"),
+    PieButton::new(PieDirection::South).with_label("Under"),
+])];
+dir.fan_out_slots();                                    // … but only these five: [North, NorthEast, East, SouthEast, South]
+
+menu.settings.fan_out_delay = Duration::ZERO;           // how long the pointer rests on the button first (default: none)
+menu.settings.fan_out_radius = None;                    // the fan's own radius; None = layout_radius
+```
+
+- A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child with a sub-pie or cluster as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
+- It opens when the pointer reaches its button (as far out as the ring of buttons) or when the button is selected by number key, mnemonic, click or release. It closes when the pointer comes back in towards the centre.
+- While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons, and the parent's other buttons are greyed out and cannot be highlighted.
+- The pointer picks among the fan's buttons by angle from the opening button's centre. On the opening button itself, or pointing back at the parent, nothing is highlighted.
+- `menu.open_fan_out()` returns the opening button's index and the highlighted fan button, if a fan is open. A fan is not a level: `menu.path()` and `menu.current_buttons(&root)` still describe the parent.
+
+#### Replace
+
+A replace-style sub-pie can carry its own way back, and you choose where it opens and whether hovering opens it:
 
 ```rust
 // A back button: selecting it returns to the parent level instead of `Selected`.
 // Opposite the opening button it points back the way the sub-pie was entered.
 let dir = PieDirection::NorthEast;
 let root = vec![PieButton::new(dir).with_label("Paste Special").with_children(vec![
-    PieButton::back(dir.opposite()),                        // labelled "Back"; or set `.back = true` on any button
+    PieButton::back(dir.opposite()),                        // labelled "Back"; or set `kind: PieButtonKind::Back` on any button
     PieButton::new(PieDirection::North).with_label("As Text"),
 ])];
 
@@ -320,7 +356,7 @@ With `sub_pie_hover_delay`, resting the pointer on any button that leads to anot
 
 If the buttons change while a sub-pie is open so that its level no longer exists or has no buttons, the menu falls back to the root level. A pinned menu returns to its root level after a leaf selection.
 
-The demo's "Paste Special" button opens a sub-pie, and its button editor can give any button one (to any depth).
+The demo's "Paste Special" button opens a sub-pie that works in both styles; the "Sub-pies" section switches the menu's style, and the button editor can give any button a sub-pie (to any depth) and its own style.
 
 ### Disabled buttons and hover query
 
@@ -339,7 +375,7 @@ Number keys are consumed by the menu, so the digit does not also reach other han
 
 In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
 
-To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic`, each with the two button indices, and a readable `Display`). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
+To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
 
 ### Right-to-left and non-Latin scripts
 
