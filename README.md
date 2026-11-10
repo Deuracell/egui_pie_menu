@@ -13,6 +13,7 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 - Optional title label above the center indicator
 - Keyboard support: number keys 1–9 (numpad or number row) and per-button mnemonic keys with underline rendering helper
 - Quick-tap and double-tap detection with no timer required from the caller
+- The menu tracks its own open state; pinned (persistent) menus are built in
 
 ## Installation
 
@@ -29,16 +30,16 @@ Release tags mirror the egui version they target: the minor version tracks egui 
 
 | Tag | egui / eframe |
 |---|---|
-| `v0.36.0` (`main`) | 0.36 |
+| `v0.36.0` | 0.36 |
 | `v0.33.0` | 0.33 |
 
-`main` always targets the newest egui. Pin a tag if you are on an older egui.
+A tag is a fixed snapshot: it never moves. `main` targets the newest egui and is ahead of the latest tag, with unreleased and possibly breaking changes, so depend on a tag rather than on `main`. Pin an older tag if you are on an older egui.
 
 ## Usage
 
 ### 1. Define buttons once
 
-Buttons carry a direction, a label and a mnemonic setting. Visual content is provided by a closure at render time; the label is only used to generate mnemonics.
+Buttons carry a direction (`PieDirection` is `Copy`; `PieDirection::ALL` lists the eight, clockwise from North), a label and a mnemonic setting. Visual content is provided by a closure at render time; the label is only used to generate mnemonics.
 
 ```rust
 use egui_pie_menu::{PieButton, PieDirection};
@@ -61,55 +62,49 @@ Each button's `mnemonic` is a `Mnemonic`:
 
 With `auto_mnemonics` on (off by default), all `Auto` buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials, then the remaining letters left to right. Only a button with no possible letter gets none. Generated letters can move when other buttons or labels change (a button may give up its letter so another one gets any at all), so **if a particular letter matters, set it with `with_mnemonic`**. The keys in effect are on the `ButtonView` in the render closure (`b.mnemonic`), or from `menu.mnemonics(&buttons)` outside it.
 
-Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. Duplicate mnemonics produce a warning on stderr in debug builds.
+Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. A Latin mnemonic does not fire as part of a Ctrl/Cmd chord (Ctrl+C is not the mnemonic `c`). Duplicate mnemonics on one level panic in debug builds (see `check_buttons` below).
 
 ### 2. Create a `PieMenu` and open it
+
+Keep the menu in your app state. It tracks whether it is open, so you need no flag of your own.
 
 ```rust
 use egui_pie_menu::PieMenu;
 
 struct MyApp {
-    menu: PieMenu,
-    menu_open: bool,
+    menu: PieMenu, // e.g. PieMenu::new().with_title("Edit")
 }
 ```
 
 Open the menu when a trigger fires (e.g. right-click):
 
 ```rust
-if ctx.input(|i| i.pointer.secondary_pressed()) {
-    if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-        self.menu.open(pos);
-        self.menu_open = true;
-    }
+if ctx.input(|i| i.pointer.secondary_pressed())
+    && let Some(pos) = ctx.input(|i| i.pointer.latest_pos())
+{
+    self.menu.open(pos);
 }
 ```
 
 ### 3. Call `show` every frame
 
+`show` does nothing while the menu is closed, and closes it again on any response other than `None`, so call it unconditionally and handle only the responses you care about.
+
 ```rust
 use egui_pie_menu::PieMenuResponse;
-use egui::Color32;
 
-if self.menu_open {
-    let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
-    let key_down = ctx.input(|i| i.pointer.secondary_down());
+let key_down = ctx.input(|i| i.pointer.secondary_down());
 
-    match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"), |ui, b| {
-        // `b` is a `ButtonView`: index, hover state, resolved mnemonic and number hint.
-        // The label comes from the button; its mnemonic (if any) is underlined, and its
-        // colour follows egui's widget states for the pie's hover (see "Text colour").
-        ui.label(b.label_text());
-    }) {
-        PieMenuResponse::Selected(idx) => {
-            println!("selected button {idx}");
-            self.menu_open = false;
-        }
-        PieMenuResponse::Dismissed => { self.menu_open = false; }
-        PieMenuResponse::QuickTap  => { /* default action */ self.menu_open = false; }
-        PieMenuResponse::DoubleTap => { /* alternate action */ self.menu_open = false; }
-        PieMenuResponse::None      => {}
-    }
+match self.menu.show(ctx, &buttons, key_down, |ui, b| {
+    // `b` is a `ButtonView`: index, hover state, resolved mnemonic and number hint.
+    // The label comes from the button; its mnemonic (if any) is underlined, and its
+    // colour follows egui's widget states for the pie's hover (see "Text colour").
+    ui.label(b.label_text());
+}) {
+    PieMenuResponse::Selected(idx) => println!("selected button {idx}"),
+    PieMenuResponse::QuickTap  => { /* default action */ }
+    PieMenuResponse::DoubleTap => { /* alternate action */ }
+    PieMenuResponse::Dismissed | PieMenuResponse::None => {}
 }
 ```
 
@@ -131,12 +126,22 @@ pub fn show(
     &mut self,
     ctx: &egui::Context,
     buttons: &[PieButton],
-    current_mouse_pos: Option<Pos2>,
-    key_down: bool,                          // true while the hotkey that opened the menu is held
-    title: Option<&str>,                     // label shown above the center indicator
+    key_down: bool,                          // true while the key/button that opened the menu is held
     render_button: impl FnMut(&mut Ui, &ButtonView),  // (ui, view of the button)
 ) -> PieMenuResponse
 ```
+
+Related:
+
+| Call / field | Meaning |
+|---|---|
+| `menu.open(pos)` | Open at `pos` |
+| `menu.pin(center)` | Open as a pinned menu (see "Pinned / persistent menus") |
+| `menu.close()` | Close without a response |
+| `menu.is_open()` / `menu.is_pinned()` | State queries |
+| `menu.title = Some("Edit".into())` | Text above the centre indicator (`with_title` at construction) |
+| `menu.show_with_pointer(ctx, &buttons, pointer, key_down, ..)` | `show` with your own pointer position instead of egui's latest one |
+| `menu.pointer_area = Some(rect)` | The pointer only counts inside `rect` |
 
 ## Interaction model
 
@@ -147,7 +152,7 @@ pub fn show(
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
 | Number key 1–9 or mnemonic key | `Selected(idx)` |
-| Escape or number key 5 | `Dismissed` |
+| Escape or number key 5 (consumed by the menu) | `Dismissed` |
 
 `show_behavior` (default `OnMovement { threshold: 10.0 }`) controls when the menu first appears:
 
@@ -185,6 +190,7 @@ menu.settings.layout_radius = 120.0;
 menu.settings.shape_factor  = 0.0;   // -1 diamond · 0 circle · +1 square
 menu.settings.intercardinal_height = Some(0.5); // NE/SE/SW/NW halfway between the N/S and E/W rows; None = from shape_factor
 menu.settings.screen_margin = 8.0;   // minimum gap from screen edge in px
+menu.settings.dead_zone_radius = 12.0; // no button is highlighted closer to the centre than this
 
 // Show immediately — QuickTap/DoubleTap are never returned
 menu.settings.show_behavior = ShowBehavior::Instant;
@@ -193,19 +199,21 @@ menu.settings.show_behavior = ShowBehavior::Instant;
 menu.settings.show_behavior = ShowBehavior::OnMovement { threshold: 10.0 };
 
 // Center background circle
-menu.settings.center_indicator.background_radius     = SmartFloat::new(15.0);
+menu.settings.center_indicator.background_radius     = Some(15.0);   // None = no circle
 menu.settings.center_indicator.background_fill_color = Color32::DARK_GRAY;
 
 // Directional highlight
-menu.settings.center_indicator.highlight_shape      = PieMenuHighlightShape::Slice;
+menu.settings.center_indicator.highlight_shape      = HighlightShape::SLICE;
 menu.settings.center_indicator.highlight_fill_color = Color32::PURPLE;
+menu.settings.center_indicator.highlight_snapping   = false; // true: snap to the hovered button's direction
 
-// Title label
-menu.settings.label.display    = true;
-menu.settings.label.text_color = Color32::LIGHT_GRAY;
+// Title (the text itself is `menu.title`)
+menu.settings.title.show       = true;
+menu.settings.title.text_color = Color32::LIGHT_GRAY;
+menu.settings.title.padding    = egui::Margin::same(5);
 
 // Input
-menu.settings.input.use_numpad_keys    = true;
+menu.settings.input.use_number_keys    = true;
 menu.settings.input.use_mnemonic_keys  = true;
 menu.settings.input.auto_mnemonics     = true;   // generate keys for Mnemonic::Auto buttons (default false)
 menu.settings.input.double_tap_window  = Duration::from_millis(400);
@@ -259,14 +267,22 @@ Disabled buttons are greyed out with egui's `Visuals::gray_out` either way. (The
 ### Pinned / persistent menus
 
 ```rust
-menu.open(center);
-menu.reveal();                              // visible immediately, regardless of ShowBehavior
-menu.settings.block_background = false;     // keep the rest of the UI clickable while it is open
+menu.pin(center);                       // instead of open(): visible immediately
+menu.pointer_area = Some(canvas_rect);  // optional: the pointer only counts in here
 ```
 
-Keyboard: a blocking menu (`block_background = true`) takes keyboard focus away from any focused widget, so digits and mnemonics never end up in a text field. A non-blocking menu leaves typing alone: while egui wants keyboard input (a text field is focused), number keys and mnemonics go to that widget instead of the menu.
+A pinned menu:
 
-Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN`/disabled radius, zero-width strokes or arcs) no longer panic.
+- is visible immediately, regardless of `ShowBehavior`, and ignores `key_down`;
+- stays open after a selection (`Selected` is still returned each time);
+- never blocks the widgets behind it;
+- is dismissed only by `settings.input.pinned_dismiss_inputs` (default: Escape) or `menu.close()`.
+
+Any direction highlights a button, so without a `pointer_area` a click anywhere in your UI would select the button the pointer points towards. Set it to the part of the window the menu owns. Move a pinned menu by updating `menu.position`.
+
+Keyboard: a blocking menu (`block_background = true`, not pinned) takes keyboard focus away from any focused widget, so digits and mnemonics never end up in a text field. A non-blocking or pinned menu leaves typing alone: while egui wants keyboard input (a text field is focused), number keys and mnemonics go to that widget instead of the menu.
+
+Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN` radius, zero-width strokes or arcs) draw nothing instead of panicking.
 
 
 ### Sub-pies
@@ -278,6 +294,33 @@ Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the 
 // Mnemonics are computed per level: `menu.mnemonics(menu.current_buttons(&root))`.
 let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */])];
 ```
+
+A sub-pie can carry its own way back, and you choose where it opens and whether hovering opens it:
+
+```rust
+// A back button: selecting it returns to the parent level instead of `Selected`.
+// Opposite the opening button it points back the way the sub-pie was entered.
+let dir = PieDirection::NorthEast;
+let root = vec![PieButton::new(dir).with_label("Paste Special").with_children(vec![
+    PieButton::back(dir.opposite()),                        // labelled "Back"; or set `.back = true` on any button
+    PieButton::new(PieDirection::North).with_label("As Text"),
+])];
+
+menu.settings.sub_pie_center = SubPieCenter::Button;        // Pointer (default) · Parent · Button
+menu.settings.sub_pie_hover_delay = Some(Duration::from_millis(400)); // follow sub-pie and back buttons on hover; None (default) = off
+```
+
+| `SubPieCenter` | The sub-pie opens | Going back |
+|---|---|---|
+| `Pointer` (default) | at the pointer (a pinned menu stays put) | re-centres the parent on the pointer |
+| `Parent` | in place of its parent | stays there |
+| `Button` | at the button that opened it | returns to the parent's own centre |
+
+With `sub_pie_hover_delay`, resting the pointer on any button that leads to another pie follows it without a click, key or release: a sub-pie button opens its sub-pie, and a back button inside a sub-pie returns to the parent. The button the pointer already points at when a level opens is ignored until the pointer has left it once, so a resting pointer never bounces between levels. Leaf buttons are never selected by hovering.
+
+If the buttons change while a sub-pie is open so that its level no longer exists or has no buttons, the menu falls back to the root level. A pinned menu returns to its root level after a leaf selection.
+
+The demo's "Paste Special" button opens a sub-pie, and its button editor can give any button one (to any depth).
 
 ### Disabled buttons and hover query
 
@@ -310,15 +353,20 @@ To check in any build, or to show the problems in an editor, call `menu.check_bu
 
 ### Highlight shapes
 
-`PieMenuHighlightShape` controls what is drawn at the center indicator when a direction is active. Components can be combined:
+`HighlightShape` controls what is drawn at the center indicator when a direction is active. It has three independent components:
 
-| Variant | Draws |
+| Field | Draws |
 |---|---|
-| `None` | nothing |
-| `Arc` | arc along the indicator radius |
-| `Slice` | filled wedge |
-| `Circle` | dot offset in the hovered direction |
-| `ArcSlice`, `ArcCircle`, `SliceCircle`, `ArcSliceCircle` | combinations |
+| `arc` | arc along the indicator radius |
+| `slice` | filled wedge |
+| `circle` | dot offset in the hovered direction |
+
+```rust
+use egui_pie_menu::HighlightShape;
+
+menu.settings.center_indicator.highlight_shape = HighlightShape::SLICE; // default; also NONE, ARC, CIRCLE
+menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, circle: true, slice: false };
+```
 
 ## Running the demo
 
@@ -326,7 +374,7 @@ To check in any build, or to show the problems in an editor, call `menu.check_bu
 cargo run --example demo
 ```
 
-  Right-click anywhere in the window to open the menu. The left panel exposes all settings as live sliders and color pickers.
+  Right-click anywhere in the window to open the menu. The left panel exposes all settings as live drag fields and colour pickers.
 
 ## License
 

@@ -1,252 +1,55 @@
+//! A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired by
+//! Blender's pie menus.
+//!
+//! Keep a [`PieMenu`] in your app state, [`PieMenu::open`] it on a trigger, and call
+//! [`PieMenu::show`] every frame. The menu owns its open state: `show` does nothing while
+//! it is closed and closes it again on any response other than [`PieMenuResponse::None`].
+//!
+//! ```no_run
+//! use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuResponse};
+//!
+//! # fn frame(ctx: &egui::Context, menu: &mut PieMenu) {
+//! let buttons = [
+//!     PieButton::new(PieDirection::North).with_label("Copy"),
+//!     PieButton::new(PieDirection::South).with_label("Paste"),
+//! ];
+//! // Open on right-click, at the pointer.
+//! if ctx.input(|i| i.pointer.secondary_pressed())
+//!     && let Some(pos) = ctx.input(|i| i.pointer.latest_pos())
+//! {
+//!     menu.open(pos);
+//! }
+//! let key_down = ctx.input(|i| i.pointer.secondary_down());
+//! match menu.show(ctx, &buttons, key_down, |ui, b| {
+//!     ui.label(b.label_text());
+//! }) {
+//!     PieMenuResponse::Selected(idx) => println!("selected {}", buttons[idx].label),
+//!     PieMenuResponse::QuickTap => println!("tapped without opening"),
+//!     _ => {}
+//! }
+//! # }
+//! ```
+
 pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
-use std::f32::consts::TAU;
-use std::time::{Duration, Instant};
-
-mod utils;
-pub use utils::common_utils::SmartFloat;
+use std::time::Duration;
 
 pub mod settings;
 pub use settings::*;
 
-pub(crate) mod highlight_shapes;
-use highlight_shapes::{ArcValues, CircleValues, HighlightPainter, SliceValues};
+mod button;
+mod highlight_shapes;
+mod layout;
+mod mnemonic;
+#[cfg(test)]
+mod tests;
 
-/// How a button gets its mnemonic key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Mnemonic {
-    /// Follow the menu (default): generated from the button's label when
-    /// [`PieMenuInput::auto_mnemonics`] is on, otherwise none.
-    #[default]
-    Auto,
-    /// This key (case-insensitive). Reserved: generated mnemonics never use it.
-    Key(char),
-    /// Never has a mnemonic, even when [`PieMenuInput::auto_mnemonics`] is on.
-    None,
-}
+pub use button::{ButtonProblem, ButtonView, LabelText, NumberHint, PieButton};
+pub use mnemonic::{Mnemonic, mnemonic_text};
 
-/// A single button slot in the pie menu.
-///
-/// Defines *where* the button sits (`direction`), its keyboard mnemonic and the
-/// label text used to generate one. All visual content is rendered by the caller
-/// via the closure passed to [`PieMenu::show`].
-#[derive(Clone, Debug)]
-pub struct PieButton {
-    /// Which of the eight directions this button occupies.
-    pub direction: PieDirection,
-    /// How this button gets its mnemonic key. Use [`PieMenu::mnemonics`] for the
-    /// keys actually in effect (e.g. to underline them with [`mnemonic_text`]).
-    pub mnemonic: Mnemonic,
-    /// The text shown on the button, used to generate a mnemonic for
-    /// [`Mnemonic::Auto`]. Rendering is still up to the closure.
-    pub label: String,
-    /// Buttons of the sub-pie opened by this button. Empty for a plain button.
-    pub children: Vec<PieButton>,
-    /// A disabled button is never highlighted or selected (mouse, number keys,
-    /// mnemonic) and gets no generated mnemonic. It is still drawn by your closure;
-    /// check [`ButtonView::enabled`] to grey it out.
-    pub enabled: bool,
-}
-
-impl PieButton {
-    /// Creates a button at `direction` with an empty label and [`Mnemonic::Auto`].
-    pub fn new(direction: PieDirection) -> Self {
-        Self {
-            direction,
-            mnemonic: Mnemonic::Auto,
-            label: String::new(),
-            children: Vec::new(),
-            enabled: true,
-        }
-    }
-
-    /// Enables or disables this button. See [`PieButton::enabled`].
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-
-    /// Sets the label text used to generate a mnemonic.
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = label.into();
-        self
-    }
-
-    /// Makes this button open a sub-pie containing `children` when selected.
-    ///
-    /// Inside a sub-pie, Backspace or a click on the centre goes back one level.
-    /// Use [`PieMenu::current_buttons`] to get the buttons currently shown, and
-    /// [`PieMenu::selected_path`] to learn which leaf was chosen.
-    pub fn with_children(mut self, children: Vec<PieButton>) -> Self {
-        self.children = children;
-        self
-    }
-
-    /// Sets an explicit mnemonic key for this button. Case-insensitive.
-    pub fn with_mnemonic(mut self, c: char) -> Self {
-        self.mnemonic = Mnemonic::Key(c);
-        self
-    }
-
-    /// This button never gets a mnemonic, even when auto mnemonics are on.
-    pub fn without_mnemonic(mut self) -> Self {
-        self.mnemonic = Mnemonic::None;
-        self
-    }
-}
-
-/// A problem with the buttons of one pie level, from [`PieMenu::check_buttons`].
-///
-/// Indices refer to the slice that was checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ButtonProblem {
-    /// Two buttons occupy the same direction.
-    SharedDirection { first: usize, second: usize, direction: PieDirection },
-    /// Two enabled buttons have the same mnemonic key.
-    DuplicateMnemonic { first: usize, second: usize, key: char },
-}
-
-impl ButtonProblem {
-    /// The two button indices involved.
-    pub fn buttons(&self) -> [usize; 2] {
-        match self {
-            ButtonProblem::SharedDirection { first, second, .. }
-            | ButtonProblem::DuplicateMnemonic { first, second, .. } => [*first, *second],
-        }
-    }
-}
-
-impl std::fmt::Display for ButtonProblem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ButtonProblem::SharedDirection { first, second, direction } => {
-                write!(f, "buttons {first} and {second} are both in direction {direction:?}")
-            }
-            ButtonProblem::DuplicateMnemonic { first, second, key } => {
-                write!(f, "buttons {first} and {second} share the mnemonic '{key}'")
-            }
-        }
-    }
-}
-
-/// Problems with the buttons of one pie level: several buttons in one direction, or
-/// the same mnemonic on several enabled buttons. Buttons in different (sub-)pie levels
-/// are never compared with each other, so they may reuse directions and keys.
-fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>]) -> Vec<ButtonProblem> {
-    let mut problems = Vec::new();
-    let mut dirs: Vec<(usize, &PieDirection)> = Vec::new();
-    for (i, b) in buttons.iter().enumerate() {
-        if let Some((first, _)) = dirs.iter().find(|(_, d)| **d == b.direction) {
-            problems.push(ButtonProblem::SharedDirection {
-                first: *first,
-                second: i,
-                direction: b.direction.clone(),
-            });
-        } else {
-            dirs.push((i, &b.direction));
-        }
-    }
-    let mut keys: Vec<(char, usize)> = Vec::new();
-    for (i, (b, m)) in buttons.iter().zip(mnemonics).enumerate() {
-        let (true, Some(c)) = (b.enabled, *m) else { continue };
-        if let Some((_, first)) = keys.iter().find(|(k, _)| *k == c) {
-            problems.push(ButtonProblem::DuplicateMnemonic { first: *first, second: i, key: c });
-        } else {
-            keys.push((c, i));
-        }
-    }
-    problems
-}
-
-/// Resolves the mnemonic key in effect for each button.
-///
-/// - [`Mnemonic::Key`] is used as given, and its key is reserved.
-/// - [`Mnemonic::None`] never gets one.
-/// - [`Mnemonic::Auto`] gets one generated from its label when `auto` is on. All
-///   buttons are considered together: a button whose letters are all claimed makes
-///   another button move to one of its alternative letters, so as many buttons as
-///   possible get a distinct mnemonic. Word initials are preferred, then the other
-///   letters left to right. Only a button with no possible letter is left without one.
-///   Any alphabetic letter of any script can be generated (combining marks are skipped;
-///   Hebrew final forms and Arabic alef variants are folded to one key).
-fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
-    let mut resolved: Vec<Option<char>> = buttons
-        .iter()
-        .map(|b| match b.mnemonic {
-            Mnemonic::Key(c) => Some(fold_char(c)),
-            Mnemonic::Auto | Mnemonic::None => None,
-        })
-        .collect();
-    if !auto {
-        return resolved;
-    }
-    let taken: Vec<char> = resolved.iter().flatten().copied().collect();
-
-    // Candidate letters per Auto button, best first: word initials, then every other letter.
-    let candidates: Vec<Vec<char>> = buttons
-        .iter()
-        .map(|button| {
-            let mut list: Vec<char> = Vec::new();
-            if button.mnemonic == Mnemonic::Auto && button.enabled {
-                let label = &button.label;
-                let letters = |c: &char| is_mnemonic_letter(*c);
-                let initials = label
-                    .split(|c: char| !c.is_alphanumeric())
-                    .filter_map(|w| w.chars().next())
-                    .filter(letters);
-                for c in initials.chain(label.chars().filter(letters)) {
-                    let c = fold_char(c);
-                    if !taken.contains(&c) && !list.contains(&c) {
-                        list.push(c);
-                    }
-                }
-            }
-            list
-        })
-        .collect();
-
-    // Maximum bipartite matching (buttons <-> letters) via augmenting paths, so a
-    // button whose only letters are claimed can make an earlier button move to
-    // its alternative. Free letters are always preferred over displacing anyone.
-    fn place(
-        i: usize,
-        candidates: &[Vec<char>],
-        owner: &mut std::collections::HashMap<char, usize>,
-        visited: &mut Vec<char>,
-    ) -> bool {
-        for &c in &candidates[i] {
-            if !owner.contains_key(&c) {
-                owner.insert(c, i);
-                return true;
-            }
-        }
-        for &c in &candidates[i] {
-            if visited.contains(&c) {
-                continue;
-            }
-            visited.push(c);
-            let other = owner[&c];
-            if place(other, candidates, owner, visited) {
-                owner.insert(c, i);
-                return true;
-            }
-        }
-        false
-    }
-
-    // Most constrained buttons first, so they are settled before flexible ones.
-    let mut order: Vec<usize> = (0..buttons.len()).filter(|&i| !candidates[i].is_empty()).collect();
-    order.sort_by_key(|&i| candidates[i].len());
-    let mut owner = std::collections::HashMap::new();
-    for i in order {
-        place(i, &candidates, &mut owner, &mut Vec::new());
-    }
-    for (c, i) in owner {
-        resolved[i] = Some(c);
-    }
-    resolved
-}
+use button::{button_problems, button_text_color};
+use mnemonic::{char_to_key, fold_char, resolve_mnemonics};
 
 /// Outcome of a [`PieMenu::show`] call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,167 +68,62 @@ pub enum PieMenuResponse {
     None,
 }
 
-/// What the menu knows about one button, handed to your render closure by
-/// [`PieMenu::show`]. Everything is resolved for the level currently shown, so you never
-/// have to precompute mnemonics or hints.
-pub struct ButtonView<'a> {
-    /// Index of the button within the level being shown (what `Selected(idx)` returns).
-    pub idx: usize,
-    /// Whether the pointer currently highlights this button.
-    pub hovered: bool,
-    /// Whether the button can be selected (`false`: grey it out).
-    pub enabled: bool,
-    /// The button itself (label, direction, …).
-    pub button: &'a PieButton,
-    /// The mnemonic key in effect for this button (lower-case), if any.
-    pub mnemonic: Option<char>,
-    /// A number-key hint to draw inside your own button. `None` when number keys are off.
-    pub number_hint: Option<NumberHint>,
-    /// Right-to-left: [`PieMenuSettings::mirror_horizontal`] is on. Lay out your own widgets
-    /// in reverse (e.g. a checkbox's box right of its text); [`Self::label_text`] already
-    /// puts its prefix (icon) on the right.
-    pub rtl: bool,
-    text_color: Color32,
-    body_font: FontId,
-}
-
-impl ButtonView<'_> {
-    /// The button's label with its mnemonic (if any) underlined, ready for
-    /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's widget text colour
-    /// for the button's state (`inactive` / `hovered`), or [`PieMenuSettings::text_color`]
-    /// when set; the font is egui's body font. Override with [`LabelText::color`] /
-    /// [`LabelText::font`].
-    pub fn label_text(&self) -> LabelText {
-        LabelText {
-            prefix: String::new(),
-            text: self.button.label.clone(),
-            mnemonic: self.mnemonic,
-            color: self.text_color,
-            font: self.body_font.clone(),
-            rtl: self.rtl,
-        }
-    }
-}
-
-/// A button label with its mnemonic underlined; see [`ButtonView::label_text`].
-/// Converts into [`egui::WidgetText`], so pass it to `ui.label(..)` directly.
-#[derive(Clone, Debug)]
-pub struct LabelText {
-    prefix: String,
-    text: String,
-    mnemonic: Option<char>,
-    color: Color32,
-    font: FontId,
-    rtl: bool,
-}
-
-impl LabelText {
-    /// Text (and underline) colour.
-    pub fn color(mut self, color: Color32) -> Self {
-        self.color = color;
-        self
-    }
-
-    /// Font.
-    pub fn font(mut self, font: FontId) -> Self {
-        self.font = font;
-        self
-    }
-
-    /// Text placed before the label in reading order, never underlined (e.g. an icon:
-    /// `"🗑  "`). Right-to-left (see [`Self::rtl`]) it goes on the right of the label, with
-    /// its trailing spacing moved to face the label.
-    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.prefix = prefix.into();
-        self
-    }
-
-    /// Right-to-left: put the prefix on the right. Set from [`ButtonView::rtl`] by
-    /// [`ButtonView::label_text`]; override it here. egui lays text out left to right (no
-    /// bidi), so this only moves the prefix; keep each label single-script.
-    pub fn rtl(mut self, rtl: bool) -> Self {
-        self.rtl = rtl;
-        self
-    }
-
-    fn to_job(&self) -> LayoutJob {
-        let format = TextFormat { color: self.color, font_id: self.font.clone(), ..Default::default() };
-        let mut job = LayoutJob::default();
-        if !self.rtl && !self.prefix.is_empty() {
-            job.append(&self.prefix, 0.0, format.clone());
-        }
-        match self.mnemonic {
-            Some(m) => append_mnemonic_text(&mut job, &self.text, m, format.clone()),
-            None => job.append(&self.text, 0.0, format.clone()),
-        }
-        if self.rtl && !self.prefix.is_empty() {
-            // "🗑  " → "  🗑": the spacing that separated icon and label stays between them.
-            let icon = self.prefix.trim_end();
-            job.append(&self.prefix[icon.len()..], 0.0, format.clone());
-            job.append(icon, 0.0, format);
-        }
-        job
-    }
-}
-
-impl From<LabelText> for egui::WidgetText {
-    fn from(l: LabelText) -> Self {
-        l.to_job().into()
-    }
-}
-
 /// Radial (pie) menu widget.
 ///
 /// Owns interaction state but not button content. Construct once, then call
 /// [`PieMenu::show`] every frame with the buttons for the current context.
-/// A number-key hint to draw inside your own button; see [`ButtonView::number_hint`]
-/// (or [`PieMenu::number_hint`] outside the render closure).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NumberHint {
-    /// The digit, already converted to the [`PieMenuNumberHints::digits`] style.
-    pub text: String,
-    /// The digit's colour: [`PieMenuNumberHints::color`] when set, else egui's widget text
-    /// colour for the button's state (`inactive` / `hovered`).
-    pub color: Color32,
-    /// Whether the digit goes after (right of) the label rather than before it,
-    /// resolved from [`PieMenuNumberHints::side`].
-    pub on_right: bool,
-}
-
-/// Button text colour: the forced colour if any, else egui's widget text colour for the
-/// state (`hovered` = the pie's highlighted button). Disabled buttons get egui's
-/// `Visuals::gray_out` of that colour: the text carries an explicit colour, which egui's
-/// disabled `Ui` does not fade by itself.
-fn button_text_color(forced: Option<Color32>, visuals: &egui::Visuals, hovered: bool, enabled: bool) -> Color32 {
-    let state = if hovered && enabled { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
-    let color = forced.unwrap_or(state.fg_stroke.color);
-    if enabled { color } else { visuals.gray_out(color) }
-}
-
 pub struct PieMenu {
     pub id: egui::Id,
-    open_time: Instant,
-    selected_index: Option<usize>,
+    /// Text shown above the center indicator (see [`PieMenuSettings::title`] for its
+    /// appearance). `None`: no title.
+    pub title: Option<String>,
+    /// The pointer only counts inside this rect; outside it the menu behaves as if there
+    /// were no pointer (nothing hovered, clicks select nothing). Mainly for a pinned menu
+    /// that shares the window with other widgets. `None` (default): everywhere.
+    pub pointer_area: Option<Rect>,
+    /// Between [`PieMenu::open`] and a closing response.
+    is_open: bool,
+    /// Opened with [`PieMenu::pin`]: stays open after a selection.
+    pinned: bool,
+    hovered_index: Option<usize>,
     pub position: Pos2,
     pub settings: PieMenuSettings,
     release_handled: bool,
     /// Whether the show condition has been met since `open()` was called.
-    mouse_shown: bool,
-    /// Timestamp of the last QuickTap, used for double-tap detection.
-    last_quick_tap: Option<Instant>,
-    /// Set by `open()` when this press follows a QuickTap within the double-tap window.
+    visible: bool,
+    /// egui time (`InputState::time`) of the last QuickTap, used for double-tap detection.
+    /// egui's clock is used rather than `std::time::Instant`, which panics on wasm.
+    last_quick_tap: Option<f64>,
+    /// Set by `open()`: the first `show` after it decides `double_tap_pending`.
+    fresh_open: bool,
+    /// This press follows a QuickTap within the double-tap window.
     /// While set, the menu never becomes visible; releasing yields `DoubleTap`.
     double_tap_pending: bool,
     /// Debug-only: the duplicate direction/mnemonic check already ran for this open.
     checked_buttons: bool,
-    /// When the buttons became visible; drives the reveal animation.
-    shown_at: Option<Instant>,
+    /// egui time when the buttons became visible; drives the reveal animation.
+    /// `None` while visible means "stamp it on the next `show`".
+    shown_at: Option<f64>,
     /// Indices of the buttons descended through to reach the current sub-pie level.
     path: Vec<usize>,
     /// Full index path of the last leaf selection (see [`PieMenu::selected_path`]).
     selected_path: Vec<usize>,
     /// Cached button sizes from the previous frame, used to centre each Area.
     button_sizes: Vec<Vec2>,
+    /// Where each button of the level was drawn last frame (its final, un-animated
+    /// centre), for [`SubPieCenter::Button`].
+    button_centers: Vec<Pos2>,
+    /// The centre of each level descended through (parallel to `path`), restored on
+    /// going back.
+    level_centers: Vec<Pos2>,
+    /// Sub-pie hover timer: the hovered sub-pie button and the egui time it became so.
+    hover_since: Option<(usize, f64)>,
+    /// The current level has not been shown yet since it opened.
+    level_fresh: bool,
+    /// The button the pointer already pointed at when the current level opened. The
+    /// hover timer ignores it until the pointer has left it once, so arriving in a level
+    /// never triggers the next navigation by itself.
+    inert_hover: Option<usize>,
 }
 
 impl Default for PieMenu {
@@ -440,19 +138,28 @@ impl PieMenu {
     pub fn new() -> Self {
         Self {
             id: egui::Id::new("pie_menu"),
-            open_time: Instant::now(),
-            selected_index: None,
+            title: None,
+            pointer_area: None,
+            is_open: false,
+            pinned: false,
+            hovered_index: None,
             position: Pos2::ZERO,
             settings: PieMenuSettings::default(),
             release_handled: false,
-            mouse_shown: false,
+            visible: false,
             last_quick_tap: None,
+            fresh_open: false,
             double_tap_pending: false,
             checked_buttons: false,
             shown_at: None,
             path: Vec::new(),
             selected_path: Vec::new(),
             button_sizes: Vec::new(),
+            button_centers: Vec::new(),
+            level_centers: Vec::new(),
+            hover_since: None,
+            level_fresh: true,
+            inert_hover: None,
         }
     }
 
@@ -460,6 +167,12 @@ impl PieMenu {
     /// Required when multiple pie menus coexist in the same app.
     pub fn with_id(mut self, id: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id = egui::Id::new(id);
+        self
+    }
+
+    /// Sets the title shown above the center indicator.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
         self
     }
 
@@ -498,7 +211,7 @@ impl PieMenu {
     fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
         let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
         let hints = &self.settings.number_hints;
-        self.settings.input.use_numpad_keys.then(|| NumberHint {
+        self.settings.input.use_number_keys.then(|| NumberHint {
             text: self.hint_digit(&dir).to_string(),
             color: button_text_color(hints.color, visuals, hovered, button.enabled),
             on_right: self.hint_on_right(&dir),
@@ -531,183 +244,75 @@ impl PieMenu {
         }
     }
 
-    /// Call this when opening the menu. Resets interaction state and sets position.
+    /// Opens the menu centred at `pos` and resets its interaction state. It stays open
+    /// until [`PieMenu::show`] returns a closing response (anything but
+    /// [`PieMenuResponse::None`]) or [`PieMenu::close`] is called.
     pub fn open(&mut self, pos: Pos2) {
         self.position = pos;
-        self.open_time = Instant::now();
+        self.is_open = true;
+        self.pinned = false;
         self.release_handled = false;
-        self.selected_index = None;
-        self.mouse_shown = false;
+        self.hovered_index = None;
+        self.visible = false;
         self.shown_at = None;
         self.path.clear();
+        self.level_centers.clear();
+        self.hover_since = None;
+        self.level_fresh = true;
+        self.inert_hover = None;
         self.selected_path.clear();
         self.checked_buttons = false;
-        self.double_tap_pending = self
-            .last_quick_tap
-            .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
-            .unwrap_or(false);
+        self.double_tap_pending = false;
+        self.fresh_open = true;
     }
 
-    /// Makes the menu visible immediately, regardless of [`ShowBehavior`].
-    /// Call right after [`PieMenu::open`] for a pinned/persistent menu.
-    pub fn reveal(&mut self) {
-        self.mouse_shown = true;
-        self.shown_at = Some(Instant::now());
-    }
-
-    /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying the shape factor.
+    /// Opens the menu as a pinned (persistent) one centred at `center`:
     ///
-    /// - `0.0`  → circle: all buttons equidistant (L2, unit vector)
-    /// - `+1.0` → square: diagonals pushed out to the corners (L∞ norm)
-    /// - `-1.0` → diamond: diagonals pulled in toward the centre (L1 norm)
-    /// The direction as displayed: mirrored when [`PieMenuSettings::mirror_horizontal`] is on.
-    fn eff(dir: &PieDirection, mirror: bool) -> PieDirection {
-        if mirror { dir.mirrored() } else { dir.clone() }
+    /// - visible immediately, regardless of [`ShowBehavior`];
+    /// - stays open after a selection ([`PieMenuResponse::Selected`] is still returned);
+    /// - never blocks the widgets behind it, and leaves typing to a focused text field;
+    /// - is dismissed only by [`PieMenuInput::pinned_dismiss_inputs`] (default: Escape)
+    ///   or [`PieMenu::close`];
+    /// - ignores `key_down`: there is no key to release.
+    ///
+    /// Set [`PieMenu::pointer_area`] so clicks on the rest of your UI don't select the
+    /// button the pointer happens to point towards. Update [`PieMenu::position`] to move it.
+    pub fn pin(&mut self, center: Pos2) {
+        self.open(center);
+        self.pinned = true;
+        self.reveal();
     }
 
-    fn direction_vec(dir: &PieDirection, shape_factor: f32) -> Vec2 {
-        let fraction = match dir {
-            PieDirection::North => 0.75,
-            PieDirection::NorthEast => 0.875,
-            PieDirection::East => 1.0,
-            PieDirection::SouthEast => 0.125,
-            PieDirection::South => 0.25,
-            PieDirection::SouthWest => 0.375,
-            PieDirection::West => 0.5,
-            PieDirection::NorthWest => 0.625,
-        };
-        let angle = TAU * fraction;
-        let circle = Vec2::new(angle.cos(), angle.sin());
-
-        match dir {
-            PieDirection::NorthEast
-            | PieDirection::SouthEast
-            | PieDirection::SouthWest
-            | PieDirection::NorthWest => {
-                if shape_factor > 0.0 {
-                    let l_inf = circle / circle.x.abs().max(circle.y.abs());
-                    circle * (1.0 - shape_factor) + l_inf * shape_factor
-                } else if shape_factor < 0.0 {
-                    let l1 = circle / (circle.x.abs() + circle.y.abs());
-                    let t = -shape_factor;
-                    circle * (1.0 - t) + l1 * t
-                } else {
-                    circle
-                }
-            }
-            _ => circle,
-        }
+    /// Closes the menu without a response. Does nothing if it is not open.
+    pub fn close(&mut self) {
+        self.is_open = false;
+        self.pinned = false;
     }
 
-    /// The point at `angle` on the layout shape of unit radius: the circle, blended
-    /// towards the square (`sf > 0`) or the diamond (`sf < 0`), as [`Self::direction_vec`]
-    /// does for the eight directions.
-    fn curve_vec(angle: f32, sf: f32) -> Vec2 {
-        let circle = Vec2::new(angle.cos(), angle.sin());
-        if sf > 0.0 {
-            let l_inf = circle / circle.x.abs().max(circle.y.abs());
-            circle * (1.0 - sf) + l_inf * sf
-        } else if sf < 0.0 {
-            let l1 = circle / (circle.x.abs() + circle.y.abs());
-            circle * (1.0 + sf) + l1 * -sf
-        } else {
-            circle
-        }
+    /// Whether the menu is open: [`PieMenu::show`] does nothing unless it is.
+    pub fn is_open(&self) -> bool {
+        self.is_open
     }
 
-    /// Where on the layout shape (unit radius) a button's inner face/corner sits, as
-    /// displayed. Cardinals, and diagonals without [`PieMenuSettings::intercardinal_height`],
-    /// use their fixed direction. With an intercardinal height, a diagonal slides *along* the
-    /// shape to the point that puts its centre at that height (so it follows the curve);
-    /// this depends on the button's size and the radius. Its angle is also the angle used
-    /// for hover picking and the centre highlight.
-    fn layout_vec(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
-        let v = Self::direction_vec(dir, sf);
-        let diagonal = v.x.abs() > 0.5 && v.y.abs() > 0.5;
-        let (Some(t), true) = (self.settings.intercardinal_height, diagonal && radius > 0.0) else {
-            return v;
-        };
-        let hh = size.y / 2.0;
-        // A North/South button of this size has its centre at radius + hh; the diagonal's
-        // centre should be at t of that, i.e. its inner corner at that minus hh.
-        let corner = ((t.clamp(0.0, 1.0) * (radius + hh) - hh) / radius).clamp(0.0, 1.0);
-        // The shape's height rises monotonically from 0 (East) to 1 (North) over the first
-        // quadrant, so bisect for the angle where it reaches `corner`.
-        let (mut lo, mut hi) = (0.0f32, std::f32::consts::FRAC_PI_2);
-        for _ in 0..32 {
-            let mid = (lo + hi) / 2.0;
-            if Self::curve_vec(mid, sf).y < corner { lo = mid } else { hi = mid }
-        }
-        let u = Self::curve_vec((lo + hi) / 2.0, sf);
-        Vec2::new(v.x.signum() * u.x, v.y.signum() * u.y)
+    /// Whether the open menu is a pinned one (see [`PieMenu::pin`]).
+    pub fn is_pinned(&self) -> bool {
+        self.is_open && self.pinned
     }
 
-    /// Offset of a button's centre from the menu centre, for a layout `radius` and shape
-    /// factor `sf`: its inner face/corner on the layout shape ([`Self::layout_vec`]), then
-    /// pushed outward by half its size on each axis it points along.
-    fn button_offset(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
-        let dn = Self::direction_vec(dir, sf).normalized();
-        // 0.5 threshold: diagonal components are ~0.707, cardinal near-zero components are
-        // floating-point noise (~1e-17) and must not contribute.
-        let side = |c: f32| if c > 0.5 { 1.0 } else if c < -0.5 { -1.0 } else { 0.0 };
-        let (sx, sy) = (side(dn.x), side(dn.y));
-        self.layout_vec(dir, size, radius, sf) * radius + Vec2::new(size.x / 2.0 * sx, size.y / 2.0 * sy)
-    }
-
-    fn direction_digit(dir: &PieDirection) -> char {
-        match dir {
-            PieDirection::North => '8',
-            PieDirection::NorthEast => '9',
-            PieDirection::East => '6',
-            PieDirection::SouthEast => '3',
-            PieDirection::South => '2',
-            PieDirection::SouthWest => '1',
-            PieDirection::West => '4',
-            PieDirection::NorthWest => '7',
-        }
-    }
-
-    /// Smallest absolute difference between two angles, in `0..=PI`.
-    fn angle_diff(a: f32, b: f32) -> f32 {
-        let d = (a - b).rem_euclid(TAU);
-        d.min(TAU - d)
-    }
-
-    /// Index of the enabled button the pointer vector `mouse_vec` (from the menu
-    /// centre) points at, or `None`. `dirs[i]` is button `i`'s displayed layout vector
-    /// ([`Self::layout_vec`]). Empty directions are skipped: the pointer snaps to the
-    /// closest available button. On an exact tie (e.g. straight down between East and
-    /// West buttons) the earlier button in the slice wins.
-    fn pick_button(buttons: &[PieButton], mouse_vec: Vec2, dirs: &[Vec2]) -> Option<usize> {
-        let angle = mouse_vec.y.atan2(mouse_vec.x);
-        buttons
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.enabled)
-            .map(|(idx, _)| (idx, Self::angle_diff(angle, dirs[idx].y.atan2(dirs[idx].x))))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(idx, _)| idx)
+    /// Makes the open menu visible immediately, regardless of [`ShowBehavior`].
+    pub fn reveal(&mut self) {
+        self.visible = true;
+        self.shown_at = None;
     }
 
     /// Index of the button the pointer currently highlights, if any.
     pub fn hovered(&self) -> Option<usize> {
-        self.selected_index
+        self.hovered_index
     }
 
-    fn direction_numpad(dir: &PieDirection) -> Key {
-        match dir {
-            PieDirection::North => Key::Num8,
-            PieDirection::NorthEast => Key::Num9,
-            PieDirection::East => Key::Num6,
-            PieDirection::SouthEast => Key::Num3,
-            PieDirection::South => Key::Num2,
-            PieDirection::SouthWest => Key::Num1,
-            PieDirection::West => Key::Num4,
-            PieDirection::NorthWest => Key::Num7,
-        }
-    }
-
-    /// Show the pie menu for this frame.
+    /// Shows the pie menu for this frame. Call it every frame; it does nothing (and
+    /// returns [`PieMenuResponse::None`]) unless the menu is open (see [`PieMenu::open`]).
+    /// Any other response closes the menu, except a selection in a pinned menu.
     ///
     /// `render_button(ui, &button_view)` is called once per button inside a floating
     /// [`egui::Area`] centred at that button's position. Use it to draw any egui
@@ -715,46 +320,72 @@ impl PieMenu {
     /// index, hover state, resolved mnemonic and number hint; `ui.label(b.label_text())`
     /// draws the label with its mnemonic underlined.
     ///
-    /// `key_down` should be `true` while the hotkey that opened the menu is held.
+    /// `key_down` should be `true` while the key or button that opened the menu is held.
     ///
     /// `buttons` is always the **root** level. When a button has
     /// [`PieButton::children`], selecting it descends into a sub-pie; the
     /// `usize` in callbacks and in [`PieMenuResponse::Selected`] is then an index
     /// into [`PieMenu::current_buttons`], and the full route to the chosen leaf
     /// is available from [`PieMenu::selected_path`].
+    ///
+    /// The pointer position is egui's latest one; use [`PieMenu::show_with_pointer`] to
+    /// supply your own.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         buttons: &[PieButton],
-        current_mouse_pos: Option<Pos2>,
         key_down: bool,
-        title: Option<&str>,
+        render_button: impl FnMut(&mut Ui, &ButtonView),
+    ) -> PieMenuResponse {
+        let pointer = ctx.input(|i| i.pointer.latest_pos());
+        self.show_with_pointer(ctx, buttons, pointer, key_down, render_button)
+    }
+
+    /// [`PieMenu::show`] with the pointer position supplied by the caller (`None`: no
+    /// pointer), e.g. one in another coordinate space or from a different input source.
+    pub fn show_with_pointer(
+        &mut self,
+        ctx: &egui::Context,
+        buttons: &[PieButton],
+        pointer: Option<Pos2>,
+        key_down: bool,
         mut render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
-        if Self::resolve_level(buttons, &self.path).is_none() {
-            self.path.clear();
+        if !self.is_open {
+            return PieMenuResponse::None;
+        }
+        let current_mouse_pos = pointer.filter(|p| self.pointer_area.is_none_or(|area| area.contains(*p)));
+        // A pinned menu has no key to release.
+        let key_down = key_down || self.pinned;
+
+        // A stale path (the buttons changed under an open sub-pie, or its level is now
+        // empty) falls back to the root level.
+        if Self::resolve_level(buttons, &self.path).is_none_or(|level| level.is_empty()) {
+            self.back_to_root();
         }
         let level = Self::resolve_level(buttons, &self.path).unwrap_or(buttons);
 
         // Go back one level: Backspace, or a click on the centre (when clicks are enabled).
-        if !self.path.is_empty() && self.mouse_shown {
-            let thr = self.settings.mouse_trigger_threshold;
+        if !self.path.is_empty() && self.visible {
+            let thr = self.settings.dead_zone_radius;
             let back = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace))
                 || (self.settings.input.select_on_primary_click
                     && ctx.input(|i| i.pointer.primary_clicked())
                     && current_mouse_pos.is_some_and(|p| (p - self.position).length() <= thr));
             if back {
-                self.path.pop();
-                self.restart_level(current_mouse_pos, key_down);
+                self.go_back(current_mouse_pos, key_down);
                 return PieMenuResponse::None;
             }
         }
 
-        match self.show_level(ctx, level, current_mouse_pos, key_down, title, &mut render_button) {
+        let response = match self.show_level(ctx, level, current_mouse_pos, key_down, &mut render_button) {
             PieMenuResponse::Selected(idx) => {
-                if level.get(idx).is_some_and(|b| !b.children.is_empty()) {
-                    self.path.push(idx);
-                    self.restart_level(current_mouse_pos, key_down);
+                let button = level.get(idx);
+                if button.is_some_and(|b| b.back) && !self.path.is_empty() {
+                    self.go_back(current_mouse_pos, key_down);
+                    PieMenuResponse::None
+                } else if button.is_some_and(|b| !b.children.is_empty()) {
+                    self.descend(idx, current_mouse_pos, key_down);
                     PieMenuResponse::None
                 } else {
                     self.selected_path = self.path.clone();
@@ -763,7 +394,19 @@ impl PieMenu {
                 }
             }
             other => other,
+        };
+        match response {
+            PieMenuResponse::None => {}
+            // A pinned menu stays open after a selection, back at its root level.
+            PieMenuResponse::Selected(_) if self.pinned => {
+                if !self.path.is_empty() {
+                    self.back_to_root();
+                    self.restart_level(None, key_down);
+                }
+            }
+            _ => self.close(),
         }
+        response
     }
 
     /// The buttons currently displayed (root level, or the open sub-pie).
@@ -792,15 +435,54 @@ impl PieMenu {
         Some(level)
     }
 
-    /// Re-centres on the pointer and shows the (new) level immediately.
-    fn restart_level(&mut self, mouse: Option<Pos2>, key_down: bool) {
-        if let Some(p) = mouse {
+    /// Opens the sub-pie of button `idx` of the current level.
+    fn descend(&mut self, idx: usize, mouse: Option<Pos2>, key_down: bool) {
+        let center = match self.settings.sub_pie_center {
+            // A pinned menu stays put rather than jumping to the pointer.
+            SubPieCenter::Pointer => mouse.filter(|_| !self.pinned),
+            SubPieCenter::Parent => None,
+            SubPieCenter::Button => self.button_centers.get(idx).copied(),
+        };
+        self.level_centers.push(self.position);
+        self.path.push(idx);
+        self.restart_level(center, key_down);
+    }
+
+    /// Returns to the parent level of the open sub-pie.
+    fn go_back(&mut self, mouse: Option<Pos2>, key_down: bool) {
+        self.path.pop();
+        let parent_center = self.level_centers.pop();
+        let center = match self.settings.sub_pie_center {
+            SubPieCenter::Pointer if !self.pinned => mouse,
+            _ => parent_center,
+        };
+        self.restart_level(center, key_down);
+    }
+
+    /// Forgets the open sub-pie(s); the root level reappears where it was when it was left
+    /// ([`SubPieCenter::Pointer`]: where the menu is now, unless pinned).
+    fn back_to_root(&mut self) {
+        let root_center = self.level_centers.first().copied();
+        if self.pinned || self.settings.sub_pie_center != SubPieCenter::Pointer {
+            self.position = root_center.unwrap_or(self.position);
+        }
+        self.path.clear();
+        self.level_centers.clear();
+        self.hover_since = None;
+    }
+
+    /// Shows the (new) level immediately, centred at `center` (`None`: where the menu is).
+    fn restart_level(&mut self, center: Option<Pos2>, key_down: bool) {
+        if let Some(p) = center {
             self.position = p;
         }
-        self.selected_index = None;
+        self.hover_since = None;
+        self.level_fresh = true;
+        self.inert_hover = None;
+        self.hovered_index = None;
         self.checked_buttons = false;
-        self.mouse_shown = true;
-        self.shown_at = Some(Instant::now());
+        self.visible = true;
+        self.shown_at = None; // restart the reveal animation on the next `show`
         // If the key is already up (selection came from the release), the sub-pie is
         // click/keyboard driven; otherwise a later release selects as usual.
         self.release_handled = !key_down;
@@ -812,7 +494,6 @@ impl PieMenu {
         buttons: &[PieButton],
         current_mouse_pos: Option<Pos2>,
         key_down: bool,
-        title: Option<&str>,
         render_button: &mut impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
         // Ensure cached size vec is long enough
@@ -821,35 +502,36 @@ impl PieMenu {
                 .resize(buttons.len(), Vec2::new(50.0, 24.0));
         }
 
-        // Always restore selectable labels. If the menu is visible we disable them below,
-        // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
-        // restored so labels are selectable again the frame after the menu closes.
-        ctx.all_styles_mut(|s| s.interaction.selectable_labels = true);
+        // egui's clock (seconds), also available on wasm.
+        let now = ctx.input(|i| i.time);
+        if self.fresh_open {
+            self.fresh_open = false;
+            let window = self.settings.input.double_tap_window.as_secs_f64();
+            self.double_tap_pending = self.last_quick_tap.is_some_and(|t| now - t <= window);
+        }
 
         let center = self.position;
 
-        // Update mouse_shown: latch on once the show condition is met.
-        // (shown_at is stamped below, once mouse_shown has latched)
+        // Update visible: latch on once the show condition is met.
+        // (shown_at is stamped below, once visible has latched)
         // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`).
-        if !self.mouse_shown && !self.double_tap_pending {
+        if !self.visible && !self.double_tap_pending {
             match self.settings.show_behavior {
-                ShowBehavior::Instant => self.mouse_shown = true,
+                ShowBehavior::Instant => self.visible = true,
                 ShowBehavior::OnMovement { threshold } => {
-                    if let Some(p) = current_mouse_pos {
-                        if (p - center).length() > threshold {
-                            self.mouse_shown = true;
-                        }
+                    if current_mouse_pos.is_some_and(|p| (p - center).length() > threshold) {
+                        self.visible = true;
                     }
                 }
             }
         }
 
-        if self.mouse_shown && self.shown_at.is_none() {
-            self.shown_at = Some(Instant::now());
+        if self.visible && self.shown_at.is_none() {
+            self.shown_at = Some(now);
         }
 
         // Before the menu is visible, handle key release as QuickTap/DoubleTap only.
-        if !self.mouse_shown {
+        if !self.visible {
             if !key_down && !self.release_handled {
                 self.release_handled = true;
                 if self.double_tap_pending {
@@ -857,7 +539,7 @@ impl PieMenu {
                     self.last_quick_tap = None;
                     return PieMenuResponse::DoubleTap;
                 } else {
-                    self.last_quick_tap = Some(Instant::now());
+                    self.last_quick_tap = Some(now);
                     return PieMenuResponse::QuickTap;
                 }
             }
@@ -867,9 +549,10 @@ impl PieMenu {
         // Keyboard ownership. A blocking menu takes keyboard focus away, so a text field
         // that was focused when the menu opened stops receiving keys from the next frame
         // (this frame it already ran, so consuming keys below would be too late).
-        // A non-blocking (pinned) menu leaves typing alone: while egui wants keyboard
+        // A non-blocking (or pinned) menu leaves typing alone: while egui wants keyboard
         // input, dismiss keys, number keys and mnemonics go to that widget, not the menu.
-        let keys_for_menu = if self.settings.block_background {
+        let blocking = self.settings.block_background && !self.pinned;
+        let keys_for_menu = if blocking {
             ctx.memory_mut(|m| {
                 if let Some(id) = m.focused() {
                     m.surrender_focus(id);
@@ -880,10 +563,12 @@ impl PieMenu {
             !ctx.egui_wants_keyboard_input()
         };
 
-        // Early exit checks
-        let dismissed = ctx.input(|i| {
-            self.settings.input.dismiss_inputs.iter().any(|d| match d {
-                PieMenuDismissInput::Key(k) => keys_for_menu && i.key_pressed(*k),
+        // Early exit checks. Dismiss keys are consumed, and only match without Ctrl/Cmd.
+        let input = &self.settings.input;
+        let dismiss_inputs = if self.pinned { &input.pinned_dismiss_inputs } else { &input.dismiss_inputs };
+        let dismissed = ctx.input_mut(|i| {
+            dismiss_inputs.iter().any(|d| match d {
+                PieMenuDismissInput::Key(k) => keys_for_menu && i.consume_key(egui::Modifiers::NONE, *k),
                 PieMenuDismissInput::PointerButton(pb) => i.pointer.button_clicked(*pb),
             })
         });
@@ -920,7 +605,7 @@ impl PieMenu {
         // Block hover/interaction on background widgets while the menu is open.
         // Sits on Foreground (above panels, below Tooltip where buttons live) so
         // nothing underneath highlights as the mouse moves over it.
-        if self.settings.block_background {
+        if blocking {
             egui::Area::new(self.id.with("_blocker"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(egui::Pos2::ZERO)
@@ -932,15 +617,10 @@ impl PieMenu {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
 
         // Center background circle
-        if self
-            .settings
-            .center_indicator
-            .background_radius
-            .is_enabled()
-        {
+        if let Some(radius) = self.settings.center_indicator.background_radius {
             painter.circle(
                 center,
-                self.settings.center_indicator.background_radius.get(),
+                radius,
                 self.settings.center_indicator.background_fill_color,
                 self.settings.center_indicator.background_stroke,
             );
@@ -959,24 +639,22 @@ impl PieMenu {
             );
         }
 
-
         // Numpad key selection. The key (and its text event) is consumed so the digit
         // does not also reach other handlers or text fields.
-        if keys_for_menu && self.settings.input.use_numpad_keys {
+        if keys_for_menu && self.settings.input.use_number_keys {
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
                 let dir = Self::eff(&button.direction, mirror);
                 let key = Self::direction_numpad(&dir);
                 let digit = Self::direction_digit(&dir).to_string();
                 let hit = ctx.input_mut(|i| {
                     let hit = i.consume_key(egui::Modifiers::NONE, key);
-                    if hit {
-                        if let Some(p) = i
+                    if hit
+                        && let Some(p) = i
                             .events
                             .iter()
                             .position(|e| matches!(e, egui::Event::Text(t) if *t == digit))
-                        {
-                            i.events.remove(p);
-                        }
+                    {
+                        i.events.remove(p);
                     }
                     hit
                 });
@@ -1010,12 +688,10 @@ impl PieMenu {
                         }
                         _ => true,
                     });
-                    // Latin letters also match by key code.
+                    // Latin letters also match by key code, but not as part of a Ctrl/Cmd
+                    // chord: Ctrl+C is a shortcut, not the mnemonic `c`.
                     if let Some(key) = key {
-                        if i.key_pressed(key) {
-                            i.consume_key(egui::Modifiers::NONE, key);
-                            hit = true;
-                        }
+                        hit |= i.consume_key(egui::Modifiers::NONE, key);
                     }
                     hit
                 });
@@ -1033,30 +709,60 @@ impl PieMenu {
             .enumerate()
             .map(|(i, b)| self.layout_vec(&Self::eff(&b.direction, mirror), self.button_sizes[i], radius, shape_factor))
             .collect();
-        self.selected_index = current_mouse_pos.and_then(|mouse_pos| {
+        self.hovered_index = current_mouse_pos.and_then(|mouse_pos| {
             let mouse_vec = mouse_pos - center;
-            if mouse_vec.length() <= self.settings.mouse_trigger_threshold {
+            if mouse_vec.length() <= self.settings.dead_zone_radius {
                 return None;
             }
             Self::pick_button(buttons, mouse_vec, &dirs)
         });
 
+        // Hover timer: resting on a button that leads to another pie (a sub-pie button, or
+        // a back button inside a sub-pie) long enough goes there. The button the pointer
+        // already pointed at when this level opened is ignored until the pointer leaves it.
+        if std::mem::take(&mut self.level_fresh) {
+            self.inert_hover = self.hovered_index;
+        } else if self.inert_hover != self.hovered_index {
+            self.inert_hover = None;
+        }
+        if let Some(delay) = self.settings.sub_pie_hover_delay {
+            let in_sub_pie = !self.path.is_empty();
+            let navigates = |b: &PieButton| !b.children.is_empty() || (b.back && in_sub_pie);
+            let target = self.hovered_index.filter(|&i| self.inert_hover != Some(i) && navigates(&buttons[i]));
+            match (target, self.hover_since) {
+                (Some(i), Some((j, since))) if i == j => {
+                    let remaining = delay.as_secs_f64() - (now - since);
+                    if remaining <= 0.0 {
+                        self.hover_since = None;
+                        return PieMenuResponse::Selected(i);
+                    }
+                    ctx.request_repaint_after(Duration::from_secs_f64(remaining));
+                }
+                (Some(i), _) => {
+                    self.hover_since = Some((i, now));
+                    ctx.request_repaint_after(delay);
+                }
+                (None, _) => self.hover_since = None,
+            }
+        }
+
         // Center highlight — progress driven by mouse distance from center.
-        if self.settings.center_indicator.highlight_shape != PieMenuHighlightShape::None
-            && self.settings.animations.center_highlight_show
+        let indicator = &self.settings.center_indicator;
+        if let Some(highlight_radius) = indicator.highlight_radius
+            && !indicator.highlight_shape.is_none()
         {
             let progress = current_mouse_pos
-                .filter(|_| self.selected_index.is_some())
+                .filter(|_| self.hovered_index.is_some())
                 .map(|p| {
                     let distance = (p - center).length();
-                    let threshold = self.settings.mouse_trigger_threshold;
+                    let threshold = self.settings.dead_zone_radius;
                     let max_dist = self.settings.layout_radius;
                     ((distance - threshold) / (max_dist - threshold)).clamp(0.0, 1.0)
                 })
                 .unwrap_or(0.0);
 
-            let base_angle = if self.settings.animations.center_highlight_snapping {
-                self.selected_index
+            let base_angle = if indicator.highlight_snapping {
+                self.hovered_index
                     .and_then(|idx| dirs.get(idx))
                     .map(|v| v.y.atan2(v.x))
                     .unwrap_or(0.0)
@@ -1069,123 +775,45 @@ impl PieMenu {
                     .unwrap_or(0.0)
             };
 
-            let arc_angle = self.settings.center_indicator.highlight_angle * progress;
+            let arc_angle = indicator.highlight_angle * progress;
             let start_angle = base_angle - arc_angle / 2.0;
-            let angle_range = start_angle..(start_angle + arc_angle);
-
-            let stroke_color = self
-                .settings
-                .center_indicator
-                .highlight_stroke
-                .color
-                .gamma_multiply(progress);
-            let fill_color = self
-                .settings
-                .center_indicator
-                .highlight_fill_color
-                .gamma_multiply(progress);
-            let colored_stroke = Stroke::new(
-                self.settings.center_indicator.highlight_stroke.width,
-                stroke_color,
-            );
-            let highlight_radius = self.settings.center_indicator.highlight_radius.get();
-            let shape = self.settings.center_indicator.highlight_shape;
-
-            let needs_arc = matches!(
-                shape,
-                PieMenuHighlightShape::Arc
-                    | PieMenuHighlightShape::ArcSlice
-                    | PieMenuHighlightShape::ArcCircle
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-            let needs_slice = matches!(
-                shape,
-                PieMenuHighlightShape::Slice
-                    | PieMenuHighlightShape::SliceCircle
-                    | PieMenuHighlightShape::ArcSlice
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-            let needs_circle = matches!(
-                shape,
-                PieMenuHighlightShape::Circle
-                    | PieMenuHighlightShape::ArcCircle
-                    | PieMenuHighlightShape::SliceCircle
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-
-            let arc_arg = needs_arc.then(|| ArcValues {
-                angle_range: angle_range.clone(),
+            highlight_shapes::paint(&painter, highlight_shapes::Highlight {
+                shape: indicator.highlight_shape,
                 center,
                 radius: highlight_radius,
-                resolution: 10.0,
-                stroke: colored_stroke,
+                angle_range: start_angle..(start_angle + arc_angle),
+                dot_angle: base_angle,
+                dot_radius: indicator.highlight_circle_radius,
+                stroke: Stroke::new(
+                    indicator.highlight_stroke.width,
+                    indicator.highlight_stroke.color.gamma_multiply(progress),
+                ),
+                fill: indicator.highlight_fill_color.gamma_multiply(progress),
             });
-            let slice_arg = needs_slice.then(|| {
-                let inner_arc = matches!(
-                    shape,
-                    PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle
-                )
-                .then(|| ArcValues {
-                    angle_range: angle_range.clone(),
-                    center,
-                    radius: highlight_radius,
-                    resolution: 10.0,
-                    stroke: colored_stroke,
-                });
-                SliceValues {
-                    arc_values: inner_arc,
-                    stroke: None,
-                    fill_color,
-                }
-            });
-            let circle_arg = needs_circle.then(|| CircleValues {
-                offset_angle: base_angle,
-                offset_radius: highlight_radius,
-                offset_center: center,
-                circle_radius: self.settings.center_indicator.highlight_circle_radius,
-                stroke: colored_stroke,
-                fill_color,
-            });
-
-            painter.highlight_shape(shape, arc_arg, slice_arg, circle_arg);
         }
 
-        // Draw menu title above the center indicator
-        if self.settings.label.display {
-            if let Some(label) = title {
-                let pad = &self.settings.label.padding;
-                let galley = painter.layout_no_wrap(
-                    label.to_string(),
-                    self.settings.label.text_font.clone(),
-                    self.settings.label.text_color,
-                );
-                let text_size = galley.size();
-                let bg_w = text_size.x + pad.left + pad.right;
-                let bg_h = text_size.y + pad.top + pad.bottom;
-                let above_offset =
-                    self.settings.center_indicator.background_radius.get() + bg_h / 2.0 + 4.0;
-                let label_center = center - Vec2::new(0.0, above_offset);
-                let bg_rect = Rect::from_center_size(label_center, Vec2::new(bg_w, bg_h));
+        // Draw the title above the center indicator
+        let title_style = &self.settings.title;
+        if title_style.show
+            && let Some(title) = &self.title
+        {
+            let pad = title_style.padding;
+            let galley = painter.layout_no_wrap(title.clone(), title_style.text_font.clone(), title_style.text_color);
+            let box_size = galley.size() + pad.sum();
+            // Sits just above the background circle, or the centre when there is none.
+            let above_offset =
+                self.settings.center_indicator.background_radius.unwrap_or(0.0) + box_size.y / 2.0 + 4.0;
+            let bg_rect = Rect::from_center_size(center - Vec2::new(0.0, above_offset), box_size);
 
-                if self.settings.label.background_color != Color32::TRANSPARENT {
-                    painter.rect_filled(bg_rect, 3.0, self.settings.label.background_color);
-                }
-                if self.settings.label.background_stroke.width > 0.0
-                    && self.settings.label.background_stroke.color != Color32::TRANSPARENT
-                {
-                    painter.rect_stroke(
-                        bg_rect,
-                        3.0,
-                        self.settings.label.background_stroke,
-                        egui::StrokeKind::Outside,
-                    );
-                }
-                painter.galley(
-                    bg_rect.min + Vec2::new(pad.left, pad.top),
-                    galley,
-                    self.settings.label.text_color,
-                );
+            if title_style.background_color != Color32::TRANSPARENT {
+                painter.rect_filled(bg_rect, 3.0, title_style.background_color);
             }
+            if title_style.background_stroke.width > 0.0
+                && title_style.background_stroke.color != Color32::TRANSPARENT
+            {
+                painter.rect_stroke(bg_rect, 3.0, title_style.background_stroke, egui::StrokeKind::Outside);
+            }
+            painter.galley(bg_rect.min + pad.left_top(), galley, title_style.text_color);
         }
 
         // Draw buttons via caller-provided closure inside floating Areas
@@ -1201,11 +829,15 @@ impl PieMenu {
             let cached_size = self.button_sizes[idx];
             let button_center =
                 center + self.button_offset(&eff_dir, cached_size, self.settings.layout_radius, shape_factor);
-            let is_hovered = self.selected_index == Some(idx);
+            let is_hovered = self.hovered_index == Some(idx);
+            if self.button_centers.len() <= idx {
+                self.button_centers.resize(idx + 1, button_center);
+            }
+            self.button_centers[idx] = button_center;
 
             // Reveal animation: movement and opacity progress, each 0..1.
             let anim = &self.settings.animations;
-            let elapsed = self.shown_at.map(|at| at.elapsed().as_secs_f32());
+            let elapsed = self.shown_at.map(|at| (now - at) as f32);
             let progress = |d: Duration| {
                 elapsed.map_or(1.0, |e| (e / d.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0))
             };
@@ -1250,6 +882,9 @@ impl PieMenu {
                     // would wrap instead of widening the button. Don't wrap; let it grow.
                     // Explicit newlines still work, and the closure can override this.
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    // A press on a button's label selects the button, not its text.
+                    // Set on this Ui only, so the app's own labels and style are untouched.
+                    ui.style_mut().interaction.selectable_labels = false;
                     // Disabled: egui's disabled look, and no hover outline on the widget.
                     if !button.enabled {
                         ui.disable();
@@ -1275,932 +910,28 @@ impl PieMenu {
         if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked())
         {
             return match current_mouse_pos {
-                Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => self
-                    .selected_index
+                Some(p) if (p - center).length() > self.settings.dead_zone_radius => self
+                    .hovered_index
                     .map_or(PieMenuResponse::None, PieMenuResponse::Selected),
                 Some(_) => PieMenuResponse::None,
+                // A click elsewhere: nothing for a pinned menu, otherwise it dismisses.
+                None if self.pinned => PieMenuResponse::None,
                 None => PieMenuResponse::Dismissed,
             };
         }
 
-        // Key-hold release (mouse_shown is true here, so menu was visible)
+        // Key-hold release (visible is true here, so menu was visible)
         if !key_down && !self.release_handled {
             self.release_handled = true;
             if let Some(mouse_pos) = current_mouse_pos {
-                if (mouse_pos - center).length() <= self.settings.mouse_trigger_threshold {
+                if (mouse_pos - center).length() <= self.settings.dead_zone_radius {
                     return PieMenuResponse::Dismissed;
-                } else if let Some(idx) = self.selected_index {
+                } else if let Some(idx) = self.hovered_index {
                     return PieMenuResponse::Selected(idx);
                 }
             }
         }
 
-        // Disable label text selection for the next frame. Placed after all rendering
-        // so buttons in this frame see the restored style (set at the top of show()).
-        // Restored at the top of show() on the closing frame.
-        ctx.all_styles_mut(|s| s.interaction.selectable_labels = false);
-
         PieMenuResponse::None
-    }
-}
-
-/// Build a [`LayoutJob`] that renders `text` with the first case-insensitive
-/// occurrence of `mnemonic` underlined — suitable for use as a pie menu button
-/// label when you want to surface keyboard shortcuts visually.
-///
-/// The rest of the text uses `format` unchanged. The underline color is
-/// derived from `format.color`.  If `mnemonic` does not appear in `text`
-/// the whole string is rendered with `format` and no underline.
-///
-/// # Example
-/// ```ignore
-/// ui.label(mnemonic_text("Copy", 'c', TextFormat {
-///     color: Color32::WHITE,
-///     font_id: FontId::default(),
-///     ..Default::default()
-/// }));
-/// ```
-pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    append_mnemonic_text(&mut job, text, mnemonic, format);
-    job
-}
-
-fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: char, format: TextFormat) {
-    let mnemonic_folded = fold_char(mnemonic);
-    let Some((idx, c)) = text.char_indices().find(|(_, c)| fold_char(*c) == mnemonic_folded) else {
-        job.append(text, 0.0, format);
-        return;
-    };
-    // The underlined piece keeps the combining marks (accents, vowel points) of its letter.
-    let mut m_end = idx + c.len_utf8();
-    for mark in text[m_end..].chars().take_while(|&m| is_combining_mark(m)) {
-        m_end += mark.len_utf8();
-    }
-    let underline_format = TextFormat { underline: Stroke::new(1.0, format.color), ..format.clone() };
-
-    let mut append = |piece: &str, format: &TextFormat| {
-        if !piece.is_empty() {
-            job.append(piece, 0.0, format.clone());
-        }
-    };
-    if !is_rtl_letter(c) {
-        append(&text[..idx], &format);
-        append(&text[idx..m_end], &underline_format);
-        append(&text[m_end..], &format);
-        return;
-    }
-
-    // Right-to-left letter. egui has no bidi: it reverses each run of right-to-left
-    // letters in place (punctuation and spaces stay put) but lays separately formatted
-    // pieces out left to right in the order given. A run split for the underline would come
-    // out with its pieces swapped (the mnemonic jumping to the far side), so the mnemonic's
-    // run goes in reversed: after, letter, before.
-    // Multi-word RTL labels still get egui's left-to-right word order; `unicode-bidi`
-    // could supply the visual word order (see the README's RTL notes). Remove this whole
-    // workaround once egui does bidi itself (the RTL render test should start failing).
-    let in_run = |ch: char| is_rtl_letter(ch) || is_combining_mark(ch);
-    let ws = text[..idx].char_indices().rev().take_while(|(_, ch)| in_run(*ch)).last().map_or(idx, |(i, _)| i);
-    let we = text[m_end..].char_indices().find(|(_, ch)| !in_run(*ch)).map_or(text.len(), |(i, _)| m_end + i);
-    let (head, word_before, letter, word_after, tail) =
-        (&text[..ws], &text[ws..idx], &text[idx..m_end], &text[m_end..we], &text[we..]);
-    // In joining scripts (Arabic, Persian) a zero-width joiner on both sides of each cut
-    // keeps the letters' connected forms.
-    const ZWJ: char = '\u{200D}';
-    let joins = |a: Option<char>, b: Option<char>| matches!((a, b), (Some(a), Some(b)) if is_joining_letter(a) && is_joining_letter(b));
-    let join_before = joins(word_before.chars().last(), Some(c));
-    let join_after = joins(Some(c), word_after.chars().next());
-    let zwj = |on: bool| if on { ZWJ.to_string() } else { String::new() };
-
-    append(head, &format);
-    append(&format!("{}{word_after}", zwj(join_after && !word_after.is_empty())), &format);
-    append(&format!("{}{letter}{}", zwj(join_before), zwj(join_after)), &underline_format);
-    append(&format!("{word_before}{}", zwj(join_before && !word_before.is_empty())), &format);
-    append(tail, &format);
-}
-
-/// Letters of right-to-left scripts (Hebrew, Arabic, Syriac, Thaana, N'Ko and their
-/// presentation forms).
-fn is_rtl_letter(c: char) -> bool {
-    c.is_alphabetic()
-        && matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
-}
-
-/// Letters of the Arabic script (Arabic, Persian, Urdu, …), which join to their neighbours.
-fn is_joining_letter(c: char) -> bool {
-    c.is_alphabetic()
-        && matches!(c as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF)
-}
-
-/// Case-folds `c` and normalises letter variants that share a key:
-/// Hebrew final forms (ך→כ …) and Arabic alef variants (أ إ آ ٱ → ا).
-fn fold_char(c: char) -> char {
-    let c = c.to_lowercase().next().unwrap_or(c);
-    match c {
-        'ך' => 'כ',
-        'ם' => 'מ',
-        'ן' => 'נ',
-        'ף' => 'פ',
-        'ץ' => 'צ',
-        'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
-        // Persian keyboards type Farsi yeh/keheh where Arabic ones type yeh/kaf.
-        'ی' | 'ى' => 'ي',
-        'ک' => 'ك',
-        _ => c,
-    }
-}
-
-/// Combining marks (Arabic/Hebrew points, accents) are never mnemonic candidates.
-fn is_combining_mark(c: char) -> bool {
-    matches!(c as u32,
-        0x0300..=0x036F | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
-        | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06DC | 0x06DF..=0x06E4
-        | 0x06E7..=0x06E8 | 0x06EA..=0x06ED)
-}
-
-fn is_mnemonic_letter(c: char) -> bool {
-    c.is_alphabetic() && !is_combining_mark(c)
-}
-
-fn char_to_key(c: char) -> Option<Key> {
-    match c.to_ascii_lowercase() {
-        'a' => Some(Key::A),
-        'b' => Some(Key::B),
-        'c' => Some(Key::C),
-        'd' => Some(Key::D),
-        'e' => Some(Key::E),
-        'f' => Some(Key::F),
-        'g' => Some(Key::G),
-        'h' => Some(Key::H),
-        'i' => Some(Key::I),
-        'j' => Some(Key::J),
-        'k' => Some(Key::K),
-        'l' => Some(Key::L),
-        'm' => Some(Key::M),
-        'n' => Some(Key::N),
-        'o' => Some(Key::O),
-        'p' => Some(Key::P),
-        'q' => Some(Key::Q),
-        'r' => Some(Key::R),
-        's' => Some(Key::S),
-        't' => Some(Key::T),
-        'u' => Some(Key::U),
-        'v' => Some(Key::V),
-        'w' => Some(Key::W),
-        'x' => Some(Key::X),
-        'y' => Some(Key::Y),
-        'z' => Some(Key::Z),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod mnemonic_tests {
-    use super::*;
-
-    fn btn(label: &str) -> PieButton {
-        PieButton::new(PieDirection::North).with_label(label)
-    }
-
-    #[test]
-    fn auto_off_only_explicit_keys() {
-        let b = vec![btn("Copy"), btn("Cut").with_mnemonic('C'), btn("Paste").without_mnemonic()];
-        assert_eq!(resolve_mnemonics(&b, false), vec![None, Some('c'), None]);
-    }
-
-    #[test]
-    fn explicit_kept_and_not_duplicated() {
-        let b = vec![btn("Copy"), btn("Cut").with_mnemonic('c'), btn("Paste")];
-        // 'c' is reserved by the explicit key, so Copy takes its next letter.
-        assert_eq!(resolve_mnemonics(&b, true), vec![Some('o'), Some('c'), Some('p')]);
-    }
-
-    #[test]
-    fn none_never_gets_one_and_reserves_nothing() {
-        let b = vec![btn("Copy").without_mnemonic(), btn("Cut")];
-        assert_eq!(resolve_mnemonics(&b, true), vec![None, Some('c')]);
-    }
-
-    #[test]
-    fn reshuffles_so_everyone_gets_one() {
-        // Greedy would give "Ab" 'a' and leave "A" with nothing.
-        assert_eq!(resolve_mnemonics(&[btn("Ab"), btn("A")], true), vec![Some('b'), Some('a')]);
-    }
-
-    #[test]
-    fn preference_order_initials_then_remaining_letters_left_to_right() {
-        let pick = |reserved: &[char]| {
-            let mut b: Vec<PieButton> = reserved.iter().map(|&c| btn("").with_mnemonic(c)).collect();
-            b.push(btn("Select All Items"));
-            *resolve_mnemonics(&b, true).last().unwrap()
-        };
-        assert_eq!(pick(&[]), Some('s')); // 1st word initial
-        assert_eq!(pick(&['s']), Some('a')); // 2nd word initial
-        assert_eq!(pick(&['s', 'a']), Some('i')); // 3rd word initial
-        assert_eq!(pick(&['s', 'a', 'i']), Some('e')); // then letters in order: s,e,l,...
-        assert_eq!(pick(&['s', 'a', 'i', 'e']), Some('l'));
-    }
-
-    #[test]
-    fn exhausted_gets_none() {
-        assert_eq!(resolve_mnemonics(&[btn("A"), btn("A")], true)[1], None);
-    }
-
-    #[test]
-    fn all_auto_demo_labels_are_distinct() {
-        let labels = ["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Word wrap"];
-        let b: Vec<PieButton> = labels.iter().map(|l| btn(l)).collect();
-        let r = resolve_mnemonics(&b, true);
-        let mut got: Vec<char> = r.iter().flatten().copied().collect();
-        assert_eq!(got.len(), labels.len(), "everyone gets one: {r:?}");
-        got.sort();
-        got.dedup();
-        assert_eq!(got.len(), labels.len(), "no duplicates: {r:?}");
-    }
-
-    #[test]
-    fn empty_label_gets_none() {
-        assert_eq!(resolve_mnemonics(&[btn("")], true), vec![None]);
-    }
-}
-
-#[cfg(test)]
-mod highlight_tests {
-    use super::*;
-
-    #[test]
-    fn arc_points_are_finite_for_degenerate_input() {
-        use crate::highlight_shapes::HighlightPainter;
-        let ctx = egui::Context::default();
-        let painter = ctx.layer_painter(egui::LayerId::background());
-        let c = Pos2::ZERO;
-        assert!(painter.arc_calculate_points(c, f32::NAN, 10.0, 0.0..1.0).is_empty());
-        for p in painter.arc_calculate_points(c, 15.0, 10.0, 1.0..1.0) {
-            assert!(p.x.is_finite() && p.y.is_finite());
-        }
-    }
-}
-
-#[cfg(test)]
-mod pin_tests {
-    use super::*;
-
-    #[test]
-    fn reveal_shows_menu_immediately_and_open_resets_it() {
-        let mut m = PieMenu::new();
-        m.open(Pos2::new(5.0, 5.0));
-        assert!(!m.mouse_shown);
-        m.reveal();
-        assert!(m.mouse_shown && m.shown_at.is_some());
-        m.open(Pos2::ZERO);
-        assert!(!m.mouse_shown);
-    }
-
-    #[test]
-    fn revealed_menu_stays_visible_without_key_or_mouse() {
-        let ctx = egui::Context::default();
-        let buttons = vec![PieButton::new(PieDirection::North)];
-        let mut m = PieMenu::new();
-        m.settings.block_background = false;
-        m.open(Pos2::new(100.0, 100.0));
-        m.reveal();
-        let mut resp = PieMenuResponse::None;
-        let mut out = ctx.run_ui(Default::default(), |ui| {
-            resp = m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |ui, _| {
-                ui.label("x");
-            });
-        });
-        out.textures_delta.clear();
-        assert!(matches!(resp, PieMenuResponse::None));
-        assert!(m.mouse_shown);
-    }
-}
-
-#[cfg(test)]
-mod button_view_tests {
-    use super::*;
-
-    fn label(prefix: &str, mnemonic: Option<char>) -> LabelText {
-        LabelText {
-            prefix: prefix.to_string(),
-            text: "Copy".to_string(),
-            mnemonic,
-            color: Color32::WHITE,
-            font: FontId::default(),
-            rtl: false,
-        }
-    }
-
-    #[test]
-    fn rtl_puts_the_prefix_on_the_right() {
-        let job = label("🗑  ", Some('p')).rtl(true).to_job();
-        assert_eq!(job.text, "Copy  🗑");
-        let underlined: Vec<_> = job.sections.iter().filter(|s| s.format.underline != Stroke::NONE).collect();
-        assert_eq!(underlined.len(), 1, "still only the mnemonic is underlined");
-        assert_eq!(label("", None).rtl(true).to_job().text, "Copy");
-    }
-
-    #[test]
-    fn plain_label_is_one_section() {
-        assert_eq!(label("", None).to_job().sections.len(), 1);
-    }
-
-    #[test]
-    fn mnemonic_is_underlined_and_prefix_is_not() {
-        let job = label("X ", Some('p')).to_job();
-        assert_eq!(job.text, "X Copy");
-        // egui merges equal adjacent formats: "X Co" | "p" (underlined) | "y"
-        assert_eq!(job.sections.len(), 3);
-        assert!(job.sections[1].format.underline != Stroke::NONE);
-        let underlined: Vec<_> = job.sections.iter().filter(|s| s.format.underline != Stroke::NONE).collect();
-        assert_eq!(underlined.len(), 1);
-    }
-
-    #[test]
-    fn overrides_apply() {
-        let l = label("", None).color(Color32::RED).font(FontId::monospace(20.0));
-        let job = l.to_job();
-        assert_eq!(job.sections[0].format.color, Color32::RED);
-        assert_eq!(job.sections[0].format.font_id, FontId::monospace(20.0));
-    }
-}
-
-#[cfg(test)]
-mod subpie_tests {
-    use super::*;
-
-    #[test]
-    fn resolve_level_walks_path() {
-        let root = vec![
-            PieButton::new(PieDirection::North),
-            PieButton::new(PieDirection::East).with_children(vec![
-                PieButton::new(PieDirection::West),
-                PieButton::new(PieDirection::South).with_children(vec![PieButton::new(PieDirection::North)]),
-            ]),
-        ];
-        assert_eq!(PieMenu::resolve_level(&root, &[]).unwrap().len(), 2);
-        assert_eq!(PieMenu::resolve_level(&root, &[1]).unwrap().len(), 2);
-        assert_eq!(PieMenu::resolve_level(&root, &[1, 1]).unwrap().len(), 1);
-        assert!(PieMenu::resolve_level(&root, &[0]).unwrap().is_empty());
-        assert!(PieMenu::resolve_level(&root, &[5]).is_none());
-    }
-
-    #[test]
-    fn restart_level_recentres_and_shows() {
-        let mut m = PieMenu::new();
-        m.restart_level(Some(Pos2::new(10.0, 20.0)), false);
-        assert_eq!(m.position, Pos2::new(10.0, 20.0));
-        assert!(m.mouse_shown && m.release_handled);
-        m.restart_level(None, true);
-        assert!(!m.release_handled);
-    }
-}
-
-#[cfg(test)]
-mod selection_tests {
-    use super::*;
-
-    fn btns() -> Vec<PieButton> {
-        vec![
-            PieButton::new(PieDirection::West),
-            PieButton::new(PieDirection::NorthWest),
-            PieButton::new(PieDirection::East),
-        ]
-    }
-
-    /// Default layout vectors (no intercardinal height), as displayed.
-    fn dirs(b: &[PieButton], mirror: bool) -> Vec<Vec2> {
-        b.iter().map(|b| PieMenu::direction_vec(&PieMenu::eff(&b.direction, mirror), 0.0)).collect()
-    }
-
-    fn pick(b: &[PieButton], v: Vec2) -> Option<usize> {
-        PieMenu::pick_button(b, v, &dirs(b, false))
-    }
-
-    #[test]
-    fn west_sector_covers_both_sides_of_the_axis() {
-        let b = btns();
-        // Slightly above and below the pure-west axis must both pick West (index 0).
-        assert_eq!(pick(&b, Vec2::new(-10.0, -1.0)), Some(0));
-        assert_eq!(pick(&b, Vec2::new(-10.0, 1.0)), Some(0));
-        assert_eq!(pick(&b, Vec2::new(-10.0, -6.0)), Some(1)); // beyond 22.5deg -> NW
-    }
-
-    #[test]
-    fn empty_sectors_snap_to_the_closest_button() {
-        let b = btns(); // W, NW, E
-        assert_eq!(pick(&b, Vec2::new(-1.0, -10.0)), Some(1)); // north, slightly west -> NW
-        assert_eq!(pick(&b, Vec2::new(10.0, 10.0)), Some(2)); // south-east -> E
-    }
-
-    #[test]
-    fn disabled_buttons_are_skipped() {
-        let mut b = btns();
-        b[0].enabled = false;
-        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), Some(1)); // next nearest
-        b[1].enabled = false;
-        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), Some(2));
-        b[2].enabled = false;
-        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), None);
-    }
-
-    fn lab(d: PieDirection, label: &str) -> PieButton {
-        PieButton::new(d).with_label(label)
-    }
-
-    #[test]
-    fn problems_detect_same_direction_and_duplicate_mnemonics() {
-        let b = vec![
-            lab(PieDirection::North, "Copy").with_mnemonic('c'),
-            lab(PieDirection::North, "Cut").with_mnemonic('x'),
-            lab(PieDirection::East, "Cat").with_mnemonic('c'),
-        ];
-        let p = button_problems(&b, &resolve_mnemonics(&b, true));
-        assert_eq!(
-            p,
-            vec![
-                ButtonProblem::SharedDirection { first: 0, second: 1, direction: PieDirection::North },
-                ButtonProblem::DuplicateMnemonic { first: 0, second: 2, key: 'c' },
-            ]
-        );
-        assert_eq!(p[1].buttons(), [0, 2]);
-        assert!(p[1].to_string().contains("mnemonic 'c'"));
-    }
-
-    #[test]
-    fn problems_ignore_disabled_buttons_and_distinct_levels() {
-        let b = vec![
-            lab(PieDirection::North, "Copy").with_mnemonic('c'),
-            lab(PieDirection::East, "Cat").with_mnemonic('c').with_enabled(false),
-        ];
-        assert!(button_problems(&b, &resolve_mnemonics(&b, true)).is_empty());
-        // Another level may reuse the same direction and key: checked separately.
-        let other = vec![lab(PieDirection::North, "Cut").with_mnemonic('c')];
-        assert!(button_problems(&other, &resolve_mnemonics(&other, true)).is_empty());
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "are both in direction")]
-    fn show_asserts_on_buttons_sharing_a_direction() {
-        let ctx = egui::Context::default();
-        let buttons = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
-        let mut m = PieMenu::new();
-        m.settings.show_behavior = ShowBehavior::Instant;
-        m.open(Pos2::new(100.0, 100.0));
-        let _ = ctx.run_ui(Default::default(), |ui| {
-            m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |_, _| {});
-        });
-    }
-
-    #[test]
-    fn mirror_applies_to_picking() {
-        let b = btns(); // W, NW, E
-        // Mirrored: the East button is displayed on the west side.
-        assert_eq!(PieMenu::pick_button(&b, Vec2::new(-10.0, 0.0), &dirs(&b, true)), Some(2));
-        assert_eq!(PieMenu::pick_button(&b, Vec2::new(10.0, 0.0), &dirs(&b, true)), Some(0));
-    }
-
-    #[test]
-    fn disabled_buttons_get_no_generated_mnemonic() {
-        let b = vec![PieButton::new(PieDirection::North).with_label("Copy").with_enabled(false)];
-        assert_eq!(resolve_mnemonics(&b, true), vec![None]);
-    }
-}
-
-#[cfg(test)]
-mod unicode_tests {
-    use super::*;
-
-    fn one(label: &str, explicit: &[char]) -> Option<char> {
-        let mut b: Vec<PieButton> = explicit
-            .iter()
-            .map(|&c| PieButton::new(PieDirection::East).with_mnemonic(c))
-            .collect();
-        b.push(PieButton::new(PieDirection::North).with_label(label));
-        resolve_mnemonics(&b, true).last().copied().flatten()
-    }
-
-    #[test]
-    fn other_scripts_get_mnemonics() {
-        assert_eq!(one("Копировать", &[]), Some('к'));
-        assert_eq!(one("نسخ ملف", &[]), Some('ن'));
-        assert_eq!(one("نسخ ملف", &['ن']), Some('م')); // next word initial
-        assert_eq!(one("העתק", &[]), Some('ה'));
-        assert_eq!(one("Ärger", &[]), Some('ä'));
-    }
-
-    #[test]
-    fn skips_combining_marks_and_folds_variants() {
-        assert_eq!(one("\u{064E}بيت", &[]), Some('ب')); // fatha is skipped
-        assert_eq!(fold_char('ך'), fold_char('כ'));
-        assert_eq!(fold_char('أ'), fold_char('ا'));
-        assert_eq!(fold_char('É'), 'é');
-    }
-
-    #[test]
-    fn mnemonic_text_unicode_underline() {
-        let job = mnemonic_text("Файл", 'Ф', TextFormat::default());
-        // Mnemonic is the first char: underlined "Ф" + remainder (no "before" section).
-        assert_eq!(job.sections.len(), 2);
-    }
-
-    #[test]
-    fn mirror_swaps_horizontal_only() {
-        assert_eq!(PieDirection::East.mirrored(), PieDirection::West);
-        assert_eq!(PieDirection::NorthWest.mirrored(), PieDirection::NorthEast);
-        assert_eq!(PieDirection::South.mirrored(), PieDirection::South);
-    }
-
-    #[test]
-    fn hint_follows_mirrored_layout() {
-        let mut m = PieMenu::new();
-        let east = PieButton::new(PieDirection::East);
-        assert_eq!(m.number_hint(&east).unwrap().text, "6");
-        m.settings.mirror_horizontal = true;
-        assert_eq!(m.number_hint(&east).unwrap().text, "4"); // East is shown on the west side
-        assert!(!m.number_hint(&east).unwrap().on_right); // Trailing = left when mirrored
-    }
-}
-
-#[cfg(test)]
-mod finding_tests {
-    use super::*;
-
-    fn north() -> PieButton {
-        PieButton::new(PieDirection::North).with_label("Copy")
-    }
-
-    #[test]
-    fn hint_digit_styles() {
-        let mut m = PieMenu::new();
-        let n = PieDirection::North; // number key 8
-        assert_eq!(m.hint_digit(&n), '8');
-        m.settings.number_hints.digits = HintDigits::ArabicIndic;
-        assert_eq!(m.hint_digit(&n), '٨');
-        m.settings.number_hints.digits = HintDigits::Persian;
-        assert_eq!(m.hint_digit(&n), '۸');
-    }
-
-    #[test]
-    fn text_colours_follow_egui_widget_states() {
-        let v = egui::Visuals::dark();
-        let (inactive, hovered) = (v.widgets.inactive.fg_stroke.color, v.widgets.hovered.fg_stroke.color);
-        assert_ne!(inactive, hovered, "the theme distinguishes the states");
-        assert_eq!(button_text_color(None, &v, false, true), inactive);
-        assert_eq!(button_text_color(None, &v, true, true), hovered);
-        // Forced (Blender-style): the same colour whether hovered or not.
-        for h in [false, true] {
-            assert_eq!(button_text_color(Some(Color32::WHITE), &v, h, true), Color32::WHITE);
-        }
-        // Disabled: egui's grey-out, also for a forced colour, hovered or not.
-        for h in [false, true] {
-            assert_eq!(button_text_color(None, &v, h, false), v.gray_out(inactive));
-            assert_eq!(button_text_color(Some(Color32::WHITE), &v, h, false), v.gray_out(Color32::WHITE));
-        }
-        assert_ne!(v.gray_out(Color32::WHITE), Color32::WHITE);
-    }
-
-    #[test]
-    fn label_and_digit_colours_are_independent() {
-        let mut m = PieMenu::new();
-        let v = egui::Visuals::dark();
-        m.settings.text_color = Some(Color32::WHITE); // labels forced …
-        // … digits still follow egui's states.
-        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, v.widgets.inactive.fg_stroke.color);
-        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, v.widgets.hovered.fg_stroke.color);
-        m.settings.number_hints.color = Some(Color32::RED);
-        assert_eq!(m.number_hint_styled(&north(), true, &v).unwrap().color, Color32::RED);
-        assert_eq!(m.number_hint_styled(&north(), false, &v).unwrap().color, Color32::RED);
-    }
-
-    #[test]
-    fn persian_and_arabic_yeh_kaf_fold_together() {
-        assert_eq!(fold_char('ی'), fold_char('ي'));
-        assert_eq!(fold_char('ى'), fold_char('ي'));
-        assert_eq!(fold_char('ک'), fold_char('ك'));
-    }
-
-    /// Runs one frame: a focused-or-not text field drawn first (like the demo's
-    /// sidebar), then the menu. Returns the menu response and the field's text.
-    fn frame(
-        ctx: &egui::Context,
-        m: &mut PieMenu,
-        text: &mut String,
-        focus: bool,
-        events: Vec<egui::Event>,
-    ) -> PieMenuResponse {
-        let buttons = vec![north()];
-        let mut resp = PieMenuResponse::None;
-        let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
-            events,
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| {
-            let r = ui.text_edit_singleline(text);
-            if focus {
-                r.request_focus();
-            }
-            resp = m.show(ui.ctx(), &buttons, None, true, None, |ui, _| {
-                ui.label("x");
-            });
-        });
-        out.textures_delta.clear();
-        resp
-    }
-
-    fn digit8() -> Vec<egui::Event> {
-        vec![
-            egui::Event::Key {
-                key: Key::Num8,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            },
-            egui::Event::Text("8".into()),
-        ]
-    }
-
-    #[test]
-    fn blocking_menu_takes_focus_from_text_field() {
-        let ctx = egui::Context::default();
-        let mut m = PieMenu::new();
-        let mut text = String::new();
-        m.open(Pos2::new(400.0, 300.0));
-        m.reveal();
-        frame(&ctx, &mut m, &mut text, true, vec![]); // field focused, menu opens
-        assert!(ctx.memory(|mem| mem.focused().is_none()), "menu should clear focus");
-        let resp = frame(&ctx, &mut m, &mut text, false, digit8());
-        assert_eq!(resp, PieMenuResponse::Selected(0));
-        assert!(text.is_empty(), "digit leaked into the text field: {text:?}");
-    }
-
-    #[test]
-    fn non_blocking_menu_leaves_typing_to_focused_field() {
-        let ctx = egui::Context::default();
-        let mut m = PieMenu::new();
-        m.settings.block_background = false;
-        let mut text = String::new();
-        m.open(Pos2::new(400.0, 300.0));
-        m.reveal();
-        frame(&ctx, &mut m, &mut text, true, vec![]);
-        let resp = frame(&ctx, &mut m, &mut text, true, digit8());
-        assert_eq!(resp, PieMenuResponse::None, "typing selected a pie button");
-        assert_eq!(text, "8");
-        // A dismiss key typed into the field doesn't dismiss the menu either.
-        let five = vec![
-            egui::Event::Key {
-                key: Key::Num5,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            },
-            egui::Event::Text("5".into()),
-        ];
-        let resp = frame(&ctx, &mut m, &mut text, true, five);
-        assert_eq!(resp, PieMenuResponse::None, "typing 5 dismissed the menu");
-        assert_eq!(text, "85");
-        // Without a focused field the key selects as before.
-        ctx.memory_mut(|mem| mem.stop_text_input());
-        let resp = frame(&ctx, &mut m, &mut text, false, digit8());
-        assert_eq!(resp, PieMenuResponse::Selected(0));
-    }
-}
-
-#[cfg(test)]
-mod disabled_fade_tests {
-    use super::*;
-
-    /// The label colour reaches the painted text: forced white on an enabled button,
-    /// egui's grey-out of it on a disabled one (egui's disabled `Ui` alone would leave an
-    /// explicitly coloured label untouched).
-    #[test]
-    fn disabled_button_text_is_greyed_out() {
-        let painted = |enabled: bool| {
-            let ctx = egui::Context::default();
-            let buttons = vec![PieButton::new(PieDirection::North).with_label("Cut").with_enabled(enabled)];
-            let mut m = PieMenu::new();
-            m.settings.text_color = Some(Color32::WHITE);
-            m.open(Pos2::new(400.0, 300.0));
-            m.reveal();
-            fn find(shape: &egui::Shape) -> Option<Color32> {
-                match shape {
-                    egui::Shape::Text(t) if t.galley.text() == "Cut" => t.galley.job.sections.first().map(|s| s.format.color),
-                    egui::Shape::Vec(v) => v.iter().find_map(find),
-                    _ => None,
-                }
-            }
-            // New Areas skip painting on their first (sizing) frame.
-            let mut found = None;
-            for _ in 0..3 {
-                let mut out = ctx.run_ui(Default::default(), |ui| {
-                    m.show(ui.ctx(), &buttons, None, true, None, |ui, b| {
-                        ui.label(b.label_text());
-                    });
-                });
-                out.textures_delta.clear();
-                found = out.shapes.iter().find_map(|s| find(&s.shape)).or(found);
-            }
-            (found.expect("label painted"), ctx.global_style().visuals.clone())
-        };
-        let (on, _) = painted(true);
-        let (off, v) = painted(false);
-        assert_eq!(on, Color32::WHITE);
-        assert_eq!(off, v.gray_out(Color32::WHITE));
-    }
-}
-
-#[cfg(test)]
-mod intercardinal_height_tests {
-    use super::*;
-
-    const SIZE: Vec2 = Vec2::new(80.0, 24.0);
-    const HALF: Vec2 = Vec2::new(40.0, 12.0);
-
-    fn menu(height: Option<f32>, sf: f32) -> PieMenu {
-        let mut m = PieMenu::new();
-        m.settings.intercardinal_height = height;
-        m.settings.shape_factor = sf;
-        m
-    }
-
-    /// Inner corner of the NE button (centre minus the half-size push outward).
-    fn ne_corner(m: &PieMenu) -> Vec2 {
-        let r = m.settings.layout_radius;
-        m.button_offset(&PieDirection::NorthEast, SIZE, r, m.settings.shape_factor) - Vec2::new(HALF.x, -HALF.y)
-    }
-
-    #[test]
-    fn default_keeps_the_inner_corner_on_the_circle() {
-        let m = menu(None, 0.0);
-        let r = m.settings.layout_radius;
-        let d = std::f32::consts::FRAC_1_SQRT_2 * r;
-        assert!((ne_corner(&m) - Vec2::new(d, -d)).length() < 1e-3);
-    }
-
-    #[test]
-    fn half_puts_diagonal_centres_halfway_and_on_the_curve() {
-        let m = menu(Some(0.5), 0.0);
-        let r = m.settings.layout_radius;
-        let n = m.button_offset(&PieDirection::North, SIZE, r, 0.0);
-        let e = m.button_offset(&PieDirection::East, SIZE, r, 0.0);
-        for (dir, sign) in [
-            (PieDirection::NorthEast, 1.0), (PieDirection::NorthWest, 1.0),
-            (PieDirection::SouthEast, -1.0), (PieDirection::SouthWest, -1.0),
-        ] {
-            let o = m.button_offset(&dir, SIZE, r, 0.0);
-            assert!((o.y - sign * (n.y + e.y) / 2.0).abs() < 1e-2, "{dir:?}: {o:?}");
-        }
-        // The inner corner stays on the circle: the button slid along it, outward.
-        let c = ne_corner(&m);
-        assert!((c.length() - r).abs() < 1e-2, "corner off the circle: {c:?}");
-        assert!(c.x > ne_corner(&menu(None, 0.0)).x, "lowered diagonal should move outward");
-    }
-
-    #[test]
-    fn follows_the_square_and_diamond_shapes() {
-        for sf in [1.0, -1.0, 0.5] {
-            let m = menu(Some(0.4), sf);
-            let r = m.settings.layout_radius;
-            let c = ne_corner(&m) / r;
-            let on_shape = PieMenu::curve_vec((-c.y).atan2(c.x), sf);
-            assert!((Vec2::new(c.x, -c.y) - on_shape).length() < 1e-3, "sf {sf}: {c:?} vs {on_shape:?}");
-        }
-    }
-
-    #[test]
-    fn picking_follows_the_lowered_diagonals() {
-        let b = vec![PieButton::new(PieDirection::East), PieButton::new(PieDirection::NorthEast)];
-        let r = PieMenu::new().settings.layout_radius;
-        let dirs = |m: &PieMenu| -> Vec<Vec2> {
-            b.iter().map(|b| m.layout_vec(&b.direction, SIZE, r, 0.0)).collect()
-        };
-        let a = 20f32.to_radians();
-        let mouse = Vec2::new(a.cos(), -a.sin()); // 20° above East
-        // At 45° the boundary is 22.5°, so 20° still picks East …
-        assert_eq!(PieMenu::pick_button(&b, mouse, &dirs(&menu(None, 0.0))), Some(0));
-        // … lowered to half height the boundary drops below 20°, so it picks NorthEast.
-        let low = menu(Some(0.5), 0.0);
-        assert_eq!(PieMenu::pick_button(&b, mouse, &dirs(&low)), Some(1));
-        // Pointing at the drawn button's centre picks it.
-        let centre = low.button_offset(&PieDirection::NorthEast, SIZE, r, 0.0);
-        assert_eq!(PieMenu::pick_button(&b, centre, &dirs(&low)), Some(1));
-    }
-}
-
-#[cfg(test)]
-mod rtl_mnemonic_tests {
-    use super::*;
-
-    fn fmt() -> TextFormat {
-        TextFormat { font_id: FontId::proportional(20.0), color: Color32::WHITE, ..Default::default() }
-    }
-
-    fn underlined(job: &LayoutJob) -> String {
-        job.sections.iter().filter(|s| s.format.underline != Stroke::NONE)
-            .map(|s| job.text[usize::from(s.byte_range.start)..usize::from(s.byte_range.end)].to_string()).collect()
-    }
-
-    #[test]
-    fn rtl_word_pieces_are_reversed_other_words_untouched() {
-        // "גלישת שורות", mnemonic ל in the first word: that word goes in as ישת | ל | ג.
-        let job = mnemonic_text("גלישת שורות", 'ל', fmt());
-        assert_eq!(job.text, "ישתלג שורות");
-        assert_eq!(underlined(&job), "ל");
-        // Latin text is unchanged.
-        let job = mnemonic_text("Paste Special", 's', fmt());
-        assert_eq!(job.text, "Paste Special");
-        assert_eq!(underlined(&job), "s");
-    }
-
-    #[test]
-    fn joining_scripts_get_zero_width_joiners_at_the_cuts() {
-        let job = mnemonic_text("نسخ", 'س', fmt());
-        assert_eq!(job.text, "\u{200D}خ\u{200D}س\u{200D}ن\u{200D}");
-        assert_eq!(underlined(&job), "\u{200D}س\u{200D}");
-        // Hebrew doesn't join: no joiners.
-        assert!(!mnemonic_text("העתק", 'ע', fmt()).text.contains('\u{200D}'));
-    }
-
-    #[test]
-    fn combining_marks_stay_with_the_underlined_letter() {
-        let job = mnemonic_text("café", 'e', fmt()); // precomposed é is its own letter: no match
-        assert_eq!(underlined(&job), "");
-        let job = mnemonic_text("cafe\u{0301}s", 'e', fmt());
-        assert_eq!(underlined(&job), "e\u{0301}");
-    }
-
-    /// Renders every demo RTL label with every mnemonic letter and checks egui draws each
-    /// letter exactly where it draws it in the unsplit label (same width: joins intact).
-    /// Needs system fonts with Hebrew/Arabic; skipped if none are installed.
-    #[test]
-    fn rtl_mnemonics_render_like_the_unsplit_label() {
-        let mut fonts = egui::FontDefinitions::default();
-        let mut found = 0;
-        for path in [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
-        ] {
-            if let Ok(bytes) = std::fs::read(path) {
-                found += 1;
-                fonts.font_data.insert(path.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
-                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push(path.into());
-            }
-        }
-        if found == 0 {
-            eprintln!("skipped: no Hebrew/Arabic system fonts");
-            return;
-        }
-        let ctx = egui::Context::default();
-        ctx.set_fonts(fonts);
-        let mut out = ctx.run_ui(Default::default(), |_| {});
-        out.textures_delta.clear();
-        let layout = |job: LayoutJob| {
-            let g = ctx.fonts_mut(|f| f.layout_job(job));
-            for gl in g.rows.iter().flat_map(|r| r.glyphs.iter()).filter(|gl| gl.chr == '\u{200D}') {
-                assert_eq!(gl.advance_width, 0.0, "zero-width joiner is visible");
-            }
-            let mut v: Vec<(f32, char)> = g.rows.iter().flat_map(|r| r.glyphs.iter())
-                .filter(|gl| gl.advance_width > 0.0).map(|gl| (gl.pos.x, gl.chr)).collect();
-            v.sort_by(|a, b| a.0.total_cmp(&b.0));
-            (v.into_iter().map(|(_, c)| c).collect::<String>(), g.rect.width())
-        };
-        let labels = [
-            "העתק", "הדבק מיוחד", "בצע שוב", "שמור בשם…", "מחק לצמיתות", "גזור", "בטל שינוי", "גלישת שורות",
-            "نسخ", "لصق خاص", "إعادة", "حفظ باسم…", "حذف نهائي", "قص", "تراجع", "التفاف النص",
-            "کپی", "چسباندن ویژه", "انجام مجدد", "ذخیره با نام…", "حذف دائمی", "برش", "واگرد", "شکستن خط",
-        ];
-        let mut worst = 0.0f32;
-        for label in labels {
-            let mut plain = LayoutJob::default();
-            plain.append(label, 0.0, fmt());
-            let (target, width) = layout(plain);
-            for m in label.chars().filter(|c| is_mnemonic_letter(*c)) {
-                let job = mnemonic_text(label, m, fmt());
-                // The same pieces without joiners: what broken joins would look like.
-                let mut broken = LayoutJob::default();
-                for sec in &job.sections {
-                    let piece = &job.text[usize::from(sec.byte_range.start)..usize::from(sec.byte_range.end)];
-                    broken.append(&piece.replace('\u{200D}', ""), 0.0, sec.format.clone());
-                }
-                let (got, w) = layout(job);
-                assert_eq!(got, target, "{label} with mnemonic {m}");
-                let off = (w - width).abs();
-                // A cut can't be kerned across (up to ~2 px); broken joins usually cost far
-                // more (e.g. لصق خاص: −1.5 px with joiners, +14 px without). Some letters'
-                // joined and unjoined forms are nearly equally wide, hence the 2 px floor.
-                let (_, broken_w) = layout(broken);
-                let broken_off = (broken_w - width).abs();
-                assert!(off < 2.0 || off < broken_off / 3.0,
-                    "{label} with mnemonic {m}: width off by {off:.2} px (broken joins: {broken_off:.2} px)");
-                worst = worst.max(off);
-            }
-        }
-        eprintln!("worst width difference: {worst:.2} px");
-        assert!(worst < 3.0, "worst width difference {worst:.2} px");
     }
 }
