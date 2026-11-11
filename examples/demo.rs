@@ -115,6 +115,8 @@ struct Demo {
     sub_hover_ms: u64,
     // Drag value for the fan-out radius (kept while "Own radius" is off)
     fan_radius: f32,
+    /// Marker for sub-pie and back buttons that have no icon of their own.
+    icons: MarkerIcons,
 }
 
 impl Demo {
@@ -170,6 +172,7 @@ impl Demo {
             show_hints: false,
             sub_hover_ms: DEFAULT_SUB_HOVER_MS,
             fan_radius: 100.0,
+            icons: MarkerIcons::default(),
         }
     }
 }
@@ -180,6 +183,31 @@ const DEFAULT_SHOW_THRESHOLD: f32 = 10.0;
 const DEFAULT_BUTTON_HEIGHT: f32 = 24.0;
 const DEFAULT_SLIDE_START_SHAPE: f32 = -1.0; // start the slide as a diamond
 const DEFAULT_SUB_HOVER_MS: u64 = 400;
+
+/// The marker drawn before the label of a sub-pie button and of a back button when the
+/// button has no icon of its own. Editable in the "Sub-pies" section; empty = no marker.
+#[derive(Clone)]
+struct MarkerIcons {
+    sub_pie: String,
+    back: String,
+}
+
+impl Default for MarkerIcons {
+    fn default() -> Self {
+        Self { sub_pie: "▶".into(), back: "◀".into() }
+    }
+}
+
+impl MarkerIcons {
+    /// The icon to draw for `cfg`: its own, else the marker for its kind.
+    fn for_button<'a>(&'a self, cfg: &'a ButtonConfig) -> &'a str {
+        match (cfg.icon.as_str(), cfg.submenu, cfg.back) {
+            ("", true, _) => &self.sub_pie,
+            ("", _, true) => &self.back,
+            (icon, ..) => icon,
+        }
+    }
+}
 
 // ── Button editor model ─────────────────────────────────────────────────────
 
@@ -560,7 +588,13 @@ struct FanInfo {
 /// The button editor for one level: a collapsible entry per direction. Buttons with a
 /// sub-pie nest the same editor for their children; `fan` is set when this level is a
 /// fan-out.
-fn button_list_editor(ui: &mut egui::Ui, menu: &PieMenu, configs: &mut [ButtonConfig], fan: Option<FanInfo>) {
+fn button_list_editor(
+    ui: &mut egui::Ui,
+    menu: &PieMenu,
+    icons: &MarkerIcons,
+    configs: &mut [ButtonConfig],
+    fan: Option<FanInfo>,
+) {
     let style = menu.settings.sub_pie_style;
     // This level's buttons as the menu will see them: the mnemonic in effect per config
     // (configs without a button have none) and the configs with a problem, shown in red.
@@ -591,7 +625,12 @@ fn button_list_editor(ui: &mut egui::Ui, menu: &PieMenu, configs: &mut [ButtonCo
             Some(_) if cfg.back => "  (not in a fan-out)",
             _ => "",
         };
-        let title = format!("{} · {}{}{note}", DIR_NAMES[i], cfg.label, if cfg.submenu { "  ▶" } else if cfg.back { "  ◀" } else { "" });
+        let marker = match (cfg.submenu, cfg.back) {
+            (true, _) if !icons.sub_pie.is_empty() => format!("  {}", icons.sub_pie),
+            (_, true) if !icons.back.is_empty() => format!("  {}", icons.back),
+            _ => String::new(),
+        };
+        let title = format!("{} · {}{marker}{note}", DIR_NAMES[i], cfg.label);
         let title: egui::WidgetText = if bad[i] {
             RichText::new(format!("⚠ {title}")).color(Color32::RED).into()
         } else {
@@ -721,7 +760,7 @@ fn button_list_editor(ui: &mut egui::Ui, menu: &PieMenu, configs: &mut [ButtonCo
                     let heading = if child_fan.is_some() { "Fan-out buttons" } else { "Sub-pie buttons" };
                     egui::CollapsingHeader::new(heading)
                         .id_salt(("sub_pie", i))
-                        .show(ui, |ui| button_list_editor(ui, menu, &mut cfg.children, child_fan));
+                        .show(ui, |ui| button_list_editor(ui, menu, icons, &mut cfg.children, child_fan));
                 }
             }));
     }
@@ -859,11 +898,11 @@ impl eframe::App for Demo {
                     if ui.button("Reset buttons").clicked() {
                         self.button_configs = default_button_configs();
                     }
-                    button_list_editor(ui, &self.menu, &mut self.button_configs, None);
+                    button_list_editor(ui, &self.menu, &self.icons, &mut self.button_configs, None);
                 });
 
                 section(ui, &query, &mut shown, "Sub-pies",
-                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius", |ui| {
+                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius marker icon arrow", |ui| {
                     ui.label("Style")
                         .on_hover_text("Replace: a sub-pie takes its parent's place, one level at a time. Fan-out: it opens around its button while the parent stays visible (up to five buttons, none facing the parent). A button can override this in the Button list.");
                     let style_label = |s: SubPieStyle| match s {
@@ -877,6 +916,13 @@ impl eframe::App for Demo {
                                 ui.selectable_value(&mut self.menu.settings.sub_pie_style, s, style_label(s));
                             }
                         });
+
+                    ui.label("Sub-pie marker")
+                        .on_hover_text("Drawn before the label of a button that opens a sub-pie and has no icon of its own. Empty: none.");
+                    ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(60.0));
+                    ui.label("Back marker")
+                        .on_hover_text("Drawn before the label of a back button that has no icon of its own. Empty: none.");
+                    ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(60.0));
 
                     ui.label(RichText::new("Fan-out").strong());
                     ui.label("Delay before it opens (ms)");
@@ -1160,7 +1206,7 @@ impl eframe::App for Demo {
                 // which come from the theme, can be checked in both.
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  ▶ opens a sub-pie (◀, Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
+                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
             });
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -1233,6 +1279,7 @@ impl eframe::App for Demo {
             let parent = route_configs(&self.button_configs, self.menu.path(), style).and_then(|r| r.last().copied());
             self.menu.title = Some(parent.map_or("Edit", |c| c.label.as_str()).to_string());
             let configs = &self.button_configs;
+            let icons = &self.icons;
 
             // Does nothing while the menu is closed; closes itself on any response but
             // `None` (a pinned menu stays open after a selection).
@@ -1258,12 +1305,9 @@ impl eframe::App for Demo {
 
                 // Icon + label, with the mnemonic underlined.
                 let mut label = b.label_text();
-                // Without an icon of their own, sub-pie and back buttons get an arrow.
-                let icon = match (cfg.icon.as_str(), cfg.submenu, cfg.back) {
-                    ("", true, _) => "▶",
-                    ("", _, true) => "◀",
-                    (icon, ..) => icon,
-                };
+                // Without an icon of their own, sub-pie and back buttons get the marker
+                // from the "Sub-pies" section.
+                let icon = icons.for_button(cfg);
                 if !icon.is_empty() {
                     label = label.prefix(format!("{icon}  "));
                 }
