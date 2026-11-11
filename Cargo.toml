@@ -14,3 +14,4 @@ egui = "0.36.2"
 
 [dev-dependencies]
 eframe = "0.36.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

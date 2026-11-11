@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, RichText, Vec2};
+use egui::{Color32, Rect, RichText, Vec2};
 use std::time::Duration;
 use egui_pie_menu::{ButtonProblem, ClusterItem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
 
@@ -9,7 +9,7 @@ fn main() -> eframe::Result {
         eframe::NativeOptions::default(),
         Box::new(|cc| {
             let font_note = load_system_fonts(&cc.egui_ctx);
-            let mut demo = Demo::new();
+            let mut demo = Demo::new(&cc.egui_ctx);
             demo.font_note = font_note;
             Ok(Box::new(demo))
         }),
@@ -117,6 +117,8 @@ struct Demo {
     fan_radius: f32,
     /// Marker for sub-pie and back buttons that have no icon of their own.
     icons: MarkerIcons,
+    /// The embedded image icons, uploaded once as textures (see `IMAGE_ICONS`).
+    images: Vec<egui::TextureHandle>,
     sub_pie_look: SubPieLook,
 }
 
@@ -140,7 +142,7 @@ impl Demo {
         self.menu.settings.number_hints.digits = l.digits;
     }
 
-    fn new() -> Self {
+    fn new(ctx: &egui::Context) -> Self {
         let button_configs = default_button_configs();
         let buttons = build_buttons(&button_configs, SubPieStyle::Replace, false);
 
@@ -174,6 +176,7 @@ impl Demo {
             sub_hover_ms: DEFAULT_SUB_HOVER_MS,
             fan_radius: 100.0,
             icons: MarkerIcons::default(),
+            images: load_icon_images(ctx),
             sub_pie_look: SubPieLook::default(),
         }
     }
@@ -283,11 +286,143 @@ impl Default for ClusterConfig {
     }
 }
 
+/// The kind of icon a button shows before its label.
+#[derive(Clone, Copy, PartialEq)]
+enum IconKind {
+    /// The button's `icon` text (empty: no icon).
+    Text,
+    /// A procedural icon painted with `egui::Painter`.
+    Vector(VectorIcon),
+    /// An embedded image (index into `IMAGE_ICONS`), shown as a texture.
+    Image(usize),
+}
+
+/// The built-in painted icons.
+#[derive(Clone, Copy, PartialEq)]
+enum VectorIcon { Copy, Paste, Cut, Undo, Redo, Save, Trash, Check }
+
+const ALL_VECTOR_ICONS: &[VectorIcon] = &[
+    VectorIcon::Copy, VectorIcon::Paste, VectorIcon::Cut, VectorIcon::Undo,
+    VectorIcon::Redo, VectorIcon::Save, VectorIcon::Trash, VectorIcon::Check,
+];
+
+impl VectorIcon {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy", Self::Paste => "Paste", Self::Cut => "Cut", Self::Undo => "Undo",
+            Self::Redo => "Redo", Self::Save => "Save", Self::Trash => "Trash", Self::Check => "Check",
+        }
+    }
+
+    /// Paints the icon into `rect` with shapes only: no fonts, no textures. Coordinates are
+    /// fractions of the rect, so it scales to any size.
+    fn paint(self, painter: &egui::Painter, rect: Rect, color: Color32, width: f32) {
+        use egui::{Shape, Stroke, StrokeKind, pos2};
+        let st = Stroke::new(width, color);
+        let p = |x: f32, y: f32| pos2(rect.min.x + x * rect.width(), rect.min.y + y * rect.height());
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(p(x0, y0), p(x1, y1));
+        let line = |pts: &[(f32, f32)]| {
+            painter.add(Shape::line(pts.iter().map(|&(x, y)| p(x, y)).collect(), st));
+        };
+        let rad = 0.12 * rect.width();
+        // Points on an arc around (cx, cy), angles in radians (egui's y points down).
+        let arc = |cx: f32, cy: f32, rr: f32, a0: f32, a1: f32| -> Vec<(f32, f32)> {
+            (0..=12).map(|i| {
+                let a = a0 + (a1 - a0) * i as f32 / 12.0;
+                (cx + rr * a.cos(), cy + rr * a.sin())
+            }).collect()
+        };
+        match self {
+            Self::Copy => {
+                painter.rect_stroke(r(0.08, 0.08, 0.6, 0.6), rad, st, StrokeKind::Inside);
+                painter.rect_stroke(r(0.4, 0.4, 0.92, 0.92), rad, st, StrokeKind::Inside);
+            }
+            Self::Paste => {
+                painter.rect_stroke(r(0.12, 0.16, 0.88, 0.94), rad, st, StrokeKind::Inside);
+                painter.rect_filled(r(0.34, 0.04, 0.66, 0.26), rad * 0.5, color);
+                line(&[(0.3, 0.5), (0.7, 0.5)]);
+                line(&[(0.3, 0.72), (0.7, 0.72)]);
+            }
+            Self::Cut => {
+                // Two crossing blades with a ring handle each.
+                line(&[(0.3, 0.7), (0.78, 0.04)]);
+                line(&[(0.7, 0.7), (0.22, 0.04)]);
+                painter.circle_stroke(p(0.26, 0.82), 0.14 * rect.width(), st);
+                painter.circle_stroke(p(0.74, 0.82), 0.14 * rect.width(), st);
+            }
+            Self::Undo | Self::Redo => {
+                // Undo: an arc from the top running clockwise round to the lower right, with
+                // an arrowhead at the top pointing left. Redo is the mirror image.
+                let m = |(x, y): (f32, f32)| if self == Self::Redo { (1.0 - x, y) } else { (x, y) };
+                let pi = std::f32::consts::PI;
+                let pts: Vec<_> = arc(0.5, 0.58, 0.34, -0.5 * pi, 0.2 * pi).into_iter().map(m).collect();
+                line(&pts);
+                let tip = (0.5, 0.24);
+                line(&[m((tip.0 + 0.2, tip.1 - 0.18)), m(tip), m((tip.0 + 0.2, tip.1 + 0.18))]);
+            }
+            Self::Save => {
+                painter.rect_stroke(r(0.1, 0.1, 0.9, 0.9), rad * 0.5, st, StrokeKind::Inside);
+                painter.rect_stroke(r(0.28, 0.1, 0.72, 0.38), 0.0, st, StrokeKind::Inside);
+                painter.rect_stroke(r(0.26, 0.58, 0.74, 0.9), 0.0, st, StrokeKind::Inside);
+            }
+            Self::Trash => {
+                line(&[(0.12, 0.22), (0.88, 0.22)]);
+                line(&[(0.38, 0.22), (0.38, 0.1), (0.62, 0.1), (0.62, 0.22)]);
+                line(&[(0.2, 0.22), (0.27, 0.92), (0.73, 0.92), (0.8, 0.22)]);
+                line(&[(0.42, 0.4), (0.42, 0.76)]);
+                line(&[(0.58, 0.4), (0.58, 0.76)]);
+            }
+            Self::Check => line(&[(0.1, 0.55), (0.38, 0.82), (0.9, 0.2)]),
+        }
+    }
+}
+
+/// The embedded image icons: 24x24 white-on-transparent PNGs, tinted when drawn.
+const IMAGE_ICONS: &[(&str, &[u8])] = &[
+    ("Circle", include_bytes!("assets/circle.png")),
+    ("Notch", include_bytes!("assets/notch.png")),
+    ("Triangle", include_bytes!("assets/triangle.png")),
+    ("Heart", include_bytes!("assets/heart.png")),
+];
+
+/// Decodes the embedded PNGs (with the `image` crate) and uploads each once as a texture.
+fn load_icon_images(ctx: &egui::Context) -> Vec<egui::TextureHandle> {
+    IMAGE_ICONS
+        .iter()
+        .map(|(name, bytes)| {
+            let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+                .expect("embedded icon is a valid PNG")
+                .to_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            ctx.load_texture(format!("icon-{name}"), color, egui::TextureOptions::LINEAR)
+        })
+        .collect()
+}
+
+/// Draws a button's non-text icon (vector or image) at `size`, in `color`.
+fn add_icon(ui: &mut egui::Ui, kind: IconKind, images: &[egui::TextureHandle], size: f32, color: Color32) {
+    match kind {
+        IconKind::Text => {}
+        IconKind::Vector(v) => {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+            v.paint(ui.painter(), rect, color, (size / 12.0).max(1.0));
+        }
+        IconKind::Image(i) => {
+            if let Some(tex) = images.get(i) {
+                ui.add(egui::Image::from_texture(tex).fit_to_exact_size(Vec2::splat(size)).tint(color));
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ButtonConfig {
     label: String,
-    /// Optional icon (e.g. an emoji) shown before the label.
+    /// The icon text (e.g. an emoji) shown before the label when `icon_kind` is `Text`.
     icon: String,
+    /// Which kind of icon the button shows: the text above, a painted vector icon or an image.
+    icon_kind: IconKind,
     tooltip: String,
     kind: ButtonKind,
     mnemonic: MnemonicMode,
@@ -319,6 +454,7 @@ impl ButtonConfig {
         Self {
             label: label.into(),
             icon: String::new(),
+            icon_kind: IconKind::Text,
             tooltip: String::new(),
             kind: ButtonKind::Button,
             mnemonic: MnemonicMode::Auto,
@@ -365,6 +501,27 @@ impl ButtonConfig {
     fn default_sub_pie(&self, dir: usize) -> Vec<ButtonConfig> {
         let l = |n: usize| format!("{} {n}", self.label);
         self.sub_pie(dir, [&l(1), &l(2), &l(3), &l(4), &l(5)])
+    }
+}
+
+/// Which icon set the "Icons" section assigns to the default buttons.
+enum SampleIcons { Vector, Image, Reset }
+
+/// Assigns icons to the eight root buttons (N clockwise to NW: copy, paste, redo, save,
+/// delete, cut, undo, word wrap), or restores the defaults' icons.
+fn sample_icons(configs: &mut [ButtonConfig], set: SampleIcons) {
+    let defaults = default_button_configs();
+    let vector = [VectorIcon::Copy, VectorIcon::Paste, VectorIcon::Redo, VectorIcon::Save,
+                  VectorIcon::Trash, VectorIcon::Cut, VectorIcon::Undo, VectorIcon::Check];
+    for (i, cfg) in configs.iter_mut().enumerate().take(8) {
+        match set {
+            SampleIcons::Vector => cfg.icon_kind = IconKind::Vector(vector[i]),
+            SampleIcons::Image => cfg.icon_kind = IconKind::Image(i % IMAGE_ICONS.len()),
+            SampleIcons::Reset => {
+                cfg.icon_kind = defaults[i].icon_kind;
+                cfg.icon = defaults[i].icon.clone();
+            }
+        }
     }
 }
 
@@ -722,8 +879,59 @@ fn button_list_editor(
                     ui.end_row();
 
                     ui.label("Icon");
-                    ui.add(egui::TextEdit::singleline(&mut cfg.icon).desired_width(40.0))
-                        .on_hover_text("Shown before the label, e.g. an emoji");
+                    ui.horizontal(|ui| {
+                        let kind_name = match cfg.icon_kind {
+                            IconKind::Text if cfg.icon.is_empty() => "None",
+                            IconKind::Text => "Text",
+                            IconKind::Vector(_) => "Vector",
+                            IconKind::Image(_) => "Image",
+                        };
+                        egui::ComboBox::from_id_salt(("icon_kind", i)).selected_text(kind_name).width(70.0).show_ui(ui, |ui| {
+                            if ui.selectable_label(kind_name == "None", "None").clicked() {
+                                cfg.icon_kind = IconKind::Text;
+                                cfg.icon.clear();
+                            }
+                            if ui.selectable_label(kind_name == "Text", "Text").clicked() {
+                                cfg.icon_kind = IconKind::Text;
+                                if cfg.icon.is_empty() { cfg.icon = "★".into(); }
+                            }
+                            if ui.selectable_label(kind_name == "Vector", "Vector").clicked()
+                                && !matches!(cfg.icon_kind, IconKind::Vector(_)) {
+                                cfg.icon_kind = IconKind::Vector(VectorIcon::Copy);
+                            }
+                            if ui.selectable_label(kind_name == "Image", "Image").clicked()
+                                && !matches!(cfg.icon_kind, IconKind::Image(_)) {
+                                cfg.icon_kind = IconKind::Image(0);
+                            }
+                        });
+                        match &mut cfg.icon_kind {
+                            IconKind::Text => {
+                                ui.add(egui::TextEdit::singleline(&mut cfg.icon).desired_width(40.0))
+                                    .on_hover_text("Shown before the label, e.g. an emoji");
+                            }
+                            IconKind::Vector(v) => {
+                                let col = ui.visuals().text_color();
+                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+                                v.paint(ui.painter(), rect, col, 1.3);
+                                egui::ComboBox::from_id_salt(("icon_vector", i)).selected_text(v.name()).show_ui(ui, |ui| {
+                                    for &o in ALL_VECTOR_ICONS {
+                                        ui.horizontal(|ui| {
+                                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
+                                            o.paint(ui.painter(), rect, col, 1.2);
+                                            ui.selectable_value(v, o, o.name());
+                                        });
+                                    }
+                                });
+                            }
+                            IconKind::Image(n) => {
+                                egui::ComboBox::from_id_salt(("icon_image", i)).selected_text(IMAGE_ICONS[*n % IMAGE_ICONS.len()].0).show_ui(ui, |ui| {
+                                    for (k, (name, _)) in IMAGE_ICONS.iter().enumerate() {
+                                        ui.selectable_value(n, k, *name);
+                                    }
+                                });
+                            }
+                        }
+                    });
                     ui.end_row();
 
                     ui.label("Tooltip");
@@ -1024,6 +1232,22 @@ impl eframe::App for Demo {
                         self.button_configs = default_button_configs();
                     }
                     button_list_editor(ui, &self.menu, &self.icons, &mut self.button_configs, None);
+                });
+
+                section(ui, &query, &mut shown, "Icons",
+                    "icon icons vector image images procedural imported painted texture png sample reset", |ui| {
+                    ui.label("Per-button icons are set in the button editor (Icon row).");
+                    ui.horizontal(|ui| {
+                        if ui.button("Sample vector icons").clicked() {
+                            sample_icons(&mut self.button_configs, SampleIcons::Vector);
+                        }
+                        if ui.button("Sample image icons").clicked() {
+                            sample_icons(&mut self.button_configs, SampleIcons::Image);
+                        }
+                        if ui.button("Reset icons").clicked() {
+                            sample_icons(&mut self.button_configs, SampleIcons::Reset);
+                        }
+                    });
                 });
 
                 section(ui, &query, &mut shown, "Sub-pies",
@@ -1446,6 +1670,7 @@ impl eframe::App for Demo {
             self.menu.title = Some(parent.map_or("Edit", |c| c.label.as_str()).to_string());
             let configs = &self.button_configs;
             let icons = &self.icons;
+            let images = &self.images;
             let sub_pie_look = self.sub_pie_look;
 
             // Does nothing while the menu is closed; closes itself on any response but
@@ -1547,7 +1772,7 @@ impl eframe::App for Demo {
                 if !marker.is_empty() && !far_end {
                     prefix += &format!("{marker}  ");
                 }
-                if !cfg.icon.is_empty() {
+                if cfg.icon_kind == IconKind::Text && !cfg.icon.is_empty() {
                     prefix += &format!("{}  ", cfg.icon);
                 }
                 if !prefix.is_empty() {
@@ -1559,6 +1784,11 @@ impl eframe::App for Demo {
                     RichText::new(text).color(b.text_color())
                 });
                 let text: egui::WidgetText = label.into();
+                // A painted or image icon, about the text height; `b.scale()` keeps it crisp
+                // under hover emphasis.
+                let icon_size = ui.text_style_height(&egui::TextStyle::Body) * b.scale();
+                let graphic = cfg.icon_kind != IconKind::Text;
+                let icon_color = b.text_color();
 
                 let resp = match cfg.kind {
                     // Display only: the toggle happens on Selected.
@@ -1583,9 +1813,41 @@ impl eframe::App for Demo {
                                     if b.rtl {
                                         // Right-to-left: the box goes right of its text.
                                         ui.label(text);
+                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
                                         ui.add(egui::Checkbox::without_text(&mut display));
                                     } else {
-                                        ui.checkbox(&mut display, text);
+                                        ui.add(egui::Checkbox::without_text(&mut display));
+                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
+                                        ui.label(text);
+                                    }
+                                    if let Some((h, true)) = &hint { ui.label(h.clone()); }
+                                    if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
+                                },
+                            );
+                        })
+                        .response,
+                    // A painted or image icon: same look and height as a button, laid out by
+                    // hand (the icon before the label, after it when mirrored).
+                    ButtonKind::Button if graphic => egui::Frame::new()
+                        .fill(bg)
+                        .stroke(stroke)
+                        .corner_radius(6.0)
+                        .inner_margin(Vec2::new(pad_x, 0.0))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = hint_gap.max(4.0 * b.scale());
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(0.0, button_h),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_height(button_h);
+                                    if b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
+                                    if let Some((h, false)) = &hint { ui.label(h.clone()); }
+                                    if b.rtl {
+                                        ui.label(text);
+                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
+                                    } else {
+                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
+                                        ui.label(text);
                                     }
                                     if let Some((h, true)) = &hint { ui.label(h.clone()); }
                                     if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }

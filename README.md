@@ -196,6 +196,25 @@ menu.settings.number_hints.color = Some(Color32::WHITE);      // digits
 
 Disabled buttons are greyed out with egui's `Visuals::gray_out` either way. (Their render closure also runs in a disabled `Ui`, but egui does not fade text that carries an explicit colour, which `label_text()` does.)
 
+### Icons and images
+
+The library draws no icons: the render closure does, so a button can show whatever egui can draw. Three ways (the `examples/demo.rs` "Icons" section shows all of them):
+
+```rust
+// 1. Text or emoji prefix, un-underlined and in the label's colour.
+ui.label(b.label_text().prefix("🗑  "));
+
+// 2. A painted vector icon: allocate a square, paint in the label's colour.
+let size = ui.text_style_height(&egui::TextStyle::Body) * b.scale();
+let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+ui.painter().line_segment([rect.left_top(), rect.right_bottom()], egui::Stroke::new(1.5, b.text_color()));
+
+// 3. An image (a texture you uploaded once with `ctx.load_texture`), tinted like the text.
+ui.add(egui::Image::from_texture(&texture).fit_to_exact_size(egui::Vec2::splat(size)).tint(b.text_color()));
+```
+
+Put the icon after the label when `b.rtl` is true (the layout is mirrored), and size it by `b.scale()` so hover emphasis enlarges it along with the text and stays crisp.
+
 ### Mnemonic labels
 
 In the render closure use `ui.label(b.label_text())` (see "Drawing your buttons"). For full control, `mnemonic_text` builds an egui `LayoutJob` that renders a string with the mnemonic character underlined. Pass it directly to `ui.label()`.
