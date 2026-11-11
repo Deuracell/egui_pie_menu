@@ -108,6 +108,8 @@ struct LevelDraw<'a> {
     id: egui::Id,
     /// Route from the root to this ring (each button's `path` is this plus its index).
     path_prefix: &'a [usize],
+    /// Draw only this button of the ring (`None`: all of them).
+    only: Option<usize>,
 }
 
 /// An open fan-out, laid out for this frame.
@@ -119,6 +121,21 @@ struct Fan<'a> {
     radius: f32,
     /// The opening button's rect: the pointer on it selects nothing in the fan.
     trigger_rect: Rect,
+}
+
+/// A fan-out that was broken out into a sub-pie: what the transition needs. The sub-pie
+/// itself is an ordinary level (see [`PieMenu::break_out`]); this is the main ring fading
+/// out around the opener, which stays drawn as the new level's centre piece.
+struct BreakOut {
+    /// egui time of the break-out, for the fades.
+    started: f64,
+    /// Where the parent's centre (circle) and ring were drawn.
+    parent_center: Pos2,
+    parent_radius: f32,
+    /// The parent ring's cached button sizes.
+    parent_sizes: Vec<Vec2>,
+    /// The opener's index in the parent ring.
+    opener: usize,
 }
 
 /// The longest repaint delay ever requested. A huge ("never") delay setting is capped to
@@ -220,6 +237,13 @@ pub struct PieMenu {
     /// opening the menu), so a sub-pie button under the resting pointer starts its timer at
     /// once and the navigation flows on.
     entered_forward: bool,
+    /// Set while the level shown is a broken-out fan (see [`BreakOut`]).
+    breakout: Option<BreakOut>,
+    /// The radius of the broken-out level (the fan's); `None`: `layout_radius`.
+    level_radius: Option<f32>,
+    /// Where the open fan's centre was drawn last frame, and its radius.
+    fan_display_center: Pos2,
+    fan_display_radius: f32,
 }
 
 impl Default for PieMenu {
@@ -269,6 +293,10 @@ impl PieMenu {
             level_fresh: true,
             inert_hover: None,
             entered_forward: false,
+            breakout: None,
+            level_radius: None,
+            fan_display_center: Pos2::ZERO,
+            fan_display_radius: 0.0,
         }
     }
 
@@ -396,6 +424,7 @@ impl PieMenu {
         self.inert_hover = None;
         self.entered_forward = false;
         self.selected_path.clear();
+        self.clear_breakout();
         self.checked_buttons = false;
         self.double_tap_pending = false;
         self.fresh_open = true;
@@ -575,7 +604,12 @@ impl PieMenu {
             }
         }
 
-        let response = match self.show_level(ctx, level, current_mouse_pos, key_down, &mut render_button) {
+        // The ring one level up, for the main ring fading out after a break-out.
+        let parent: &[PieButton] = match self.path.split_last() {
+            Some((_, up)) => Self::resolve_level(buttons, up).unwrap_or(&[]),
+            None => &[],
+        };
+        let response = match self.show_level(ctx, level, parent, current_mouse_pos, key_down, &mut render_button) {
             LevelEvent::None => PieMenuResponse::None,
             LevelEvent::Dismissed => PieMenuResponse::Dismissed,
             LevelEvent::QuickTap => PieMenuResponse::QuickTap,
@@ -605,8 +639,7 @@ impl PieMenu {
                 PieMenuResponse::None
             }
             LevelEvent::BreakOut(trigger) => {
-                self.close_fan();
-                self.descend(trigger, current_mouse_pos, key_down);
+                self.break_out(ctx, trigger, current_mouse_pos, key_down);
                 PieMenuResponse::None
             }
             LevelEvent::FanPick(trigger, child) => {
@@ -685,14 +718,63 @@ impl PieMenu {
         self.entered_forward = true;
     }
 
+    /// Breaks the open fan of button `trigger` out into a sub-pie level, in place: the
+    /// children stay exactly where the fan drew them (same centre, radius, Area ids and
+    /// cached sizes) and the main ring fades out around the opener, which stays drawn as
+    /// the new level's centre piece (see [`BreakOut`]).
+    fn break_out(&mut self, ctx: &egui::Context, trigger: usize, mouse: Option<Pos2>, key_down: bool) {
+        if self.breakout.is_some() {
+            // A fan inside a broken-out level: no transition, an ordinary sub-pie.
+            self.close_fan();
+            self.descend(trigger, mouse, key_down);
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let parent = BreakOut {
+            started: now,
+            parent_center: self.display_center,
+            parent_radius: self.level_radius(),
+            parent_sizes: std::mem::replace(&mut self.button_sizes, std::mem::take(&mut self.fan_sizes)),
+            opener: trigger,
+        };
+        let (center, radius) = (self.fan_display_center, self.fan_display_radius);
+        self.close_fan();
+        self.level_centers.push(self.position);
+        self.path.push(trigger);
+        self.restart_level(Some(center), key_down);
+        self.entered_forward = true;
+        // Fully revealed at once: no sliding, no fading in of the children.
+        self.shown_at = Some(now - 1.0e6);
+        self.level_radius = Some(radius);
+        self.breakout = Some(parent);
+        // The parent's dimming must not ease back up under the new centre.
+        ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), false, 0.0);
+    }
+
+    /// Forgets a break-out in progress (the level shown is an ordinary one again).
+    fn clear_breakout(&mut self) {
+        self.breakout = None;
+        self.level_radius = None;
+    }
+
+    /// The radius of the level being shown.
+    fn level_radius(&self) -> f32 {
+        self.level_radius.unwrap_or(self.settings.layout_radius)
+    }
+
     /// Returns to the parent level of the open sub-pie.
     fn go_back(&mut self, mouse: Option<Pos2>, key_down: bool) {
+        let broken_out = self.breakout.take();
         let left = self.path.pop();
         let parent_center = self.level_centers.pop();
         let center = match self.settings.sub_pie_center {
+            _ if broken_out.is_some() => parent_center,
             SubPieCenter::Pointer if !self.pinned => mouse,
             _ => parent_center,
         };
+        if let Some(b) = broken_out {
+            self.button_sizes = b.parent_sizes;
+        }
         self.restart_level(center, key_down);
         // The pointer may still rest on the button just left: it must not fan out again.
         self.fan_suppressed = left;
@@ -709,6 +791,7 @@ impl PieMenu {
         self.level_centers.clear();
         self.hover_since = None;
         self.close_fan();
+        self.clear_breakout();
         self.level_fresh = true;
         self.inert_hover = None;
         self.entered_forward = false;
@@ -723,6 +806,7 @@ impl PieMenu {
         self.display_center = self.position;
         self.hover_since = None;
         self.close_fan();
+        self.clear_breakout();
         self.last_fan = None;
         self.fan_suppressed = None;
         self.level_fresh = true;
@@ -884,6 +968,9 @@ impl PieMenu {
         let mut path = level.path_prefix.to_vec();
         path.push(0);
         for (idx, button) in level.buttons.iter().enumerate() {
+            if level.only.is_some_and(|only| only != idx) {
+                continue;
+            }
             // Each axis is offset independently (see `button_offset`), which keeps NE/NW at
             // the same Y and SE/SW at the same Y even when button widths differ.
             let eff_dir = Self::eff(&button.direction, mirror);
@@ -986,6 +1073,7 @@ impl PieMenu {
         &mut self,
         ctx: &egui::Context,
         buttons: &[PieButton],
+        parent: &[PieButton],
         current_mouse_pos: Option<Pos2>,
         key_down: bool,
         render_button: &mut impl FnMut(&mut Ui, &ButtonView),
@@ -1070,7 +1158,7 @@ impl PieMenu {
 
         let shape_factor = self.settings.shape_factor;
         let mirror = self.settings.mirror_horizontal;
-        let radius = self.settings.layout_radius;
+        let radius = self.level_radius();
         let dead_zone = self.settings.dead_zone_radius;
 
         // Shift the whole menu so every button stays within the screen rect with a margin.
@@ -1138,10 +1226,13 @@ impl PieMenu {
             let size = self.button_sizes[trigger];
             let button_center = center + self.button_offset(&Self::eff(&button.direction, mirror), size, radius, shape_factor);
             let fan_radius = self.settings.fan_out_radius.unwrap_or(radius);
+            self.fan_display_radius = fan_radius;
+            let fan_center = self.clamp_center(button_center, children, &self.fan_sizes, fan_radius, screen_rect);
+            self.fan_display_center = fan_center;
             Fan {
                 trigger,
                 children,
-                center: self.clamp_center(button_center, children, &self.fan_sizes, fan_radius, screen_rect),
+                center: fan_center,
                 radius: fan_radius,
                 trigger_rect: Rect::from_center_size(button_center, size),
             }
@@ -1149,10 +1240,35 @@ impl PieMenu {
 
         // The parent's centre (circle, highlight, title) and its other buttons are greyed out
         // while a fan is open, easing in and out with it.
-        let dim = ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), fan.is_some(), 0.12);
+        // After a break-out it stays at rest: the main ring and old centre fade out instead.
+        let dim_time = if self.breakout.is_some() { 0.0 } else { 0.12 };
+        let dim = ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), fan.is_some(), dim_time);
         let dim_opacity = 1.0 + (DIMMED_OPACITY - 1.0) * dim;
+
+        // A break-out's fades: the old centre and main ring out, the new centre in. One
+        // linear progress for all, whatever the reveal style.
+        let reveal = &self.settings.animations;
+        let fade = self.breakout.as_ref().map_or(1.0, |b| match reveal.reveal {
+            RevealAnimation::None => 1.0,
+            _ => ((now - b.started) as f32 / reveal.reveal_duration.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0),
+        });
+        if fade < 1.0 {
+            ctx.request_repaint();
+        }
         let mut painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
-        painter.multiply_opacity(dim_opacity);
+        painter.multiply_opacity(dim_opacity * fade);
+        if let Some(b) = self.breakout.as_ref().filter(|_| fade < 1.0)
+            && let Some(circle_radius) = self.settings.center_indicator.background_radius
+        {
+            let mut old = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
+            old.multiply_opacity(DIMMED_OPACITY * (1.0 - fade));
+            old.circle(
+                b.parent_center,
+                circle_radius,
+                self.settings.center_indicator.background_fill_color,
+                self.settings.center_indicator.background_stroke,
+            );
+        }
 
         // Center background circle
         if let Some(radius) = self.settings.center_indicator.background_radius {
@@ -1374,8 +1490,10 @@ impl PieMenu {
                 } else {
                     self.settings.animations.sub_pie_hover_emphasis
                 },
-                id: self.id,
+                // A broken-out level keeps the Areas the fan drew its buttons in.
+                id: self.breakout.as_ref().map_or(self.id, |b| self.id.with(("fan", b.opener))),
                 path_prefix: &path,
+                only: None,
             },
             &mut sizes,
             Some(&mut centers),
@@ -1383,6 +1501,39 @@ impl PieMenu {
         );
         self.button_sizes = sizes;
         self.button_centers = centers;
+
+        // After a break-out: the main ring fades out where it was, and the opener stays
+        // drawn (lit, in place) as the centre piece of the new level.
+        if let Some(mut b) = self.breakout.take() {
+            if b.opener < parent.len() {
+                b.parent_sizes.resize(parent.len(), Vec2::new(50.0, 24.0));
+                let up = &path[..path.len().saturating_sub(1)];
+                let ring = |only: Option<usize>, dim_except: Option<usize>, dim_opacity: f32| LevelDraw {
+                    buttons: parent,
+                    center: b.parent_center,
+                    radius: b.parent_radius,
+                    shown_at: None,
+                    hovered: Some(b.opener),
+                    dim_except,
+                    dim_opacity,
+                    emphasis: if up.is_empty() {
+                        self.settings.animations.hover_emphasis
+                    } else {
+                        self.settings.animations.sub_pie_hover_emphasis
+                    },
+                    id: self.id,
+                    path_prefix: up,
+                    only,
+                };
+                let draw = if fade < 1.0 {
+                    ring(None, Some(b.opener), DIMMED_OPACITY * (1.0 - fade))
+                } else {
+                    ring(Some(b.opener), None, 1.0)
+                };
+                self.draw_level(ctx, now, &draw, &mut b.parent_sizes, None, render_button);
+            }
+            self.breakout = Some(b);
+        }
 
         if let Some(fan) = &fan {
             let shown_at = *self.fan_shown_at.get_or_insert(now);
@@ -1405,6 +1556,7 @@ impl PieMenu {
                     emphasis: self.settings.animations.sub_pie_hover_emphasis,
                     id: self.id.with(("fan", fan.trigger)),
                     path_prefix: &fan_path,
+                    only: None,
                 },
                 &mut sizes,
                 fan_centers.as_mut(),
