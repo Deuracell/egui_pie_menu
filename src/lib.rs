@@ -1438,6 +1438,9 @@ impl PieMenu {
                 (Some(p), None) if (p - center).length() > dead_zone => {
                     self.hovered_index.map_or(LevelEvent::None, LevelEvent::Pick)
                 }
+                // A click in the centre of the root dismisses (in a sub-pie it went back a
+                // level before this point); a pinned menu is never dismissed by the pointer.
+                (Some(_), None) if self.path.is_empty() && !self.pinned => LevelEvent::Dismissed,
                 (Some(_), None) => LevelEvent::None,
                 // A click elsewhere: nothing for a pinned menu, otherwise it dismisses.
                 (None, _) if self.pinned => LevelEvent::None,

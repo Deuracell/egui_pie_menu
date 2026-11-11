@@ -290,6 +290,29 @@ impl ButtonView<'_> {
         self.text_color
     }
 
+    /// Makes the pie's highlight the one that drives how egui widgets look in this button.
+    ///
+    /// egui widgets drawn in a pie button (an `egui::Button`, a checkbox) only react when
+    /// the pointer is physically on the widget, and paint a hover outline and a press
+    /// outline; the pie, however, highlights a button by direction ([`Self::hovered`] is
+    /// true while the pointer is merely in its sector). Call this at the top of the render
+    /// closure, before adding widgets: afterwards every egui widget drawn in that button's
+    /// `ui` looks like a hovered widget (your app's own theme, `widgets.hovered`) while the
+    /// pie highlights the button, and like an idle one (`widgets.inactive`) otherwise,
+    /// whatever the pointer does over the widget itself: no per-widget hover or press
+    /// outline or colour change.
+    ///
+    /// It changes only that button's `ui`. A disabled button keeps egui's disabled look.
+    /// An explicit `.fill(..)` / `.stroke(..)` on a widget still wins (a render closure
+    /// that draws its own fills does not need this).
+    pub fn use_pie_hover(&self, ui: &mut Ui) {
+        let w = &mut ui.visuals_mut().widgets;
+        let look = if self.hovered && self.enabled { w.hovered } else { w.inactive };
+        w.inactive = look;
+        w.hovered = look;
+        w.active = look;
+    }
+
     /// The button's label with its mnemonic (if any) underlined, ready for
     /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's widget text colour
     /// for the button's state (`inactive` / `hovered`), or [`PieMenuSettings::text_color`]

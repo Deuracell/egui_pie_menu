@@ -1265,6 +1265,40 @@ mod fan_out_tests {
     const BLOCKED: Pos2 = Pos2::new(485.0, 255.0);
 
     #[test]
+    fn clicking_the_centre_of_the_root_dismisses_but_not_a_pinned_menu() {
+        // Root: dismisses.
+        let mut rig = Rig::new(buttons());
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::Dismissed);
+        assert!(!rig.menu.is_open());
+
+        // In a replace-style sub-pie the first centre click goes back, the second dismisses.
+        let root = vec![PieButton::new(PieDirection::East).with_children(vec![PieButton::new(PieDirection::North)])];
+        let mut rig = Rig::new(root);
+        rig.frame(None, true, &[Key::Num6]);
+        assert_eq!(rig.menu.path(), &[0]);
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::None);
+        assert!(rig.menu.path().is_empty() && rig.menu.is_open());
+        rig.frame(Some(CENTER), true, &[]);
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::Dismissed);
+        assert!(!rig.menu.is_open());
+
+        // Pinned: stays open.
+        let mut rig = Rig::new(buttons());
+        rig.menu.pin(CENTER);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+
+        // Clicks off: nothing happens.
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.input.select_on_primary_click = false;
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+    }
+
+    #[test]
     fn releasing_on_the_fans_button_breaks_it_out_but_releasing_on_nothing_dismisses() {
         let at_ring = Pos2::new(505.0, 300.0);
         let mut rig = Rig::new(buttons());
@@ -1527,5 +1561,99 @@ mod view_color_tests {
         assert_eq!(themed, v.widgets.inactive.fg_stroke.color);
         let (off, v) = colors(false, Some(Color32::WHITE));
         assert_eq!(off, v.gray_out(Color32::WHITE));
+    }
+}
+
+mod pie_hover_tests {
+    use super::*;
+
+    enum Pointer {
+        None,
+        /// In the East sector but far from the widget.
+        Far,
+        /// Pressed (and held) on the widget itself.
+        PressedOnWidget,
+    }
+
+    /// Paints one East button with an `egui::Button`; returns its (fill, stroke) in each
+    /// of the pointer states, in order, and the theme's widget visuals.
+    fn looks(use_helper: bool, states: &[Pointer]) -> (Vec<(Color32, Stroke)>, egui::style::Widgets) {
+        fn find(shape: &egui::Shape) -> Option<(Rect, Color32, Stroke)> {
+            match shape {
+                egui::Shape::Rect(r) if (20.0..200.0).contains(&r.rect.width()) => Some((r.rect, r.fill, r.stroke)),
+                egui::Shape::Vec(v) => v.iter().find_map(find),
+                _ => None,
+            }
+        }
+        let ctx = egui::Context::default();
+        let buttons = vec![PieButton::new(PieDirection::East).with_label("Go")];
+        let mut m = PieMenu::new();
+        m.settings.animations.reveal = RevealAnimation::None;
+        m.open(Pos2::new(400.0, 300.0));
+        m.reveal();
+        let mut time = 0.0;
+        let mut run = |pointer: Option<Pos2>, events: Vec<egui::Event>| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                m.show_with_pointer(ui.ctx(), &buttons, pointer, true, |ui, b| {
+                    if use_helper {
+                        b.use_pie_hover(ui);
+                    }
+                    ui.add(egui::Button::new(b.label_text()));
+                });
+            });
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|s| find(&s.shape))
+        };
+        // Lay the button out and learn where it is.
+        let mut widget = None;
+        for _ in 0..3 {
+            widget = run(None, vec![]).or(widget);
+        }
+        let centre = widget.expect("button painted").0.center();
+        let mut result = vec![];
+        for state in states {
+            let pointer = match state {
+                Pointer::None => None,
+                Pointer::Far => Some(Pos2::new(700.0, 300.0)),
+                Pointer::PressedOnWidget => Some(centre),
+            };
+            let mut last = None;
+            for n in 0..4 {
+                let events = match (state, pointer) {
+                    (Pointer::PressedOnWidget, Some(p)) if n == 1 => vec![
+                        egui::Event::PointerMoved(p),
+                        egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                    ],
+                    _ => vec![],
+                };
+                last = run(pointer, events).or(last);
+            }
+            let (_, fill, stroke) = last.expect("button painted");
+            result.push((fill, stroke));
+        }
+        (result, ctx.global_style().visuals.widgets.clone())
+    }
+
+    #[test]
+    fn pie_hover_drives_the_widget_look_not_the_pointer_over_it() {
+        let states = [Pointer::None, Pointer::Far, Pointer::PressedOnWidget];
+        let (got, w) = looks(true, &states);
+        let idle = (w.inactive.weak_bg_fill, w.inactive.bg_stroke);
+        let hovered = (w.hovered.weak_bg_fill, w.hovered.bg_stroke);
+        assert_ne!(idle, hovered, "the theme distinguishes the two looks");
+        assert_eq!(got[0], idle, "idle");
+        assert_eq!(got[1], hovered, "pie-highlighted, pointer far from the widget");
+        assert_eq!(got[2], hovered, "pressed on the widget: no press change");
+
+        // Without the helper the far pointer leaves the widget looking idle: the problem it solves.
+        let (plain, _) = looks(false, &states);
+        assert_eq!(plain[1], idle);
     }
 }

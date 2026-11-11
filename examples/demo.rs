@@ -1355,6 +1355,7 @@ impl eframe::App for Demo {
                 let hovered = b.hovered;
                 // The pie's own highlight is the only hover feedback: egui's per-widget
                 // hover/press outlines would add a second, inconsistent one on top.
+                // (An app drawing plain widgets can call `b.use_pie_hover(ui)` instead.)
                 {
                     let w = &mut ui.visuals_mut().widgets;
                     let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);

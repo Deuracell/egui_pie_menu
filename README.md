@@ -122,6 +122,7 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.text_color()` | The text colour in effect for this button (what `label_text()` uses), for extras you draw yourself |
 | `b.opens_sub_pie()` | The button opens a sub-pie (replace style or fan-out) instead of being an action: lets you draw folder buttons differently |
 | `b.opens_fan_out()` | The button opens its sub-pie as a fan-out (implies `opens_sub_pie()`) |
+| `b.use_pie_hover(ui)` | Call at the top of the closure: egui widgets in this button look hovered while the pie highlights it, idle otherwise (the app's theme), ignoring the pointer over the widget itself |
 | `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour per "Text colour" below, egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
@@ -136,20 +137,11 @@ pub fn show(
 ) -> PieMenuResponse
 ```
 
-**egui's own hover outline.** egui widgets drawn inside a pie button (an `egui::Button`, a checkbox) paint their own hover and press outline when the pointer is on the actual widget, on top of the pie's highlight (`b.hovered`, `b.text_color()`). If you want the pie's highlight to be the only feedback, neutralise those visuals on the button's `ui` at the top of the render closure:
+**Plain egui widgets and the pie's highlight.** An egui widget drawn inside a pie button (an `egui::Button`, a checkbox) only reacts when the pointer is physically on it, and paints its own hover and press outline, while the pie highlights a button by direction (`b.hovered`). Call `b.use_pie_hover(ui)` at the top of the render closure, before adding widgets: every widget in that button then looks like a hovered widget while the pie highlights the button, and like an idle one otherwise, whatever the pointer does over the widget itself (no per-widget hover or press outline). It uses your app's own `widgets.hovered` / `widgets.inactive` visuals, so it follows the theme, and it changes only that button's `ui`. Disabled buttons keep egui's disabled look, and an explicit `.fill(..)` / `.stroke(..)` on a widget still wins.
 
 ```rust
-{
-    let w = &mut ui.visuals_mut().widgets;
-    let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);
-    w.hovered.bg_stroke = stroke;
-    w.active.bg_stroke = stroke;
-    w.hovered.expansion = expansion;
-    w.active.expansion = expansion;
-}
+b.use_pie_hover(ui);
 ```
-
-An explicit `.stroke(..)` on a button keeps working.
 
 Related:
 
@@ -178,6 +170,7 @@ Related:
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
 | Number key 1–9 or mnemonic key | `Selected(idx)` |
+| Click on the centre | Goes back one level in a sub-pie; at the root it dismisses the menu (`Dismissed`; not for a pinned menu) |
 | Escape or number key 5 (consumed by the menu) | `Dismissed` |
 
 `show_behavior` (default `OnMovement { threshold: 10.0 }`) controls when the menu first appears:
