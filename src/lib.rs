@@ -23,7 +23,8 @@
 //! match menu.show(ctx, &buttons, key_down, |ui, b| {
 //!     ui.label(b.label_text());
 //! }) {
-//!     PieMenuResponse::Selected(idx) => println!("selected {}", buttons[idx].label),
+//!     // `idx` is the index within the button's own level; `selected_path` is the full route.
+//!     PieMenuResponse::Selected(idx) => println!("selected {idx}, route {:?}", menu.selected_path()),
 //!     PieMenuResponse::QuickTap => println!("tapped without opening"),
 //!     _ => {}
 //! }
@@ -55,7 +56,10 @@ use mnemonic::{char_to_key, fold_char, resolve_mnemonics};
 /// Outcome of a [`PieMenu::show`] call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieMenuResponse {
-    /// A button was activated; value is its index in the slice passed to `show`.
+    /// A button was activated. The value is its index within its own level: the slice
+    /// passed to `show` for a root button, but the index in the sub-pie's or fan-out's
+    /// children for a button inside one. [`PieMenu::selected_path`] is the full route
+    /// from the root.
     Selected(usize),
     /// The menu was dismissed without a selection.
     Dismissed,
@@ -113,6 +117,16 @@ struct Fan<'a> {
     trigger_rect: Rect,
 }
 
+/// The longest repaint delay ever requested. A huge ("never") delay setting is capped to
+/// this instead of overflowing the conversion to a `Duration`.
+const MAX_REPAINT_DELAY: Duration = Duration::from_secs(3600);
+
+/// Asks egui for a repaint in `secs` seconds (capped, never panicking).
+fn repaint_after(ctx: &egui::Context, secs: f64) {
+    let delay = Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(MAX_REPAINT_DELAY);
+    ctx.request_repaint_after(delay.min(MAX_REPAINT_DELAY));
+}
+
 /// Opacity of the parent (its centre and its other buttons) while a fan-out is open.
 const DIMMED_OPACITY: f32 = 0.35;
 
@@ -166,6 +180,12 @@ pub struct PieMenu {
     level_centers: Vec<Pos2>,
     /// Sub-pie hover timer: the hovered sub-pie button and the egui time it became so.
     hover_since: Option<(usize, f64)>,
+    /// Bumped by every `open`, so animation state kept by egui (button emphasis, fan
+    /// dimming) starts fresh for each opening and does not leak from the previous one.
+    anim_gen: u64,
+    /// Where the menu's centre was actually drawn last frame (the position clamped to the
+    /// screen). The centre click that goes back is tested against this, not `position`.
+    display_center: Pos2,
     /// The open fan-out: index of its button in the level being shown.
     fan: Option<usize>,
     /// The button of the fan that was open last, while the parent's dimming eases out.
@@ -227,6 +247,8 @@ impl PieMenu {
             button_centers: Vec::new(),
             level_centers: Vec::new(),
             hover_since: None,
+            anim_gen: 0,
+            display_center: Pos2::ZERO,
             fan: None,
             last_fan: None,
             fan_shown_at: None,
@@ -358,8 +380,12 @@ impl PieMenu {
         self.level_centers.clear();
         self.hover_since = None;
         self.close_fan();
+        self.last_fan = None;
+        self.anim_gen = self.anim_gen.wrapping_add(1);
+        self.display_center = pos;
         self.level_fresh = true;
         self.inert_hover = None;
+        self.entered_forward = false;
         self.selected_path.clear();
         self.checked_buttons = false;
         self.double_tap_pending = false;
@@ -480,6 +506,24 @@ impl PieMenu {
         buttons: &[PieButton],
         pointer: Option<Pos2>,
         key_down: bool,
+        render_button: impl FnMut(&mut Ui, &ButtonView),
+    ) -> PieMenuResponse {
+        let before = (self.path.clone(), self.fan);
+        let response = self.show_inner(ctx, buttons, pointer, key_down, render_button);
+        // A new level or fan is drawn on the next frame; make sure there is one even if
+        // nothing else (input, animation) would ask for it, e.g. after a hover timer.
+        if self.path != before.0 || self.fan != before.1 {
+            ctx.request_repaint();
+        }
+        response
+    }
+
+    fn show_inner(
+        &mut self,
+        ctx: &egui::Context,
+        buttons: &[PieButton],
+        pointer: Option<Pos2>,
+        key_down: bool,
         mut render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
         if !self.is_open {
@@ -500,10 +544,10 @@ impl PieMenu {
         // on the centre (when clicks are enabled).
         if self.visible && (self.fan.is_some() || !self.path.is_empty()) {
             let thr = self.settings.dead_zone_radius;
-            let backspace = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace));
+            let backspace = self.keys_for_menu(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace));
             let centre_click = self.settings.input.select_on_primary_click
                 && ctx.input(|i| i.pointer.primary_clicked())
-                && current_mouse_pos.is_some_and(|p| (p - self.position).length() <= thr);
+                && current_mouse_pos.is_some_and(|p| (p - self.display_center).length() <= thr);
             if backspace && self.fan.is_some() {
                 self.close_fan();
                 return PieMenuResponse::None;
@@ -558,6 +602,8 @@ impl PieMenu {
                 if !self.path.is_empty() {
                     self.back_to_root();
                     self.restart_level(None, key_down);
+                } else {
+                    self.close_fan();
                 }
             }
             _ => self.close(),
@@ -590,6 +636,13 @@ impl PieMenu {
             level = level.get(i)?.children();
         }
         Some(level)
+    }
+
+    /// Whether keys (Backspace, dismiss keys, number keys, mnemonics) belong to the menu:
+    /// always for a blocking menu, otherwise only while egui does not want the keyboard
+    /// for a focused text field.
+    fn keys_for_menu(&self, ctx: &egui::Context) -> bool {
+        (self.settings.block_background && !self.pinned) || !ctx.egui_wants_keyboard_input()
     }
 
     /// Opens the sub-pie of button `idx` of the current level.
@@ -627,6 +680,11 @@ impl PieMenu {
         self.path.clear();
         self.level_centers.clear();
         self.hover_since = None;
+        self.close_fan();
+        self.level_fresh = true;
+        self.inert_hover = None;
+        self.entered_forward = false;
+        self.checked_buttons = false;
     }
 
     /// Shows the (new) level immediately, centred at `center` (`None`: where the menu is).
@@ -634,6 +692,7 @@ impl PieMenu {
         if let Some(p) = center {
             self.position = p;
         }
+        self.display_center = self.position;
         self.hover_since = None;
         self.close_fan();
         self.last_fan = None;
@@ -662,9 +721,20 @@ impl PieMenu {
             bb_min = bb_min.min(offset - size / 2.0);
             bb_max = bb_max.max(offset + size / 2.0);
         }
+        // `f32::clamp` panics when the range is empty: a ring that does not fit the screen
+        // (a small window, a big margin) is centred on the screen along that axis instead.
+        let axis = |v: f32, lo: f32, hi: f32| {
+            if lo <= hi {
+                v.clamp(lo, hi)
+            } else if ((lo + hi) / 2.0).is_finite() {
+                (lo + hi) / 2.0
+            } else {
+                v
+            }
+        };
         Pos2::new(
-            center.x.clamp(screen.min.x + margin - bb_min.x, screen.max.x - margin - bb_max.x),
-            center.y.clamp(screen.min.y + margin - bb_min.y, screen.max.y - margin - bb_max.y),
+            axis(center.x, screen.min.x + margin - bb_min.x, screen.max.x - margin - bb_max.x),
+            axis(center.y, screen.min.y + margin - bb_min.y, screen.max.y - margin - bb_max.y),
         )
     }
 
@@ -862,7 +932,7 @@ impl PieMenu {
             // transforming its whole layer, so it works whatever the closure drew. Layer
             // transforms are sticky, so the identity is set again once it has eased back.
             let emphasis = ctx.animate_bool_with_time(
-                level.id.with((idx, "hover")),
+                level.id.with((self.anim_gen, level.path_prefix, idx, "hover")),
                 is_hovered && !level.emphasis.is_none(),
                 anim.hover_duration.as_secs_f32(),
             );
@@ -946,16 +1016,14 @@ impl PieMenu {
         // A non-blocking (or pinned) menu leaves typing alone: while egui wants keyboard
         // input, dismiss keys, number keys and mnemonics go to that widget, not the menu.
         let blocking = self.settings.block_background && !self.pinned;
-        let keys_for_menu = if blocking {
+        if blocking {
             ctx.memory_mut(|m| {
                 if let Some(id) = m.focused() {
                     m.surrender_focus(id);
                 }
             });
-            true
-        } else {
-            !ctx.egui_wants_keyboard_input()
-        };
+        }
+        let keys_for_menu = self.keys_for_menu(ctx);
 
         // Early exit checks. Dismiss keys are consumed, and only match without Ctrl/Cmd.
         let input = &self.settings.input;
@@ -978,6 +1046,7 @@ impl PieMenu {
         // Shift the whole menu so every button stays within the screen rect with a margin.
         let screen_rect = ctx.content_rect();
         let center = self.clamp_center(center, buttons, &self.button_sizes, radius, screen_rect);
+        self.display_center = center;
 
         // Block hover/interaction on background widgets while the menu is open.
         // Sits on Foreground (above panels, below Tooltip where buttons live) so
@@ -1050,7 +1119,7 @@ impl PieMenu {
 
         // The parent's centre (circle, highlight, title) and its other buttons are greyed out
         // while a fan is open, easing in and out with it.
-        let dim = ctx.animate_bool_with_time(self.id.with("fan_dim"), fan.is_some(), 0.12);
+        let dim = ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), fan.is_some(), 0.12);
         let dim_opacity = 1.0 + (DIMMED_OPACITY - 1.0) * dim;
         let mut painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
         painter.multiply_opacity(dim_opacity);
@@ -1093,8 +1162,18 @@ impl PieMenu {
                 let fan_dirs = self.layout_dirs(fan.children, &self.fan_sizes, fan.radius);
                 self.fan_hover = current_mouse_pos.and_then(|p| {
                     let v = p - fan.center;
+                    let angle = v.y.atan2(v.x);
                     let back = center - fan.center;
-                    let blocked = Self::angle_diff(v.y.atan2(v.x), back.y.atan2(back.x)) < 67.5f32.to_radians();
+                    // Pointing back at the parent picks nothing, unless the pointer is right
+                    // on a child (one pushed into that sector by `intercardinal_height`).
+                    let nearest_child = fan_dirs
+                        .iter()
+                        .zip(fan.children)
+                        .filter(|(_, child)| child.enabled)
+                        .map(|(d, _)| Self::angle_diff(angle, d.y.atan2(d.x)))
+                        .fold(f32::MAX, f32::min);
+                    let blocked = Self::angle_diff(angle, back.y.atan2(back.x)) < 67.5f32.to_radians()
+                        && nearest_child > 22.5f32.to_radians();
                     if fan.trigger_rect.contains(p) || v.length() <= dead_zone || blocked {
                         return None;
                     }
@@ -1120,7 +1199,7 @@ impl PieMenu {
                             self.open_fan(i);
                             ctx.request_repaint(); // the fan is laid out and drawn next frame
                         } else {
-                            ctx.request_repaint_after(Duration::from_secs_f64(remaining));
+                            repaint_after(ctx, remaining);
                         }
                     }
                     None => self.fan_pending = None,
@@ -1141,6 +1220,7 @@ impl PieMenu {
         } else if self.inert_hover != self.hovered_index {
             self.inert_hover = None;
         }
+        let mut timer_pick = None;
         if let Some(delay) = self.settings.sub_pie_hover_delay
             && self.fan.is_none()
         {
@@ -1153,14 +1233,17 @@ impl PieMenu {
                 (Some(i), Some((j, since))) if i == j => {
                     let remaining = delay.as_secs_f64() - (now - since);
                     if remaining <= 0.0 {
+                        // Decided now, acted on once this frame's buttons are drawn: the
+                        // level then changes without a frame that shows no buttons.
                         self.hover_since = None;
-                        return LevelEvent::Pick(i);
+                        timer_pick = Some(i);
+                    } else {
+                        repaint_after(ctx, remaining);
                     }
-                    ctx.request_repaint_after(Duration::from_secs_f64(remaining));
                 }
                 (Some(i), _) => {
                     self.hover_since = Some((i, now));
-                    ctx.request_repaint_after(delay);
+                    repaint_after(ctx, delay.as_secs_f64());
                 }
                 (None, _) => self.hover_since = None,
             }
@@ -1299,6 +1382,10 @@ impl PieMenu {
             {
                 self.fan_centers = fan_centers.unwrap_or_default();
             }
+        }
+
+        if let Some(i) = timer_pick {
+            return LevelEvent::Pick(i);
         }
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)

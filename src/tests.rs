@@ -753,15 +753,22 @@ mod fan_out_tests {
         menu: PieMenu,
         buttons: Vec<PieButton>,
         time: f64,
+        screen: Vec2,
+        /// How soon the last frame asked to be repainted.
+        repaint_delay: Duration,
     }
 
     impl Rig {
         fn new(buttons: Vec<PieButton>) -> Self {
+            Self::with_screen(buttons, Vec2::new(800.0, 600.0))
+        }
+
+        fn with_screen(buttons: Vec<PieButton>, screen: Vec2) -> Self {
             let mut menu = PieMenu::new();
             menu.settings.animations.reveal = RevealAnimation::None;
             menu.open(CENTER);
             menu.reveal();
-            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0 };
+            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0, screen, repaint_delay: Duration::MAX };
             rig.frame(None, true, &[]); // lays the buttons out
             rig.frame(None, true, &[]);
             rig
@@ -772,8 +779,12 @@ mod fan_out_tests {
                 .iter()
                 .map(|&key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
                 .collect();
+            self.frame_with(pointer, key_down, events)
+        }
+
+        fn frame_with(&mut self, pointer: Option<Pos2>, key_down: bool, events: Vec<egui::Event>) -> (PieMenuResponse, Drawn) {
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.screen)),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -787,6 +798,7 @@ mod fan_out_tests {
                 });
             });
             out.textures_delta.clear();
+            self.repaint_delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
             (resp, drawn)
         }
 
@@ -1024,6 +1036,216 @@ mod fan_out_tests {
         assert!(rig.menu.open_fan_out().is_some());
         assert_eq!(rig.frame(None, true, &[Key::Num8]).0, PieMenuResponse::None);
         assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
+    }
+
+    // ── Findings of the pre-release review ───────────────────────────────────────
+
+    /// The ring (or a fan) not fitting the screen must not panic (`f32::clamp` asserts).
+    #[test]
+    fn menus_larger_than_the_screen_are_placed_without_panicking() {
+        for screen in [Vec2::new(300.0, 600.0), Vec2::new(150.0, 150.0), Vec2::ZERO] {
+            let mut rig = Rig::with_screen(buttons(), screen);
+            rig.frame(None, true, &[Key::Num6]); // opens the fan, which cannot fit either
+            rig.frame(None, true, &[]);
+            rig.frame(None, true, &[]);
+            assert!(rig.menu.open_fan_out().is_some(), "{screen:?}");
+        }
+        let mut rig = Rig::with_screen(Vec::new(), Vec2::new(10.0, 10.0));
+        rig.frame(None, true, &[]);
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.screen_margin = 250.0;
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[Key::Num6]);
+    }
+
+    /// Resting on a sub-pie button for the delay changes level: that frame still draws
+    /// buttons (no blank flash) and a repaint is asked for, so a still pointer does not
+    /// leave the menu empty until the next input, and the new level's timer gets going.
+    #[test]
+    fn hover_timer_level_change_draws_and_schedules_the_next_frame() {
+        let nested = vec![PieButton::new(PieDirection::North).with_children(vec![
+            PieButton::new(PieDirection::North).with_label("Deeper").with_children(vec![PieButton::new(PieDirection::North)]),
+        ])];
+        let mut rig = Rig::new(nested);
+        rig.menu.settings.sub_pie_center = SubPieCenter::Parent;
+        rig.menu.settings.sub_pie_hover_delay = Some(Duration::from_millis(500));
+        let above = Some(Pos2::new(400.0, 200.0));
+        rig.time = 1.0;
+        rig.frame(above, true, &[]); // the timer starts
+        rig.time = 1.2;
+        rig.frame(above, true, &[]);
+        rig.time = 1.6;
+        let (_, drawn) = rig.frame(above, true, &[]); // it expires: into the sub-pie
+        assert_eq!(rig.menu.path(), &[0]);
+        assert!(!drawn.is_empty(), "the frame that changes level still draws buttons");
+        assert_eq!(rig.repaint_delay, Duration::ZERO, "a repaint is requested for the new level");
+        rig.time = 1.7;
+        let (_, drawn) = rig.frame(above, true, &[]);
+        assert_eq!(paths(&drawn), [vec![0, 0]], "the sub-pie is drawn");
+        // (The first frame of new buttons asks for a repaint to size them; look one later.)
+        rig.time = 1.75;
+        rig.frame(above, true, &[]);
+        assert!(
+            rig.repaint_delay > Duration::ZERO && rig.repaint_delay <= Duration::from_millis(500),
+            "its own timer is scheduled without further input: {:?}",
+            rig.repaint_delay
+        );
+    }
+
+    /// A pinned or non-blocking menu leaves typing alone, Backspace included.
+    #[test]
+    fn backspace_belongs_to_a_focused_text_field_in_a_pinned_menu() {
+        let ctx = egui::Context::default();
+        let root = vec![PieButton::new(PieDirection::North).with_children(vec![PieButton::new(PieDirection::North)])];
+        let mut m = PieMenu::new();
+        m.settings.animations.reveal = RevealAnimation::None;
+        m.pin(CENTER);
+        let mut text = String::from("ab");
+        let mut frame = |m: &mut PieMenu, focus: bool, keys: &[Key]| {
+            let events = keys
+                .iter()
+                .map(|&key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
+                .collect();
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                if focus {
+                    let r = ui.text_edit_singleline(&mut text);
+                    r.request_focus();
+                }
+                m.show_with_pointer(ui.ctx(), &root, None, true, |ui, _| {
+                    ui.label("x");
+                });
+            });
+            out.textures_delta.clear();
+        };
+        frame(&mut m, false, &[]);
+        frame(&mut m, false, &[Key::Num8]); // into the sub-pie
+        assert_eq!(m.path(), &[0]);
+        frame(&mut m, true, &[]);
+        frame(&mut m, true, &[]);
+        frame(&mut m, true, &[Key::Backspace]);
+        assert_eq!(m.path(), &[0], "Backspace went to the text field, not the menu");
+        frame(&mut m, false, &[]);
+        frame(&mut m, false, &[Key::Backspace]);
+        assert!(m.path().is_empty(), "without a focused field Backspace goes back");
+    }
+
+    /// "Never" delays (`Duration::MAX`) must not panic converting to a repaint delay.
+    #[test]
+    fn huge_delays_do_not_panic() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.fan_out_delay = Duration::MAX;
+        rig.menu.settings.sub_pie_hover_delay = Some(Duration::MAX);
+        for t in [1.0, 2.0, 3.0] {
+            rig.time = t;
+            rig.point(Pos2::new(505.0, 300.0));
+        }
+        assert_eq!(rig.menu.open_fan_out(), None, "never opens");
+    }
+
+    /// Every fan child can be pointed at, also when `intercardinal_height` moves the
+    /// diagonal buttons (the blocked sector must not swallow an allowed child).
+    #[test]
+    fn every_fan_child_is_reachable_with_intercardinal_height() {
+        for height in [0.5, 0.2] {
+            let parent = PieDirection::NorthEast;
+            let children: Vec<_> = parent
+                .fan_out_slots()
+                .iter()
+                .map(|d| PieButton::new(*d).with_label(format!("{d:?}")))
+                .collect();
+            let mut rig = Rig::new(vec![PieButton::new(parent).with_label("More").with_fan_out(children)]);
+            rig.menu.settings.intercardinal_height = Some(height);
+            rig.frame(None, true, &[Key::Num9]); // opens the fan by key
+            rig.frame(None, true, &[]);
+            assert!(rig.menu.open_fan_out().is_some());
+            for i in 0..5 {
+                let centre = rig.menu.fan_centers_for_test()[i];
+                rig.point(centre);
+                assert_eq!(rig.menu.open_fan_out(), Some((0, Some(i))), "height {height}: child {i} at {centre:?}");
+            }
+        }
+    }
+
+    /// The centre-click-to-go-back test uses the centre as drawn (screen-clamped), not the
+    /// raw position the menu was opened at.
+    #[test]
+    fn clicking_the_drawn_centre_goes_back_when_the_menu_was_shifted_on_screen() {
+        let root = vec![PieButton::new(PieDirection::East).with_children(vec![PieButton::new(PieDirection::North)])];
+        let mut rig = Rig::new(root);
+        rig.menu.open(Pos2::new(5.0, 5.0)); // too close to the corner: drawn shifted
+        rig.menu.reveal();
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[Key::Num6]);
+        assert_eq!(rig.menu.path(), &[0]);
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[]);
+        let drawn_centre = rig.menu.display_center;
+        assert!((drawn_centre - rig.menu.position).length() > 12.0, "the menu is drawn shifted: {drawn_centre:?}");
+        let click = |pressed| egui::Event::PointerButton {
+            pos: drawn_centre,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        rig.frame_with(Some(drawn_centre), true, vec![egui::Event::PointerMoved(drawn_centre), click(true), click(false)]);
+        assert!(rig.menu.path().is_empty());
+    }
+
+    /// Animation state (button emphasis, fan dimming) does not leak from a closed menu
+    /// into the next one, nor between levels.
+    #[test]
+    fn animation_state_is_fresh_after_reopening() {
+        use egui::emath::TSTransform;
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.animations.hover_emphasis = HoverEmphasis { shift: 0.0, scale: 1.5 };
+        let above = Pos2::new(400.0, 200.0); // the root's "Plain" (North, index 1)
+        for _ in 0..5 {
+            rig.time += 0.1;
+            rig.frame(Some(above), true, &[]);
+        }
+        assert_ne!(transform(&rig, rig.menu.id, 1), TSTransform::IDENTITY, "emphasised while hovered");
+        assert_eq!(rig.frame(Some(above), true, &[Key::Num8]).0, PieMenuResponse::Selected(1));
+        rig.menu.open(CENTER);
+        rig.menu.reveal();
+        rig.frame(None, true, &[]);
+        assert_eq!(transform(&rig, rig.menu.id, 1), TSTransform::IDENTITY, "a new menu starts un-emphasised");
+        assert!(rig.menu.last_fan.is_none());
+    }
+
+    #[test]
+    fn open_resets_how_the_last_level_was_entered() {
+        let root = vec![PieButton::new(PieDirection::East).with_children(vec![PieButton::new(PieDirection::North)])];
+        let mut rig = Rig::new(root);
+        rig.frame(None, true, &[Key::Num6]);
+        assert!(rig.menu.entered_forward);
+        rig.menu.open(CENTER);
+        assert!(!rig.menu.entered_forward, "a fresh menu treats a sub-pie button under the pointer as inert");
+    }
+
+    #[test]
+    fn a_stale_path_fallback_also_closes_the_fan() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.path = vec![5]; // no such sub-pie any more
+        rig.menu.fan = Some(0);
+        rig.frame(None, true, &[]);
+        assert!(rig.menu.path().is_empty());
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    #[test]
+    fn a_selection_from_a_fan_in_a_pinned_menu_closes_the_fan_like_a_sub_pie_does() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.pin(CENTER);
+        rig.frame(None, true, &[Key::Num6]); // opens the fan
+        assert!(rig.menu.open_fan_out().is_some());
+        assert_eq!(rig.frame(None, true, &[Key::Num8]).0, PieMenuResponse::Selected(0));
+        assert!(rig.menu.is_pinned());
+        assert_eq!(rig.menu.open_fan_out(), None);
     }
 
     #[test]
