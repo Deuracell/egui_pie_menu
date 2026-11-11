@@ -7,7 +7,8 @@ use crate::mnemonic::{Mnemonic, append_mnemonic_text};
 use crate::*;
 use crate::settings::PieDirection;
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, FontId};
+use egui::{Color32, FontId, Rect};
+use std::cell::RefCell;
 
 /// What a button does when it is selected.
 #[derive(Clone, Debug, Default)]
@@ -22,6 +23,67 @@ pub enum PieButtonKind {
     /// in a fan-out it closes the fan. At the root level, where there is nothing to go
     /// back to, it is selected like an [`PieButtonKind::Action`].
     Back,
+    /// A cluster: one direction holding several independently clickable items, which your
+    /// render closure lays out however it likes and registers with [`ButtonView::item`].
+    /// The declared items (see [`ClusterItem`]) give the library their labels and
+    /// mnemonics. Selecting item `n` produces [`PieMenuResponse::Selected`]`(n)`. The
+    /// cluster's own direction is dead: pointing at it highlights nothing, and number keys
+    /// never select it. It has no children and cannot sit inside a fan-out.
+    Cluster(Vec<ClusterItem>),
+}
+
+/// An item a cluster declares ([`PieButton::with_items`]): its number (what
+/// [`PieMenuResponse::Selected`] returns), its label and its mnemonic. Where it is drawn is
+/// up to your render closure, which registers the widget with [`ButtonView::item`].
+#[derive(Clone, Debug)]
+pub struct ClusterItem {
+    /// The number the item is selected as; keep it unique within one cluster.
+    pub number: usize,
+    /// The text used to generate a mnemonic for [`Mnemonic::Auto`], and drawn by
+    /// [`ButtonView::item_label`].
+    pub label: String,
+    /// How the item gets its mnemonic key; items compete for keys with the level's buttons.
+    pub mnemonic: Mnemonic,
+    /// A disabled item is never selected (click, release, mnemonic) and gets no mnemonic.
+    pub enabled: bool,
+}
+
+impl ClusterItem {
+    /// An enabled item with [`Mnemonic::Auto`].
+    pub fn new(number: usize, label: impl Into<String>) -> Self {
+        Self { number, label: label.into(), mnemonic: Mnemonic::Auto, enabled: true }
+    }
+
+    /// Sets an explicit mnemonic key (case-insensitive).
+    pub fn with_mnemonic(mut self, c: char) -> Self {
+        self.mnemonic = Mnemonic::Key(c);
+        self
+    }
+
+    /// This item never gets a mnemonic.
+    pub fn without_mnemonic(mut self) -> Self {
+        self.mnemonic = Mnemonic::None;
+        self
+    }
+
+    /// Enables or disables the item. See [`ClusterItem::enabled`].
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// An item registered by [`ButtonView::item`] while drawing one ring: where it is and
+/// whether it was clicked this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ItemHit {
+    /// Index of the cluster button in its level.
+    pub(crate) button: usize,
+    /// The number the programmer gave the item.
+    pub(crate) n: usize,
+    pub(crate) rect: Rect,
+    pub(crate) clicked: bool,
+    pub(crate) enabled: bool,
 }
 
 /// A single button slot in the pie menu.
@@ -69,6 +131,30 @@ impl PieButton {
         Self { kind: PieButtonKind::Back, label: "Back".to_string(), ..Self::new(direction) }
     }
 
+    /// Creates a cluster at `direction` with an empty label, no declared items yet
+    /// ([`PieButton::with_items`]) and [`Mnemonic::None`]: one button slot holding several
+    /// clickable items that the render closure lays out and registers with
+    /// [`ButtonView::item`]. See [`PieButtonKind::Cluster`].
+    pub fn cluster(direction: PieDirection) -> Self {
+        Self { kind: PieButtonKind::Cluster(Vec::new()), mnemonic: Mnemonic::None, ..Self::new(direction) }
+    }
+
+    /// Declares the items of a cluster (labels and mnemonics; see [`ClusterItem`]) and
+    /// makes this button a cluster if it is not one.
+    pub fn with_items(mut self, items: Vec<ClusterItem>) -> Self {
+        self.kind = PieButtonKind::Cluster(items);
+        self.mnemonic = Mnemonic::None;
+        self
+    }
+
+    /// The declared items of this cluster; empty unless it is a [`PieButtonKind::Cluster`].
+    pub fn cluster_items(&self) -> &[ClusterItem] {
+        match &self.kind {
+            PieButtonKind::Cluster(items) => items,
+            _ => &[],
+        }
+    }
+
     /// The buttons of this button's sub-pie; empty unless it is a [`PieButtonKind::SubPie`].
     pub fn children(&self) -> &[PieButton] {
         match &self.kind {
@@ -80,6 +166,11 @@ impl PieButton {
     /// Whether this is a back button ([`PieButtonKind::Back`]).
     pub fn is_back(&self) -> bool {
         matches!(self.kind, PieButtonKind::Back)
+    }
+
+    /// Whether this is a cluster ([`PieButtonKind::Cluster`]).
+    pub fn is_cluster(&self) -> bool {
+        matches!(self.kind, PieButtonKind::Cluster(_))
     }
 
     /// Enables or disables this button. See [`PieButton::enabled`].
@@ -136,6 +227,34 @@ impl PieButton {
     }
 }
 
+/// Who holds a mnemonic key: a button of the level, or a declared item of a cluster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MnemonicOwner {
+    /// The button with this index in its level.
+    Button(usize),
+    /// Item `item` (index into the declared items) of the cluster button `cluster`.
+    Item { cluster: usize, item: usize },
+}
+
+impl MnemonicOwner {
+    /// The index of the button involved (the cluster, for an item).
+    pub fn button(&self) -> usize {
+        match self {
+            MnemonicOwner::Button(b) => *b,
+            MnemonicOwner::Item { cluster, .. } => *cluster,
+        }
+    }
+}
+
+impl std::fmt::Display for MnemonicOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MnemonicOwner::Button(b) => write!(f, "button {b}"),
+            MnemonicOwner::Item { cluster, item } => write!(f, "item {item} of cluster {cluster}"),
+        }
+    }
+}
+
 /// A problem with the buttons of one pie level, from [`PieMenu::check_buttons`].
 ///
 /// Indices refer to the slice that was checked; inside [`ButtonProblem::InFanOut`] they
@@ -149,8 +268,14 @@ pub enum ButtonProblem {
     /// A fan-out child sits in one of the three directions facing the parent pie
     /// (see [`PieDirection::fan_out_slots`]).
     BlockedDirection { button: usize, direction: PieDirection },
-    /// A fan-out child has a sub-pie of its own: a fan-out holds plain buttons only.
+    /// A fan-out child is a sub-pie or cluster of its own: a fan-out holds plain buttons only.
     NestedInFanOut { button: usize },
+    /// Two items of the cluster button `cluster` have the same number (indices into its
+    /// declared items).
+    DuplicateItemNumber { cluster: usize, first: usize, second: usize, number: usize },
+    /// An explicit mnemonic key is shared by two enabled owners, at least one of them a
+    /// cluster item.
+    DuplicateItemMnemonic { first: MnemonicOwner, second: MnemonicOwner, key: char },
     /// A problem among the fan-out children of button `parent`.
     InFanOut { parent: usize, problem: Box<ButtonProblem> },
 }
@@ -164,6 +289,11 @@ impl ButtonProblem {
             | ButtonProblem::DuplicateMnemonic { first, second, .. } => vec![*first, *second],
             ButtonProblem::BlockedDirection { button, .. } | ButtonProblem::NestedInFanOut { button } => vec![*button],
             ButtonProblem::InFanOut { parent, .. } => vec![*parent],
+            ButtonProblem::DuplicateItemNumber { cluster, .. } => vec![*cluster],
+            ButtonProblem::DuplicateItemMnemonic { first, second, .. } => {
+                let (a, b) = (first.button(), second.button());
+                if a == b { vec![a] } else { vec![a, b] }
+            }
         }
     }
 }
@@ -181,7 +311,13 @@ impl std::fmt::Display for ButtonProblem {
                 write!(f, "button {button} is in direction {direction:?}, which faces the parent pie")
             }
             ButtonProblem::NestedInFanOut { button } => {
-                write!(f, "button {button} has a sub-pie of its own, which a fan-out cannot hold")
+                write!(f, "button {button} is a sub-pie or cluster of its own, which a fan-out cannot hold")
+            }
+            ButtonProblem::DuplicateItemNumber { cluster, first, second, number } => {
+                write!(f, "items {first} and {second} of cluster {cluster} both have the number {number}")
+            }
+            ButtonProblem::DuplicateItemMnemonic { first, second, key } => {
+                write!(f, "{first} and {second} share the mnemonic '{key}'")
             }
             ButtonProblem::InFanOut { parent, problem } => {
                 write!(f, "in the fan-out of button {parent}: {problem}")
@@ -202,7 +338,7 @@ pub(crate) fn fan_out_problems(
         if parent.blocks_fan_out(child.direction) {
             problems.push(ButtonProblem::BlockedDirection { button: i, direction: child.direction });
         }
-        if matches!(child.kind, PieButtonKind::SubPie { .. }) {
+        if matches!(child.kind, PieButtonKind::SubPie { .. } | PieButtonKind::Cluster(_)) {
             problems.push(ButtonProblem::NestedInFanOut { button: i });
         }
     }
@@ -238,6 +374,44 @@ pub(crate) fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>])
     problems
 }
 
+/// Problems with the declared cluster items of one level: repeated item numbers within
+/// a cluster, and an explicit mnemonic key an enabled item shares with another enabled
+/// button or item (button-with-button clashes are [`button_problems`]'s).
+pub(crate) fn item_problems(
+    buttons: &[PieButton],
+    mnemonics: &[Option<char>],
+    item_mnemonics: &[Vec<Option<char>>],
+) -> Vec<ButtonProblem> {
+    let mut problems = Vec::new();
+    let mut owners: Vec<(char, MnemonicOwner)> = Vec::new();
+    for (i, b) in buttons.iter().enumerate() {
+        if b.is_cluster() {
+            let items = b.cluster_items();
+            for (k, item) in items.iter().enumerate() {
+                if let Some(first) = items[..k].iter().position(|o| o.number == item.number) {
+                    problems.push(ButtonProblem::DuplicateItemNumber { cluster: i, first, second: k, number: item.number });
+                }
+            }
+            for (k, m) in item_mnemonics[i].iter().enumerate() {
+                if let Some(c) = *m {
+                    owners.push((c, MnemonicOwner::Item { cluster: i, item: k }));
+                }
+            }
+        } else if let (true, Some(c)) = (b.enabled, mnemonics[i]) {
+            owners.push((c, MnemonicOwner::Button(i)));
+        }
+    }
+    for (n, (c, second)) in owners.iter().enumerate() {
+        let first = owners[..n].iter().find(|(k, _)| k == c).map(|(_, o)| *o);
+        if let Some(first) = first
+            && !(matches!(first, MnemonicOwner::Button(_)) && matches!(second, MnemonicOwner::Button(_)))
+        {
+            problems.push(ButtonProblem::DuplicateItemMnemonic { first, second: *second, key: *c });
+        }
+    }
+    problems
+}
+
 /// What the menu knows about one button, handed to your render closure by
 /// [`PieMenu::show`]. Everything is resolved for the level currently shown, so you never
 /// have to precompute mnemonics or hints.
@@ -267,6 +441,10 @@ pub struct ButtonView<'a> {
     pub(crate) body_font: FontId,
     pub(crate) opens_fan: bool,
     pub(crate) scale: f32,
+    /// Where [`Self::item`] records the cluster's items for this ring.
+    pub(crate) items: &'a RefCell<Vec<ItemHit>>,
+    /// The resolved mnemonics of this cluster's declared items.
+    pub(crate) item_mnemonics: &'a [Option<char>],
 }
 
 impl ButtonView<'_> {
@@ -281,6 +459,48 @@ impl ButtonView<'_> {
     /// [`Self::opens_sub_pie`].
     pub fn opens_fan_out(&self) -> bool {
         self.opens_fan
+    }
+
+    /// Registers `response` (of any widget you drew inside a cluster button's closure) as
+    /// item number `n` of that cluster, and returns it unchanged so calls can be chained:
+    /// `b.item(0, ui.button("Cut"))`. Selecting the item (a click on it, or releasing the
+    /// key with the pointer on it) gives [`PieMenuResponse::Selected`]`(n)` and
+    /// [`PieMenu::selected_path`] `[.., cluster_button_index, n]`.
+    ///
+    /// `n` is any number you choose; keep it unique within one cluster button. Items
+    /// that are disabled (e.g. drawn inside `ui.add_enabled_ui(false, ..)`) are never
+    /// selected. Does nothing useful on a button that is not a cluster.
+    pub fn item(&self, n: usize, response: egui::Response) -> egui::Response {
+        self.items.borrow_mut().push(ItemHit {
+            button: self.idx,
+            n,
+            rect: response.rect,
+            clicked: response.clicked(),
+            enabled: response.enabled(),
+        });
+        response
+    }
+
+    /// The mnemonic key in effect for the declared item numbered `n` of this cluster, if
+    /// any (see [`PieMenu::cluster_mnemonics`]).
+    pub fn item_mnemonic(&self, n: usize) -> Option<char> {
+        let k = self.button.cluster_items().iter().position(|i| i.number == n)?;
+        self.item_mnemonics.get(k).copied().flatten()
+    }
+
+    /// The label of the declared item numbered `n` with its mnemonic underlined, like
+    /// [`Self::label_text`] (same colour and font, same `.color()` / `.font()` /
+    /// `.prefix()` options). Empty if `n` is not declared.
+    pub fn item_label(&self, n: usize) -> LabelText {
+        let item = self.button.cluster_items().iter().find(|i| i.number == n);
+        LabelText {
+            prefix: String::new(),
+            text: item.map(|i| i.label.clone()).unwrap_or_default(),
+            mnemonic: self.item_mnemonic(n),
+            color: self.text_color,
+            font: FontId::new(self.body_font.size * self.scale, self.body_font.family.clone()),
+            rtl: self.rtl,
+        }
     }
 
     /// The scale to draw this button's content at: 1.0 normally, easing up to
@@ -380,7 +600,7 @@ impl LabelText {
         self
     }
 
-    fn to_job(&self) -> LayoutJob {
+    pub(crate) fn to_job(&self) -> LayoutJob {
         let format = TextFormat { color: self.color, font_id: self.font.clone(), ..Default::default() };
         let mut job = LayoutJob::default();
         if !self.rtl && !self.prefix.is_empty() {
