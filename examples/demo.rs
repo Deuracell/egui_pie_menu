@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{ButtonProblem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
+use egui_pie_menu::{ButtonProblem, ClusterItem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -249,6 +249,40 @@ enum MnemonicMode {
     None,
 }
 
+/// How a cluster button's items are laid out inside it (the demo's own choice: the library
+/// leaves the layout to the render closure).
+#[derive(Clone, Copy, PartialEq)]
+enum ClusterLayout {
+    Row,
+    Column,
+    /// Two columns.
+    Grid,
+}
+
+/// One item of a cluster: its label and an optional explicit mnemonic key (empty: Auto).
+#[derive(Clone)]
+struct ClusterItemConfig {
+    label: String,
+    key: String,
+}
+
+/// A cluster button (`PieButton::cluster`): several clickable items in one direction.
+/// An item's number is its index in `items`.
+#[derive(Clone)]
+struct ClusterConfig {
+    items: Vec<ClusterItemConfig>,
+    layout: ClusterLayout,
+    /// Gap between the items, in px.
+    spacing: f32,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        let item = |label: &str| ClusterItemConfig { label: label.into(), key: String::new() };
+        Self { items: vec![item("Left"), item("Middle"), item("Right")], layout: ClusterLayout::Row, spacing: 4.0 }
+    }
+}
+
 #[derive(Clone)]
 struct ButtonConfig {
     label: String,
@@ -275,6 +309,8 @@ struct ButtonConfig {
     back: bool,
     /// How this button's sub-pie is shown; `None` follows the menu's style.
     style: Option<SubPieStyle>,
+    /// A cluster of items instead of a single action (excludes `submenu` and `back`).
+    cluster: Option<ClusterConfig>,
 }
 
 impl ButtonConfig {
@@ -295,6 +331,7 @@ impl ButtonConfig {
             children: Vec::new(),
             back: false,
             style: None,
+            cluster: None,
         }
     }
 
@@ -373,6 +410,17 @@ fn build_buttons(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool
         .map(|i| {
             let c = &configs[i];
             let mut b = PieButton::new(PieDirection::ALL[i]).with_label(c.label.clone()).with_enabled(c.enabled);
+            if let Some(cl) = &c.cluster {
+                // A cluster has no mnemonic or number key of its own; its items declare theirs.
+                let items = cl.items.iter().enumerate().map(|(n, it)| {
+                    let item = ClusterItem::new(n, it.label.clone());
+                    match it.key.chars().next() {
+                        Some(k) => item.with_mnemonic(k),
+                        None => item,
+                    }
+                });
+                return PieButton::cluster(b.direction).with_label(b.label).with_enabled(b.enabled).with_items(items.collect());
+            }
             if c.back {
                 b = PieButton { label: b.label, enabled: b.enabled, ..PieButton::back(b.direction) };
             }
@@ -620,6 +668,7 @@ fn button_list_editor(
     // This level's buttons as the menu will see them: the mnemonic in effect per config
     // (configs without a button have none) and the configs with a problem, shown in red.
     let buttons = build_buttons(configs, style, fan.is_some());
+    let cluster_keys = menu.cluster_mnemonics(&buttons);
     let config_of: Vec<usize> = shown(configs, fan.is_some()).collect();
     let mut button_of: Vec<Option<usize>> = vec![None; configs.len()];
     let mut mnemonics: Vec<Option<char>> = vec![None; configs.len()];
@@ -729,13 +778,68 @@ fn button_list_editor(
                     ui.color_edit_button_srgba(&mut cfg.color);
                     ui.end_row();
 
+                    ui.label("Cluster");
+                    ui.vertical(|ui| {
+                        let mut on = cfg.cluster.is_some();
+                        if ui.checkbox(&mut on, "")
+                            .on_hover_text("Several clickable items in this one direction. The direction itself highlights nothing and has no number key; a click, or releasing the key over an item, selects it. Try it: tick this, then open the menu. Excludes a sub-pie and a back button.")
+                            .changed()
+                        {
+                            cfg.cluster = on.then(ClusterConfig::default);
+                            if on {
+                                cfg.back = false;
+                                cfg.submenu = false;
+                            }
+                        }
+                        let keys = button_of[i].and_then(|bi| cluster_keys.get(bi));
+                        let Some(cl) = &mut cfg.cluster else { return };
+                        egui::ComboBox::from_id_salt(("cluster_layout", i))
+                            .width(80.0)
+                            .selected_text(match cl.layout {
+                                ClusterLayout::Row => "Row",
+                                ClusterLayout::Column => "Column",
+                                ClusterLayout::Grid => "Grid (2 columns)",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut cl.layout, ClusterLayout::Row, "Row");
+                                ui.selectable_value(&mut cl.layout, ClusterLayout::Column, "Column");
+                                ui.selectable_value(&mut cl.layout, ClusterLayout::Grid, "Grid (2 columns)");
+                            });
+                        ui.horizontal(|ui| {
+                            ui.label("Spacing");
+                            px_drag(ui, &mut cl.spacing, 4.0, 0.0..=60.0);
+                        });
+                        let mut remove = None;
+                        for (n, item) in cl.items.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut item.label).desired_width(80.0));
+                                ui.add(egui::TextEdit::singleline(&mut item.key).char_limit(1).desired_width(16.0))
+                                    .on_hover_text("Mnemonic key for this item; empty: Auto");
+                                let got = keys.and_then(|k| k.get(n)).copied().flatten();
+                                ui.label(RichText::new(format!("→ {}", got.map_or("none".to_string(), |c| c.to_string()))).weak())
+                                    .on_hover_text("The mnemonic this item actually has");
+                                if ui.small_button("✖").on_hover_text("Remove this item").clicked() {
+                                    remove = Some(n);
+                                }
+                            });
+                        }
+                        if let Some(n) = remove {
+                            cl.items.remove(n);
+                        }
+                        if ui.button("+ Add item").clicked() {
+                            let label = format!("Item {}", cl.items.len() + 1);
+                            cl.items.push(ClusterItemConfig { label, key: String::new() });
+                        }
+                    });
+                    ui.end_row();
+
                     ui.label("Back button");
-                    ui.checkbox(&mut cfg.back, "")
+                    ui.add_enabled(cfg.cluster.is_none(), egui::Checkbox::without_text(&mut cfg.back))
                         .on_hover_text("Inside a sub-pie, selecting this button returns to the parent pie instead of selecting anything");
                     ui.end_row();
 
                     ui.label("Sub-pie");
-                    ui.horizontal(|ui| {
+                    ui.add_enabled_ui(cfg.cluster.is_none(), |ui| ui.horizontal(|ui| {
                         if ui.checkbox(&mut cfg.submenu, "")
                             .on_hover_text("Selecting this button opens its own pie of buttons")
                             .changed()
@@ -760,7 +864,7 @@ fn button_list_editor(
                                     }
                                 });
                         });
-                    });
+                    }));
                     ui.end_row();
                 });
                 if cfg.submenu {
@@ -913,7 +1017,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Button list",
-                    "buttons list label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color enabled present remove reset sub-pie subpie submenu children nested back return", |ui| {
+                    "buttons list label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color enabled present remove reset sub-pie subpie submenu children nested back return cluster items layout row column grid", |ui| {
                     ui.checkbox(&mut self.menu.settings.input.auto_mnemonics, "Auto mnemonics")
                         .on_hover_text("Generate mnemonics from labels for buttons set to Auto");
                     if ui.button("Reset buttons").clicked() {
@@ -1360,7 +1464,9 @@ impl eframe::App for Demo {
                 // The pie's own highlight is the only hover feedback: egui's per-widget
                 // hover/press outlines would add a second, inconsistent one on top.
                 // (An app drawing plain widgets can call `b.use_pie_hover(ui)` instead.)
-                {
+                // Not in a cluster: it is never highlighted, and its items are plain
+                // widgets with egui's native hover and press look.
+                if cfg.cluster.is_none() {
                     let w = &mut ui.visuals_mut().widgets;
                     let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);
                     w.hovered.bg_stroke = stroke;
@@ -1385,6 +1491,45 @@ impl eframe::App for Demo {
                 } else {
                     (bg, egui::Stroke::NONE)
                 };
+                // A cluster: its items in the chosen layout, inside the usual coloured frame.
+                // Each is an `egui::Button` registered with `b.item(n, ..)` (n = its index in
+                // the config list); the label underlines the item's mnemonic.
+                if let Some(cl) = &cfg.cluster {
+                    let item = |ui: &mut egui::Ui, n: usize| {
+                        let button = egui::Button::new(b.item_label(n)).min_size(Vec2::new(0.0, button_h));
+                        b.item(n, ui.add(button));
+                    };
+                    egui::Frame::new()
+                        .fill(bg)
+                        .corner_radius(6.0)
+                        .inner_margin(Vec2::new(pad_x, 3.0 * b.scale()))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::splat(cl.spacing);
+                            ui.spacing_mut().button_padding = Vec2::new(pad_x * 0.6, 0.0);
+                            let count = cl.items.len();
+                            match cl.layout {
+                                ClusterLayout::Row => {
+                                    ui.horizontal(|ui| (0..count).for_each(|n| item(ui, n)));
+                                }
+                                ClusterLayout::Column => {
+                                    ui.vertical(|ui| (0..count).for_each(|n| item(ui, n)));
+                                }
+                                ClusterLayout::Grid => {
+                                    egui::Grid::new(("cluster_grid", b.idx))
+                                        .spacing(Vec2::splat(cl.spacing))
+                                        .show(ui, |ui| {
+                                            for n in 0..count {
+                                                item(ui, n);
+                                                if n % 2 == 1 {
+                                                    ui.end_row();
+                                                }
+                                            }
+                                        });
+                                }
+                            }
+                        });
+                    return;
+                }
                 // Label and digit colours come from the library: egui's widget colours
                 // for the hover state, or the forced colour; disabled is greyed out.
                 let hint = b.number_hint.as_ref().filter(|_| self.show_hints).map(|h| {
@@ -1471,6 +1616,18 @@ impl eframe::App for Demo {
                 PieMenuResponse::Selected(_) => {
                     // The full route from the root: "Paste Special › As Text".
                     let route = self.menu.selected_path().to_vec();
+                    // A cluster's item: the last element is its number, not a button index.
+                    let item = route.split_last().and_then(|(&n, up)| {
+                        let cfg = route_configs(&self.button_configs, up, style)?.last().copied()?;
+                        Some((up.to_vec(), cfg.cluster.as_ref()?.items.get(n)?.label.clone()))
+                    });
+                    if let Some((up, label)) = item {
+                        let name = route_configs(&self.button_configs, &up, style)
+                            .map(|r| r.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(" › "))
+                            .unwrap_or_default();
+                        self.last_action = format!("Selected: {name} › {label}");
+                        return;
+                    }
                     let name = route_configs(&self.button_configs, &route, style)
                         .map(|r| r.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(" › "))
                         .unwrap_or_default();

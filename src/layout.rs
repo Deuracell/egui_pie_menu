@@ -131,7 +131,8 @@ impl PieMenu {
     /// centre) points at, or `None`. `dirs[i]` is button `i`'s displayed layout vector
     /// ([`Self::layout_vec`]). Empty directions are skipped: the pointer snaps to the
     /// closest available button. On an exact tie (e.g. straight down between East and
-    /// West buttons) the earlier button in the slice wins.
+    /// West buttons) the earlier button in the slice wins. A cluster's direction is dead:
+    /// when the closest button is a cluster, nothing is picked.
     pub(crate) fn pick_button(buttons: &[PieButton], mouse_vec: Vec2, dirs: &[Vec2]) -> Option<usize> {
         let angle = mouse_vec.y.atan2(mouse_vec.x);
         buttons
@@ -141,6 +142,7 @@ impl PieMenu {
             .map(|(idx, _)| (idx, Self::angle_diff(angle, dirs[idx].y.atan2(dirs[idx].x))))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(idx, _)| idx)
+            .filter(|&idx| !buttons[idx].is_cluster())
     }
 
     pub(crate) fn direction_numpad(dir: &PieDirection) -> Key {

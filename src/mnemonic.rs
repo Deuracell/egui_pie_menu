@@ -24,7 +24,8 @@ pub enum Mnemonic {
 /// Resolves the mnemonic key in effect for each button.
 ///
 /// - [`Mnemonic::Key`] is used as given, and its key is reserved.
-/// - [`Mnemonic::None`] never gets one.
+/// - [`Mnemonic::None`] never gets one, nor does a cluster button itself; the items of a
+///   cluster take part like buttons (see [`resolve_all`]).
 /// - [`Mnemonic::Auto`] gets one generated from its label when `auto` is on. All
 ///   buttons are considered together: a button whose letters are all claimed makes
 ///   another button move to one of its alternative letters, so as many buttons as
@@ -33,11 +34,62 @@ pub enum Mnemonic {
 ///   Any alphabetic letter of any script can be generated (combining marks are skipped;
 ///   Hebrew final forms and Arabic alef variants are folded to one key).
 pub(crate) fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
+    resolve_all(buttons, auto).0
+}
+
+/// One thing that can own a mnemonic: a button, or an item of a cluster.
+struct Slot<'a> {
+    mnemonic: Mnemonic,
+    label: &'a str,
+    /// Whether it may be given a generated key.
+    enabled: bool,
+}
+
+/// [`resolve_mnemonics`] for the buttons and the declared items of the clusters among
+/// them, all competing for the same keys: one entry per button (`None` for a cluster),
+/// and per cluster the entries of its items in declaration order (empty for other
+/// buttons). A disabled item, or any item of a disabled cluster, gets no key and reserves
+/// none.
+pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char>>, Vec<Vec<Option<char>>>) {
+    let mut slots: Vec<Slot> = Vec::new();
+    // Where each button's slot (or its items' slots) start.
+    let mut starts = Vec::with_capacity(buttons.len());
+    for b in buttons {
+        starts.push(slots.len());
+        if b.is_cluster() {
+            for item in b.cluster_items() {
+                let live = b.enabled && item.enabled;
+                slots.push(Slot {
+                    mnemonic: if live { item.mnemonic } else { Mnemonic::None },
+                    label: &item.label,
+                    enabled: live,
+                });
+            }
+        } else {
+            slots.push(Slot { mnemonic: b.mnemonic, label: &b.label, enabled: b.enabled });
+        }
+    }
+    let resolved = resolve_slots(&slots, auto);
+    let mut per_button = Vec::with_capacity(buttons.len());
+    let mut per_item = Vec::with_capacity(buttons.len());
+    for (b, &start) in buttons.iter().zip(&starts) {
+        if b.is_cluster() {
+            per_button.push(None);
+            per_item.push(resolved[start..start + b.cluster_items().len()].to_vec());
+        } else {
+            per_button.push(resolved[start]);
+            per_item.push(Vec::new());
+        }
+    }
+    (per_button, per_item)
+}
+
+fn resolve_slots(buttons: &[Slot], auto: bool) -> Vec<Option<char>> {
     let mut resolved: Vec<Option<char>> = buttons
         .iter()
         .map(|b| match b.mnemonic {
             Mnemonic::Key(c) => Some(fold_char(c)),
-            Mnemonic::Auto | Mnemonic::None => None,
+            _ => None,
         })
         .collect();
     if !auto {
@@ -51,7 +103,7 @@ pub(crate) fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option
         .map(|button| {
             let mut list: Vec<char> = Vec::new();
             if button.mnemonic == Mnemonic::Auto && button.enabled {
-                let label = &button.label;
+                let label = button.label;
                 let letters = |c: &char| is_mnemonic_letter(*c);
                 let initials = label
                     .split(|c: char| !c.is_alphanumeric())

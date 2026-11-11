@@ -102,7 +102,8 @@ match self.menu.show(ctx, &buttons, key_down, |ui, b| {
     // colour follows egui's widget states for the pie's hover (see "Text colour").
     ui.label(b.label_text());
 }) {
-    PieMenuResponse::Selected(idx) => println!("selected button {idx}"),
+    // A button's index within its level, or the number of a cluster item (see "Clusters").
+    PieMenuResponse::Selected(idx) => println!("selected {idx}, route {:?}", self.menu.selected_path()),
     PieMenuResponse::QuickTap  => { /* default action */ }
     PieMenuResponse::DoubleTap => { /* alternate action */ }
     PieMenuResponse::Dismissed | PieMenuResponse::None => {}
@@ -113,7 +114,7 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 
 | Field / method | Meaning |
 |---|---|
-| `b.idx` | Index within the button's own level (what `Selected(idx)` returns) |
+| `b.idx` | Index within the button's own level (what `Selected(idx)` returns for a button; for a cluster's item it is the number you gave it) |
 | `b.path` | The full route to the button from the root level, own index last (tells a parent's buttons from an open fan-out's) |
 | `b.hovered` | The pointer highlights this button |
 | `b.button` | The `&PieButton` (label, direction, …) |
@@ -123,6 +124,8 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.text_color()` | The text colour in effect for this button (what `label_text()` uses), for extras you draw yourself |
 | `b.opens_sub_pie()` | The button opens a sub-pie (replace style or fan-out) instead of being an action: lets you draw folder buttons differently |
 | `b.opens_fan_out()` | The button opens its sub-pie as a fan-out (implies `opens_sub_pie()`) |
+| `b.item(n, response)` | Inside a cluster button's closure: registers the widget behind `response` as item number `n` and returns the response unchanged (see "Clusters") |
+| `b.item_label(n)` / `b.item_mnemonic(n)` | A declared cluster item's label with its mnemonic underlined (like `label_text()`), and the key in effect |
 | `b.use_pie_hover(ui)` | Call at the top of the closure: egui widgets in this button look hovered while the pie highlights it, idle otherwise (the app's theme), ignoring the pointer over the widget itself |
 | `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour per "Text colour" below, egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
@@ -161,6 +164,9 @@ Related:
 | Gesture | Response |
 |---|---|
 | Hold key/button, move mouse, release over a button | `Selected(idx)` |
+| Release with the pointer on a cluster item | `Selected(n)`, `n` = the item's number (whatever sector the item is in) |
+| Release in a cluster's sector but not on one of its items | `Dismissed` (the cluster's direction highlights nothing) |
+| Click on a cluster item (`select_on_primary_click`) | `Selected(n)` |
 | Hold key/button, move mouse to centre, release | `Dismissed` |
 | Release in a fan-out on a fan button | `Selected(..)` of that button |
 | Release in a fan-out on its opening button | `BreakOut` (default): nothing, the fan becomes a replace-style sub-pie (click or keyboard driven); `Dismiss`: `Dismissed` (`settings.fan_out_opener_action`) |
@@ -170,7 +176,7 @@ Related:
 | Release with nothing selectable (every button disabled, no pointer) | `Dismissed` |
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
-| Number key 1–9 or mnemonic key | `Selected(idx)` |
+| Number key 1–9 or mnemonic key | `Selected(idx)` (never for a cluster's number key; a cluster item's mnemonic selects that item: `Selected(n)`) |
 | Click on the centre | Goes back one level in a sub-pie; at the root it dismisses the menu (`Dismissed`; not for a pinned menu) |
 | Escape or number key 5 (consumed by the menu) | `Dismissed` |
 
@@ -326,7 +332,7 @@ Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the 
 let root = vec![PieButton::new(PieDirection::North).with_children(vec![/* ... */])];
 ```
 
-`Selected(idx)` is the chosen button's index within its own level; `menu.selected_path()` is the full route to it from the root. In the render closure `b.path` is each button's route (own index last) and `b.button` the button itself, so you never need to look the level up.
+`Selected(idx)` is the chosen button's index within its own level (for a cluster's item: the item's number, see "Clusters"); `menu.selected_path()` is the full route to it from the root. In the render closure `b.path` is each button's route (own index last) and `b.button` the button itself, so you never need to look the level up.
 
 There are two styles, which are different designs and not meant to be mixed lightly. Choose one for the menu; a single button can override it:
 
@@ -357,7 +363,7 @@ menu.settings.fan_out_radius = None;                    // the fan's own radius;
 menu.settings.fan_out_opener_action = FanOpenerAction::BreakOut; // selecting the fan's own button: break out (default) or Dismiss
 ```
 
-- A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child with a sub-pie of its own as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
+- A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child that is a sub-pie or cluster of its own as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
 - It opens when the pointer reaches its button (as far out as the ring of buttons) or when the button is selected by number key, mnemonic, click or release. It closes when the pointer comes back in towards the centre.
 - While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons. The parent's centre and its other buttons are greyed out, and those buttons cannot be highlighted.
 - The fan's highlighted button moves outward and its content grows slightly (see "Hover emphasis").
@@ -396,6 +402,49 @@ If the buttons change while a sub-pie is open so that its level no longer exists
 
 The demo's "Paste Special" button opens a sub-pie that works in both styles; the "Sub-pies" section switches the menu's style, and the button editor can give any button a sub-pie (to any depth) and its own style.
 
+### Clusters
+
+A cluster is a pie button that occupies one direction but holds **several independently clickable items**, laid out however you like: in a row, a column, a grid, with or without space between, inside frames. The library does not lay anything out. You declare the items on the button (number, label, mnemonic), draw whatever egui layout you want in the render closure, and tell the library which widget is which item with `b.item(n, response)`.
+
+```rust
+use egui_pie_menu::ClusterItem;
+
+let buttons = vec![
+    PieButton::cluster(PieDirection::North).with_items(vec![
+        ClusterItem::new(7, "Cut"),               // numbers are yours, any order
+        ClusterItem::new(3, "Copy"),
+        ClusterItem::new(9, "Paste").with_mnemonic('a'),
+    ]),
+    PieButton::new(PieDirection::East).with_label("More"),
+];
+menu.show(ctx, &buttons, key_down, |ui, b| {
+    if b.button.is_cluster() {
+        ui.horizontal(|ui| {                       // a row; set `item_spacing.x = 30.0` for a spaced one
+            b.item(7, ui.button(b.item_label(7)));
+            b.item(3, ui.button(b.item_label(3)));
+            b.item(9, ui.button(b.item_label(9)));
+        });
+        // A grid works the same: egui::Grid::new("g").show(ui, |ui| { b.item(1, ui.button("x")); ui.end_row(); .. });
+    } else {
+        ui.label(b.label_text());
+    }
+});
+```
+
+**Result.** Selecting item `n` returns `Selected(n)`, and `menu.selected_path()` is `[.., cluster_button_index, n]` (the same convention as a fan child: `Selected(i)` is the index within its own "level", here the number you defined; the second-to-last path element is the cluster button's index in its level). Keep numbers unique within one cluster (`check_buttons` reports repeats as `DuplicateItemNumber`).
+
+**Behaviour.**
+- The cluster's direction is dead: the pointer pointing at it highlights nothing (`menu.hovered()` is `None`, no emphasis, no centre highlight), and releasing the key there, not on an item, is a miss (`Dismissed`). The pointer never snaps past a cluster to a neighbouring button.
+- An item is selected by a click on it (only when `settings.input.select_on_primary_click` is on) or by releasing the key while the pointer is on it. Both win over the angle-based pick: an item may extend into another button's sector.
+- A disabled item (a disabled egui response, `ClusterItem::with_enabled(false)`) or an item of a disabled cluster button is never selected.
+- Number keys never select a cluster, and it has no number hint (`b.number_hint` is `None`).
+- Items have **mnemonics**: they compete with the level's buttons for keys, so no key is handed out twice. Auto items get a letter from their label (word initials first), `with_mnemonic(c)` reserves a key, `without_mnemonic()` and disabled items get none and reserve nothing. Pressing a mnemonic selects the item (`Selected(n)`) under the same rules as for buttons (typed characters, no Ctrl/Cmd chords, a focused text field keeps its keys in a non-blocking or pinned menu). `menu.cluster_mnemonics(&buttons)` lists them per cluster, `b.item_mnemonic(n)` / `b.item_label(n)` inside the closure. A number you draw with `b.item` but never declared still works by click and release, without a mnemonic.
+- `check_buttons` reports `DuplicateItemNumber` and `DuplicateItemMnemonic` (an explicit key shared by an enabled item and another enabled button or item of the level).
+- A cluster is not allowed inside a fan-out (`NestedInFanOut`); it works at the root, inside a replace-style sub-pie and in pinned menus. It has no children.
+- A cluster is never highlighted by the pie, so the widgets inside use egui's native hover and press look; do not call `b.use_pie_hover` there.
+
+The demo's button editor has a "Cluster" checkbox on every button (layout, spacing, item labels and mnemonic keys); tick it and open the menu to try it.
+
 ### Disabled buttons and hover query
 
 ```rust
@@ -413,7 +462,7 @@ Number keys are consumed by the menu, so the digit does not also reach other han
 
 In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
 
-To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
+To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, `DuplicateItemNumber` / `DuplicateItemMnemonic` for cluster items (see "Clusters"; `MnemonicOwner` names a button or an item), plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
 
 ### Right-to-left and non-Latin scripts
 

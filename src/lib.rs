@@ -47,19 +47,20 @@ mod mnemonic;
 #[cfg(test)]
 mod tests;
 
-pub use button::{ButtonProblem, ButtonView, LabelText, NumberHint, PieButton, PieButtonKind};
+pub use button::{ButtonProblem, ButtonView, ClusterItem, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
 pub use mnemonic::{Mnemonic, mnemonic_text};
 
-use button::{button_problems, button_text_color, fan_out_problems};
-use mnemonic::{char_to_key, fold_char, resolve_mnemonics};
+use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};
+use mnemonic::{char_to_key, fold_char, resolve_all, resolve_mnemonics};
 
 /// Outcome of a [`PieMenu::show`] call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieMenuResponse {
-    /// A button was activated. The value is its index within its own level: the slice
-    /// passed to `show` for a root button, but the index in the sub-pie's or fan-out's
-    /// children for a button inside one. [`PieMenu::selected_path`] is the full route
-    /// from the root.
+    /// A button or cluster item was activated. For a button the value is its index within
+    /// its own level: the slice passed to `show` for a root button, but the index in the
+    /// sub-pie's or fan-out's children for a button inside one. For an item of a cluster
+    /// ([`PieButton::cluster`]) it is the item number you gave to [`ButtonView::item`].
+    /// [`PieMenu::selected_path`] is the full route from the root.
     Selected(usize),
     /// The menu was dismissed without a selection.
     Dismissed,
@@ -83,6 +84,9 @@ enum LevelEvent {
     Pick(usize),
     /// A child of the open fan-out: (the fan's button, the child).
     FanPick(usize, usize),
+    /// An item of a cluster button of the level being shown: (the cluster button, the
+    /// item number).
+    ClusterPick(usize, usize),
     /// A click in an open fan-out that hit no fan button: close the fan.
     CloseFan,
     /// The fan's own opening button was selected: break the fan out into a sub-pie.
@@ -321,13 +325,16 @@ impl PieMenu {
     }
 
     /// Problems in one level's buttons: several in one direction, or the same mnemonic
-    /// on several enabled buttons; and, for each button that opens a fan-out, the same
+    /// on several enabled buttons (or cluster items, which share the level's keys); two
+    /// items of a cluster with the same number; and, for each button that opens a fan-out, the same
     /// among its children plus children in a blocked direction or with sub-pies of their
     /// own ([`ButtonProblem::InFanOut`]). Debug builds assert on these when the level
     /// opens; call this to check (or show the problems) yourself, e.g. in an editor, in
     /// any build. Pass the buttons of a single level.
     pub fn check_buttons(&self, buttons: &[PieButton]) -> Vec<ButtonProblem> {
-        let mut problems = button_problems(buttons, &self.mnemonics(buttons));
+        let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
+        let mut problems = button_problems(buttons, &mnemonics);
+        problems.extend(item_problems(buttons, &mnemonics, &item_mnemonics));
         for (parent, button) in buttons.iter().enumerate().filter(|(_, b)| self.opens_fan(b)) {
             let children = button.children();
             for problem in fan_out_problems(button.direction, children, &self.mnemonics(children)) {
@@ -355,6 +362,15 @@ impl PieMenu {
         resolve_mnemonics(buttons, self.settings.input.auto_mnemonics)
     }
 
+    /// The mnemonic key in effect for each declared item of each cluster among `buttons`:
+    /// per button, per item in declaration order (empty for a button that is not a
+    /// cluster). Items compete with the level's buttons for keys, so no key is handed
+    /// out twice; see [`ClusterItem`]. Inside the render closure, prefer
+    /// [`ButtonView::item_mnemonic`] and [`ButtonView::item_label`].
+    pub fn cluster_mnemonics(&self, buttons: &[PieButton]) -> Vec<Vec<Option<char>>> {
+        resolve_all(buttons, self.settings.input.auto_mnemonics).1
+    }
+
     /// The number-key hint for `button`, for drawing inside your own button so the button
     /// grows to fit it, e.g. `egui::Button::new((label, hint.text)).gap(spacing)`.
     ///
@@ -369,7 +385,7 @@ impl PieMenu {
     fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
         let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
         let hints = &self.settings.number_hints;
-        self.settings.input.use_number_keys.then(|| NumberHint {
+        (self.settings.input.use_number_keys && !button.is_cluster()).then(|| NumberHint {
             text: self.hint_digit(&dir).to_string(),
             color: button_text_color(hints.color, visuals, hovered, button.enabled),
             on_right: self.hint_on_right(&dir),
@@ -528,7 +544,8 @@ impl PieMenu {
     /// `buttons` is always the **root** level. When a button has children
     /// ([`PieButton::with_children`]), selecting it opens them as a sub-pie, replacing
     /// the level shown or fanning out next to it ([`SubPieStyle`]). The `usize` in
-    /// [`PieMenuResponse::Selected`] is the chosen button's index within its own level;
+    /// [`PieMenuResponse::Selected`] is the chosen button's index within its own level (for a
+    /// cluster's item: the number given to [`ButtonView::item`]);
     /// the full route to it is [`PieMenu::selected_path`], and each button's route is
     /// [`ButtonView::path`] in the render closure.
     ///
@@ -635,6 +652,11 @@ impl PieMenu {
                     PieMenuResponse::Selected(idx)
                 }
             }
+            LevelEvent::ClusterPick(button, item) => {
+                self.selected_path = self.path.clone();
+                self.selected_path.extend([button, item]);
+                PieMenuResponse::Selected(item)
+            }
             LevelEvent::CloseFan => {
                 self.dismiss_fan();
                 PieMenuResponse::None
@@ -685,7 +707,9 @@ impl PieMenu {
     }
 
     /// After [`PieMenuResponse::Selected`]: the full index path from the root to the
-    /// chosen button (the last element is the index within its level).
+    /// chosen button (the last element is the index within its level). For an item of a
+    /// cluster the last element is the item number and the one before it is the cluster
+    /// button's index within its level: `[.., cluster_button_index, n]`.
     pub fn selected_path(&self) -> &[usize] {
         &self.selected_path
     }
@@ -866,10 +890,13 @@ impl PieMenu {
     /// Number-key or mnemonic selection among `buttons` (a level, or an open fan-out's
     /// children). Matched keys and their text events are consumed, so they reach neither
     /// other handlers nor text fields.
-    fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton]) -> Option<usize> {
+    ///
+    /// Returns the button's index and, for a mnemonic of a cluster's item, its number.
+    /// `items`: whether cluster items take part (not in a fan-out).
+    fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton], items: bool) -> Option<(usize, Option<usize>)> {
         let mirror = self.settings.mirror_horizontal;
         if self.settings.input.use_number_keys {
-            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
                 let dir = Self::eff(&button.direction, mirror);
                 let key = Self::direction_numpad(&dir);
                 let digit = Self::direction_digit(&dir).to_string();
@@ -886,18 +913,30 @@ impl PieMenu {
                     hit
                 });
                 if hit {
-                    return Some(idx);
+                    return Some((idx, None));
                 }
             }
         }
 
         if self.settings.input.use_mnemonic_keys {
-            let mnemonics = self.mnemonics(buttons);
-            for (idx, mnemonic) in mnemonics.iter().enumerate() {
-                if !buttons[idx].enabled {
-                    continue;
+            let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
+            // Every key that can be pressed, in button order, items after their cluster's turn.
+            let mut owners: Vec<(char, usize, Option<usize>)> = Vec::new();
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+                if button.is_cluster() {
+                    if !items {
+                        continue;
+                    }
+                    for (item, m) in button.cluster_items().iter().zip(&item_mnemonics[idx]) {
+                        if let (true, Some(m)) = (item.enabled, *m) {
+                            owners.push((m, idx, Some(item.number)));
+                        }
+                    }
+                } else if let Some(m) = mnemonics[idx] {
+                    owners.push((m, idx, None));
                 }
-                let Some(m) = *mnemonic else { continue };
+            }
+            for (m, idx, item) in owners {
                 let target = fold_char(m);
                 let key = char_to_key(m);
                 let pressed = ctx.input_mut(|i| {
@@ -922,7 +961,7 @@ impl PieMenu {
                     hit
                 });
                 if pressed {
-                    return Some(idx);
+                    return Some((idx, item));
                 }
             }
         }
@@ -940,11 +979,12 @@ impl PieMenu {
         sizes: &mut [Vec2],
         mut centers: Option<&mut Vec<Pos2>>,
         render_button: &mut impl FnMut(&mut Ui, &ButtonView),
-    ) {
+    ) -> Vec<ItemHit> {
+        let items = std::cell::RefCell::new(Vec::new());
         let mirror = self.settings.mirror_horizontal;
         let shape_factor = self.settings.shape_factor;
         // Resolved once per frame for the view handed to the render closure.
-        let mnemonics = self.mnemonics(level.buttons);
+        let (mnemonics, item_mnemonics) = resolve_all(level.buttons, self.settings.input.auto_mnemonics);
         let visuals = ctx.global_style().visuals.clone();
         let body_font = ctx.global_style().text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
 
@@ -1051,6 +1091,8 @@ impl PieMenu {
                         body_font: body_font.clone(),
                         opens_fan: self.opens_fan(button),
                         scale,
+                        items: &items,
+                        item_mnemonics: &item_mnemonics[idx],
                     })
                 });
 
@@ -1072,6 +1114,7 @@ impl PieMenu {
             };
             ctx.set_transform_layer(response.response.layer_id, transform);
         }
+        items.into_inner()
     }
 
     fn show_level(
@@ -1289,13 +1332,15 @@ impl PieMenu {
         if keys_for_menu {
             match &fan {
                 Some(fan) => {
-                    if let Some(child) = self.key_pick(ctx, fan.children) {
+                    if let Some((child, _)) = self.key_pick(ctx, fan.children, false) {
                         return LevelEvent::FanPick(fan.trigger, child);
                     }
                 }
                 None => {
-                    if let Some(idx) = self.key_pick(ctx, buttons) {
-                        return LevelEvent::Pick(idx);
+                    match self.key_pick(ctx, buttons, true) {
+                        Some((idx, Some(item))) => return LevelEvent::ClusterPick(idx, item),
+                        Some((idx, None)) => return LevelEvent::Pick(idx),
+                        None => {}
                     }
                 }
             }
@@ -1477,7 +1522,7 @@ impl PieMenu {
         let path = self.path.clone();
         let mut sizes = std::mem::take(&mut self.button_sizes);
         let mut centers = std::mem::take(&mut self.button_centers);
-        self.draw_level(
+        let cluster_items = self.draw_level(
             ctx,
             now,
             &LevelDraw {
@@ -1573,11 +1618,36 @@ impl PieMenu {
             return LevelEvent::Pick(i);
         }
 
+        // A cluster item under the pointer: it wins over the angle-based pick (an item can
+        // reach into another button's sector). Not while a fan is open, which has the
+        // pointer to itself.
+        let item_at = |p: Pos2, clicked_only: bool| {
+            cluster_items
+                .iter()
+                .find(|it| {
+                    it.enabled
+                        && (it.clicked || !clicked_only)
+                        && it.rect.contains(p)
+                        && buttons.get(it.button).is_some_and(|b| {
+                            // A declared item can also be disabled by its declaration.
+                            b.enabled
+                                && b.is_cluster()
+                                && b.cluster_items().iter().all(|d| d.number != it.n || d.enabled)
+                        })
+                })
+                .map(|it| LevelEvent::ClusterPick(it.button, it.n))
+        };
+
         // Primary click selection — runs after render so closures (e.g. checkboxes)
         // receive the click event before we consume it.
         let opener = self.settings.fan_out_opener_action;
         if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked())
         {
+            if fan.is_none()
+                && let Some(event) = current_mouse_pos.and_then(|p| item_at(p, true))
+            {
+                return event;
+            }
             return match (current_mouse_pos, &fan) {
                 // In an open fan a click selects the highlighted child, if any.
                 // A click on the opening button breaks the fan out (or closes it, as set);
@@ -1615,6 +1685,9 @@ impl PieMenu {
                 }
                 return LevelEvent::Dismissed;
             } else if let Some(mouse_pos) = current_mouse_pos {
+                if let Some(event) = item_at(mouse_pos, false) {
+                    return event;
+                }
                 if (mouse_pos - center).length() <= dead_zone {
                     return LevelEvent::Dismissed;
                 } else if let Some(idx) = self.hovered_index {

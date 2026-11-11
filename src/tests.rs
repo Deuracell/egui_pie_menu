@@ -2027,3 +2027,720 @@ mod pie_hover_tests {
         assert_eq!(plain[1], idle);
     }
 }
+
+mod cluster_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const CENTER: Pos2 = Pos2::new(400.0, 300.0);
+    /// The item numbers, deliberately not in layout order.
+    const NUMS: [usize; 4] = [7, 3, 9, 1];
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Layout {
+        Row,
+        Spaced,
+        Column,
+        Grid,
+        /// One 420 px wide item (number 5): reaches far into the East button's sector.
+        Wide,
+    }
+
+    impl Layout {
+        fn nums(self) -> &'static [usize] {
+            match self {
+                Layout::Row | Layout::Spaced => &NUMS[..3],
+                Layout::Column | Layout::Grid => &NUMS,
+                Layout::Wide => &[5],
+            }
+        }
+    }
+
+    struct Rig {
+        ctx: egui::Context,
+        menu: PieMenu,
+        buttons: Vec<PieButton>,
+        layout: Layout,
+        /// Item number to draw disabled (`ui.add_enabled(false, ..)`).
+        disabled_item: Option<usize>,
+        /// Each item's rect, as the last frame drew it.
+        rects: BTreeMap<usize, Rect>,
+        /// `b.item` returned a response equal to the one given, every time.
+        same_response: bool,
+        /// Labels of the ordinary buttons drawn last frame (index -> number hint).
+        hints: BTreeMap<usize, Option<String>>,
+        /// Per item number (999: undeclared): `item_label(n)`'s layout job and `item_mnemonic(n)`.
+        item_labels: BTreeMap<usize, (egui::text::LayoutJob, Option<char>)>,
+        /// Draw a focused text field before the menu (egui then wants the keyboard).
+        focus_text: bool,
+        text: String,
+    }
+
+    /// A cluster at North (index 0), ordinary buttons at East (1) and West (2).
+    fn mixed() -> Vec<PieButton> {
+        vec![
+            PieButton::cluster(PieDirection::North).with_label("Zeta"),
+            PieButton::new(PieDirection::East).with_label("Zoom"),
+            PieButton::new(PieDirection::West).with_label("Alpha"),
+        ]
+    }
+
+    fn click_at(pos: Pos2) -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+    }
+
+    impl Rig {
+        fn new(buttons: Vec<PieButton>, layout: Layout) -> Self {
+            let mut menu = PieMenu::new();
+            menu.settings.animations.reveal = RevealAnimation::None;
+            menu.open(CENTER);
+            menu.reveal();
+            let mut rig = Self {
+                ctx: egui::Context::default(),
+                menu,
+                buttons,
+                layout,
+                disabled_item: None,
+                rects: BTreeMap::new(),
+                same_response: true,
+                hints: BTreeMap::new(),
+                item_labels: BTreeMap::new(),
+                focus_text: false,
+                text: String::new(),
+            };
+            rig.settle();
+            rig
+        }
+
+        /// Frames with no pointer, so every button is laid out at its real size.
+        fn settle(&mut self) {
+            for _ in 0..3 {
+                self.frame(None, true, &[]);
+            }
+        }
+
+        fn frame(&mut self, pointer: Option<Pos2>, key_down: bool, keys: &[Key]) -> PieMenuResponse {
+            let events = keys
+                .iter()
+                .map(|&key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
+                .collect();
+            self.frame_with(pointer, key_down, events)
+        }
+
+        fn frame_with(&mut self, pointer: Option<Pos2>, key_down: bool, events: Vec<egui::Event>) -> PieMenuResponse {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let (layout, disabled_item) = (self.layout, self.disabled_item);
+            let (mut rects, mut same, mut hints) = (BTreeMap::new(), true, BTreeMap::new());
+            let (menu, buttons) = (&mut self.menu, &self.buttons);
+            let (focus_text, text) = (self.focus_text, &mut self.text);
+            let mut labels = BTreeMap::new();
+            let mut resp = PieMenuResponse::None;
+            let mut out = self.ctx.run_ui(input, |ui| {
+                if focus_text {
+                    ui.text_edit_singleline(text).request_focus();
+                }
+                resp = menu.show_with_pointer(ui.ctx(), buttons, pointer, key_down, |ui, b| {
+                    hints.insert(b.idx, b.number_hint.as_ref().map(|h| h.text.clone()));
+                    if !b.button.is_cluster() {
+                        ui.label(b.label_text());
+                        return;
+                    }
+                    for n in b.button.cluster_items().iter().map(|i| i.number).chain([999]) {
+                        labels.insert(n, (b.item_label(n).to_job(), b.item_mnemonic(n)));
+                    }
+                    let mut item = |ui: &mut Ui, n: usize, width: Option<f32>| {
+                        let text = format!("Item {n}");
+                        let enabled = disabled_item != Some(n);
+                        let response = match width {
+                            Some(w) => ui.add_enabled(enabled, egui::Button::new(text).min_size(Vec2::new(w, 20.0))),
+                            None => ui.add_enabled(enabled, egui::Button::new(text)),
+                        };
+                        let returned = b.item(n, response.clone());
+                        same &= returned.rect == response.rect && returned.id == response.id;
+                        rects.insert(n, response.rect);
+                    };
+                    match layout {
+                        Layout::Row => {
+                            ui.horizontal(|ui| NUMS[..3].iter().for_each(|&n| item(ui, n, None)));
+                        }
+                        Layout::Spaced => {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 30.0;
+                                NUMS[..3].iter().for_each(|&n| item(ui, n, None));
+                            });
+                        }
+                        Layout::Column => {
+                            ui.vertical(|ui| NUMS.iter().for_each(|&n| item(ui, n, None)));
+                        }
+                        Layout::Grid => {
+                            egui::Grid::new("cluster_grid").show(ui, |ui| {
+                                item(ui, NUMS[0], None);
+                                item(ui, NUMS[1], None);
+                                ui.end_row();
+                                item(ui, NUMS[2], None);
+                                item(ui, NUMS[3], None);
+                                ui.end_row();
+                            });
+                        }
+                        Layout::Wide => item(ui, 5, Some(420.0)),
+                    }
+                });
+            });
+            out.textures_delta.clear();
+            if !rects.is_empty() {
+                self.rects = rects;
+            }
+            if !labels.is_empty() {
+                self.item_labels = labels;
+            }
+            self.same_response &= same;
+            if !hints.is_empty() {
+                self.hints = hints;
+            }
+            resp
+        }
+
+        fn centre_of(&self, n: usize) -> Pos2 {
+            self.rects[&n].center()
+        }
+
+        fn click(&mut self, pos: Pos2) -> PieMenuResponse {
+            self.frame_with(Some(pos), true, click_at(pos))
+        }
+
+        /// The menu's drawn centre (it may have been shifted to fit the screen).
+        fn centre(&self) -> Pos2 {
+            self.menu.display_center
+        }
+
+        /// A point in the cluster's sector (straight up from the centre, past the dead
+        /// zone) that is on none of the items.
+        fn dead_spot(&self) -> Pos2 {
+            let p = self.centre() + Vec2::new(0.0, -(self.menu.settings.dead_zone_radius + 3.0));
+            assert!(self.rects.values().all(|r| !r.contains(p)), "the spot must be off every item");
+            p
+        }
+    }
+
+    const LAYOUTS: [Layout; 4] = [Layout::Row, Layout::Spaced, Layout::Column, Layout::Grid];
+
+    #[test]
+    fn api_basics() {
+        let c = PieButton::cluster(PieDirection::North);
+        assert!(c.is_cluster());
+        assert!(c.children().is_empty());
+        assert!(c.label.is_empty());
+        assert_eq!(c.mnemonic, Mnemonic::None);
+        assert!(matches!(c.kind, PieButtonKind::Cluster(_)));
+        assert!(c.cluster_items().is_empty());
+        assert!(!PieButton::new(PieDirection::North).is_cluster());
+        assert!(!PieMenu::new().opens_fan(&c));
+        assert_eq!(c.with_label("x").label, "x");
+    }
+
+    #[test]
+    fn clicking_each_item_selects_its_number_in_every_layout() {
+        for layout in LAYOUTS {
+            for &n in layout.nums() {
+                let mut rig = Rig::new(mixed(), layout);
+                assert_eq!(rig.rects.len(), layout.nums().len());
+                let pos = rig.centre_of(n);
+                assert_eq!(rig.click(pos), PieMenuResponse::Selected(n), "item {n}");
+                assert_eq!(rig.menu.selected_path(), &[0, n]);
+                assert!(!rig.menu.is_open());
+            }
+        }
+    }
+
+    #[test]
+    fn a_spaced_row_has_gaps_between_the_items() {
+        let rig = Rig::new(mixed(), Layout::Spaced);
+        let gap = rig.rects[&3].min.x - rig.rects[&7].max.x;
+        assert!(gap >= 29.0, "gap {gap}");
+        // The gap itself is not an item.
+        let mid = Pos2::new((rig.rects[&3].min.x + rig.rects[&7].max.x) / 2.0, rig.rects[&7].center().y);
+        let mut rig = rig;
+        assert_eq!(rig.click(mid), PieMenuResponse::None);
+    }
+
+    #[test]
+    fn releasing_on_an_item_selects_it_and_releasing_beside_the_items_dismisses() {
+        for layout in LAYOUTS {
+            for &n in layout.nums() {
+                let mut rig = Rig::new(mixed(), layout);
+                let pos = rig.centre_of(n);
+                rig.frame(Some(pos), true, &[]);
+                assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Selected(n));
+                assert_eq!(rig.menu.selected_path(), &[0, n]);
+                assert!(!rig.menu.is_open());
+            }
+        }
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        let spot = rig.dead_spot();
+        rig.frame(Some(spot), true, &[]);
+        assert_eq!(rig.frame(Some(spot), false, &[]), PieMenuResponse::Dismissed);
+        assert!(!rig.menu.is_open());
+    }
+
+    #[test]
+    fn the_clusters_direction_is_dead() {
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        let spot = rig.dead_spot();
+        rig.frame(Some(spot), true, &[]);
+        assert_eq!(rig.menu.hovered(), None);
+        // Far out in the same direction, beside the items: still nothing.
+        let far = rig.centre() + Vec2::new(0.0, -250.0);
+        rig.frame(Some(far), true, &[]);
+        assert_eq!(rig.menu.hovered(), None);
+        // A click there selects nothing either.
+        assert_eq!(rig.click(spot), PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+
+        // The neighbours still highlight, and the cluster is never skipped over to them:
+        // slightly towards East from the cluster's direction is still the cluster's sector.
+        let near_north = rig.centre() + Vec2::new(10.0, -60.0);
+        rig.frame(Some(near_north), true, &[]);
+        assert_eq!(rig.menu.hovered(), None);
+        rig.frame(Some(rig.centre() + Vec2::new(60.0, 0.0)), true, &[]);
+        assert_eq!(rig.menu.hovered(), Some(1));
+    }
+
+    #[test]
+    fn no_number_key_or_mnemonic_selects_a_cluster() {
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        rig.menu.settings.input.auto_mnemonics = true;
+        assert_eq!(rig.frame(None, true, &[Key::Num8]), PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+        // The cluster has no hint, the others do; and it never gets a mnemonic.
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.hints[&0], None);
+        assert_eq!(rig.hints[&1].as_deref(), Some("6"));
+        assert_eq!(rig.menu.number_hint(&rig.buttons[0]), None);
+        assert!(rig.menu.number_hint(&rig.buttons[1]).is_some());
+        // "Zeta" would have claimed Z, which stays with "Zoom"; "Alpha" keeps A.
+        let m = rig.menu.mnemonics(&rig.buttons);
+        assert_eq!(m, [None, Some('z'), Some('a')]);
+        // An explicit mnemonic on a cluster is ignored too, and does not reserve its key.
+        let mut buttons = mixed();
+        buttons[0] = buttons[0].clone().with_mnemonic('z');
+        assert_eq!(rig.menu.mnemonics(&buttons), [None, Some('z'), Some('a')]);
+        assert!(rig.menu.check_buttons(&buttons).is_empty());
+        // Typing the letter picks the ordinary button.
+        let ev = vec![egui::Event::Text("z".into())];
+        assert_eq!(rig.frame_with(None, true, ev), PieMenuResponse::Selected(1));
+    }
+
+    #[test]
+    fn with_clicks_off_a_click_does_nothing_and_a_release_selects() {
+        let mut rig = Rig::new(mixed(), Layout::Column);
+        rig.menu.settings.input.select_on_primary_click = false;
+        let pos = rig.centre_of(9);
+        assert_eq!(rig.click(pos), PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+        assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Selected(9));
+        assert_eq!(rig.menu.selected_path(), &[0, 9]);
+    }
+
+    #[test]
+    fn disabled_items_and_disabled_clusters_cannot_be_selected() {
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        rig.disabled_item = Some(3);
+        rig.settle();
+        let pos = rig.centre_of(3);
+        assert_eq!(rig.click(pos), PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+        rig.frame(Some(pos), true, &[]);
+        assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Dismissed);
+        // Its neighbours still work.
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        rig.disabled_item = Some(3);
+        rig.settle();
+        let pos = rig.centre_of(9);
+        assert_eq!(rig.click(pos), PieMenuResponse::Selected(9));
+
+        // A disabled cluster button: none of its items.
+        let mut buttons = mixed();
+        buttons[0].enabled = false;
+        let mut rig = Rig::new(buttons.clone(), Layout::Row);
+        let pos = rig.centre_of(7);
+        // Like any disabled button its sector snaps to the closest enabled one (West here),
+        // but never to one of its items.
+        rig.click(pos);
+        assert_ne!(rig.menu.selected_path(), &[0, 7]);
+        let mut rig = Rig::new(buttons, Layout::Row);
+        let pos = rig.centre_of(7);
+        rig.frame(Some(pos), true, &[]);
+        rig.frame(Some(pos), false, &[]);
+        assert_ne!(rig.menu.selected_path(), &[0, 7]);
+    }
+
+    #[test]
+    fn a_cluster_inside_a_replace_style_sub_pie() {
+        let root = vec![PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+            PieButton::cluster(PieDirection::North),
+            PieButton::new(PieDirection::South).with_label("Down"),
+        ])];
+        assert!(PieMenu::new().check_buttons(&root).is_empty());
+        let mut rig = Rig::new(root, Layout::Grid);
+        rig.frame(None, true, &[Key::Num6]);
+        assert_eq!(rig.menu.path(), &[0]);
+        rig.settle();
+        assert_eq!(rig.rects.len(), 4);
+        let pos = rig.centre_of(1);
+        assert_eq!(rig.click(pos), PieMenuResponse::Selected(1));
+        assert_eq!(rig.menu.selected_path(), &[0, 0, 1]);
+        assert!(!rig.menu.is_open());
+    }
+
+    #[test]
+    fn a_pinned_menu_stays_open_after_an_item_is_clicked() {
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        rig.menu.pin(CENTER);
+        rig.settle();
+        for n in [3, 9] {
+            let pos = rig.centre_of(n);
+            assert_eq!(rig.click(pos), PieMenuResponse::Selected(n));
+            assert_eq!(rig.menu.selected_path(), &[0, n]);
+            assert!(rig.menu.is_open() && rig.menu.is_pinned());
+            rig.settle();
+        }
+    }
+
+    #[test]
+    fn a_cluster_in_a_fan_out_is_a_problem() {
+        let m = PieMenu::new();
+        let level = vec![PieButton::new(PieDirection::East).with_fan_out(vec![
+            PieButton::new(PieDirection::South),
+            PieButton::cluster(PieDirection::North),
+        ])];
+        assert_eq!(
+            m.check_buttons(&level),
+            vec![ButtonProblem::InFanOut { parent: 0, problem: Box::new(ButtonProblem::NestedInFanOut { button: 1 }) }]
+        );
+        let text = m.check_buttons(&level)[0].to_string();
+        assert!(text.contains("a sub-pie or cluster of its own"), "{text}");
+        // As an ordinary replace-style child it is fine.
+        assert!(m.check_buttons(&[level[0].clone().with_sub_pie_style(Some(SubPieStyle::Replace))]).is_empty());
+    }
+
+    #[test]
+    fn an_item_reaching_into_another_sector_wins_over_that_buttons_pick() {
+        let mut rig = Rig::new(mixed(), Layout::Wide);
+        let rect = rig.rects[&5];
+        let spot = Pos2::new(rect.max.x - 8.0, rect.center().y);
+        // That spot is nearer the East direction than North: without the item it is East's.
+        let v = spot - rig.centre();
+        assert!(v.x > -v.y, "the spot is in East's half: {v:?}");
+        rig.frame(Some(spot), true, &[]);
+        assert_eq!(rig.menu.hovered(), Some(1), "the pie itself points at East there");
+        assert_eq!(rig.click(spot), PieMenuResponse::Selected(5));
+        assert_eq!(rig.menu.selected_path(), &[0, 5], "the item, not the East button");
+
+        // Releasing there selects the item too.
+        let mut rig = Rig::new(mixed(), Layout::Wide);
+        rig.frame(Some(spot), true, &[]);
+        assert_eq!(rig.frame(Some(spot), false, &[]), PieMenuResponse::Selected(5));
+        assert_eq!(rig.menu.selected_path(), &[0, 5]);
+    }
+
+    #[test]
+    fn ordinary_buttons_next_to_a_cluster_still_work() {
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        let east = rig.centre() + Vec2::new(150.0, 0.0);
+        rig.frame(Some(east), true, &[]);
+        assert_eq!(rig.menu.hovered(), Some(1));
+        assert_eq!(rig.click(east), PieMenuResponse::Selected(1));
+        assert_eq!(rig.menu.selected_path(), &[1]);
+
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        let west = rig.centre() + Vec2::new(-150.0, 0.0);
+        rig.frame(Some(west), true, &[]);
+        assert_eq!(rig.menu.hovered(), Some(2));
+        assert_eq!(rig.frame(Some(west), false, &[]), PieMenuResponse::Selected(2));
+
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        assert_eq!(rig.frame(None, true, &[Key::Num6]), PieMenuResponse::Selected(1));
+
+        // Keys 4 and 8 only reach the West button; the cluster's 8 does nothing.
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        assert_eq!(rig.frame(None, true, &[Key::Num4]), PieMenuResponse::Selected(2));
+
+        // `b.item` hands the response back unchanged.
+        assert!(rig.same_response);
+    }
+
+    #[test]
+    fn the_cluster_is_never_hovered_so_nothing_emphasises_it() {
+        let mut rig = Rig::new(mixed(), Layout::Row);
+        let spot = rig.dead_spot();
+        for _ in 0..4 {
+            rig.frame(Some(spot), true, &[]);
+        }
+        assert_eq!(rig.menu.hovered(), None);
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    // ── Declared items: mnemonics ────────────────────────────────────────────────
+
+    fn items(list: &[(usize, &str)]) -> Vec<ClusterItem> {
+        list.iter().map(|&(n, l)| ClusterItem::new(n, l)).collect()
+    }
+
+    /// Cluster North with items 7 "Cut", 3 "Cursor", 9 "Paste"; "Copy" East; "Zoom" West.
+    fn declared() -> Vec<PieButton> {
+        vec![
+            PieButton::cluster(PieDirection::North).with_items(items(&[(7, "Cut"), (3, "Cursor"), (9, "Paste")])),
+            PieButton::new(PieDirection::East).with_label("Copy"),
+            PieButton::new(PieDirection::West).with_label("Zoom"),
+        ]
+    }
+
+    fn with_auto(buttons: Vec<PieButton>) -> Rig {
+        let mut rig = Rig::new(buttons, Layout::Row);
+        rig.menu.settings.input.auto_mnemonics = true;
+        rig
+    }
+
+    fn typed(c: char) -> Vec<egui::Event> {
+        vec![egui::Event::Text(c.to_string())]
+    }
+
+    #[test]
+    fn pressing_an_auto_mnemonic_selects_the_item_with_its_number() {
+        let probe = with_auto(declared());
+        let keys = probe.menu.cluster_mnemonics(&probe.buttons);
+        assert_eq!(keys.len(), 3);
+        assert!(keys[1].is_empty() && keys[2].is_empty());
+        for (k, n) in [7usize, 3, 9].into_iter().enumerate() {
+            let c = keys[0][k].expect("every item has a key");
+            let mut rig = with_auto(declared());
+            assert_eq!(rig.frame_with(None, true, typed(c)), PieMenuResponse::Selected(n), "key {c}");
+            assert_eq!(rig.menu.selected_path(), &[0, n]);
+            assert!(!rig.menu.is_open());
+        }
+        // Without auto mnemonics there are no keys, and typing does nothing.
+        let mut rig = Rig::new(declared(), Layout::Row);
+        assert_eq!(rig.menu.cluster_mnemonics(&rig.buttons), vec![vec![None; 3], vec![], vec![]]);
+        assert_eq!(rig.frame_with(None, true, typed('p')), PieMenuResponse::None);
+        // The use_mnemonic_keys switch gates items like buttons.
+        let mut rig = with_auto(declared());
+        rig.menu.settings.input.use_mnemonic_keys = false;
+        assert_eq!(rig.frame_with(None, true, typed('p')), PieMenuResponse::None);
+    }
+
+    #[test]
+    fn auto_keys_are_distinct_across_buttons_and_items() {
+        let rig = with_auto(declared());
+        let m = rig.menu.mnemonics(&rig.buttons);
+        let c = rig.menu.cluster_mnemonics(&rig.buttons);
+        let mut all: Vec<char> = m.iter().flatten().copied().chain(c.iter().flatten().flatten().copied()).collect();
+        assert_eq!(all.len(), 5, "Copy, Zoom and three items all have a key");
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), 5, "no key twice: {m:?} {c:?}");
+        assert_eq!(m[0], None);
+        assert!(rig.menu.check_buttons(&rig.buttons).is_empty());
+        // The button side of a clash-prone set: "Copy" and the items "Cut"/"Cursor" all want C.
+        let copy = rig.menu.mnemonics(&rig.buttons)[1];
+        assert!(c[0].iter().all(|k| *k != copy));
+    }
+
+    #[test]
+    fn an_explicit_item_key_is_reserved_against_auto_keys() {
+        let mut buttons = declared();
+        buttons[0] = PieButton::cluster(PieDirection::North).with_items(vec![
+            ClusterItem::new(7, "Cut").with_mnemonic('C'),
+            ClusterItem::new(3, "Cursor"),
+            ClusterItem::new(9, "Paste"),
+        ]);
+        let rig = with_auto(buttons);
+        let c = rig.menu.cluster_mnemonics(&rig.buttons);
+        assert_eq!(c[0][0], Some('c'));
+        assert_ne!(rig.menu.mnemonics(&rig.buttons)[1], Some('c'), "Copy avoids the reserved c");
+        assert!(c[0][1].is_some() && c[0][1] != Some('c'));
+        assert!(rig.menu.check_buttons(&rig.buttons).is_empty());
+        // Typing it selects the item, not the button.
+        let mut rig = rig;
+        assert_eq!(rig.frame_with(None, true, typed('c')), PieMenuResponse::Selected(7));
+        assert_eq!(rig.menu.selected_path(), &[0, 7]);
+    }
+
+    #[test]
+    fn items_without_a_key_or_disabled_are_not_selectable_by_key() {
+        let buttons = vec![
+            PieButton::cluster(PieDirection::North).with_items(vec![
+                ClusterItem::new(7, "Cut").without_mnemonic(),
+                ClusterItem::new(3, "Cursor").with_enabled(false),
+                ClusterItem::new(9, "Paste"),
+            ]),
+            PieButton::new(PieDirection::East).with_label("Cursor"),
+        ];
+        let mut rig = with_auto(buttons.clone());
+        let c = rig.menu.cluster_mnemonics(&rig.buttons);
+        assert_eq!(c[0][..2], [None, None]);
+        assert!(c[0][2].is_some());
+        // The disabled item reserves nothing: the button takes the C.
+        assert_eq!(rig.menu.mnemonics(&rig.buttons)[1], Some('c'));
+        assert_eq!(rig.frame_with(None, true, typed('c')), PieMenuResponse::Selected(1));
+        // A disabled item is not selectable by click or release either, though drawn enabled.
+        let mut rig = with_auto(buttons.clone());
+        let pos = rig.centre_of(3);
+        assert_eq!(rig.click(pos), PieMenuResponse::None);
+        rig.frame(Some(pos), true, &[]);
+        assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Dismissed);
+        // A disabled cluster button: none of its items has a key.
+        let mut disabled = buttons;
+        disabled[0].enabled = false;
+        let rig = with_auto(disabled);
+        assert_eq!(rig.menu.cluster_mnemonics(&rig.buttons)[0], vec![None; 3]);
+    }
+
+    #[test]
+    fn an_undeclared_number_still_works_by_click_but_has_no_key() {
+        let buttons = vec![
+            PieButton::cluster(PieDirection::North).with_items(items(&[(7, "Cut")])),
+            PieButton::new(PieDirection::East).with_label("Copy"),
+        ];
+        let mut rig = with_auto(buttons);
+        let pos = rig.centre_of(3); // drawn by the closure, never declared
+        assert_eq!(rig.click(pos), PieMenuResponse::Selected(3));
+        assert_eq!(rig.menu.selected_path(), &[0, 3]);
+    }
+
+    #[test]
+    fn the_clusters_number_key_does_nothing_but_the_others_work() {
+        let mut rig = with_auto(declared());
+        assert_eq!(rig.frame(None, true, &[Key::Num8]), PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+        assert_eq!(rig.menu.number_hint(&rig.buttons[0]), None);
+        assert_eq!(rig.frame(None, true, &[Key::Num6]), PieMenuResponse::Selected(1));
+        let mut rig = with_auto(declared());
+        assert_eq!(rig.frame(None, true, &[Key::Num4]), PieMenuResponse::Selected(2));
+    }
+
+    #[test]
+    fn item_label_underlines_the_items_mnemonic() {
+        let rig = with_auto(declared());
+        let mut rig = rig;
+        rig.settle();
+        let keys = rig.menu.cluster_mnemonics(&rig.buttons);
+        for (k, n) in [7usize, 3, 9].into_iter().enumerate() {
+            let (job, m) = &rig.item_labels[&n];
+            assert_eq!(*m, keys[0][k], "item_mnemonic agrees with cluster_mnemonics");
+            let underlined: Vec<&str> = job
+                .sections
+                .iter()
+                .filter(|s| s.format.underline != Stroke::NONE)
+                .map(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0])
+                .collect();
+            assert_eq!(underlined.len(), 1, "item {n}: {:?}", job.text);
+            assert_eq!(underlined[0].to_lowercase(), m.unwrap().to_string());
+        }
+        assert_eq!(rig.item_labels[&7].0.text, "Cut");
+        assert_eq!(rig.item_labels[&9].0.text, "Paste");
+        // An undeclared number: empty label, no key.
+        let (job, m) = &rig.item_labels[&999];
+        assert!(job.text.is_empty() && m.is_none());
+    }
+
+    #[test]
+    fn check_buttons_reports_item_number_and_key_clashes() {
+        let m = PieMenu::new();
+        let dup_numbers = vec![PieButton::cluster(PieDirection::North).with_items(items(&[(4, "A"), (5, "B"), (4, "C")]))];
+        let problems = m.check_buttons(&dup_numbers);
+        assert_eq!(problems, vec![ButtonProblem::DuplicateItemNumber { cluster: 0, first: 0, second: 2, number: 4 }]);
+        assert_eq!(problems[0].buttons(), [0]);
+        assert!(problems[0].to_string().contains("number 4"));
+
+        // An item and a button.
+        let level = vec![
+            PieButton::new(PieDirection::East).with_mnemonic('x'),
+            PieButton::cluster(PieDirection::North).with_items(vec![ClusterItem::new(0, "a").with_mnemonic('X')]),
+        ];
+        let problems = m.check_buttons(&level);
+        let expected = ButtonProblem::DuplicateItemMnemonic {
+            first: MnemonicOwner::Button(0),
+            second: MnemonicOwner::Item { cluster: 1, item: 0 },
+            key: 'x',
+        };
+        assert_eq!(problems, vec![expected]);
+        assert_eq!(problems[0].buttons(), [0, 1]);
+        assert_eq!(problems[0].to_string(), "button 0 and item 0 of cluster 1 share the mnemonic 'x'");
+
+        // Two items of one cluster; and of two clusters.
+        let level = vec![
+            PieButton::cluster(PieDirection::North)
+                .with_items(vec![ClusterItem::new(0, "a").with_mnemonic('q'), ClusterItem::new(1, "b").with_mnemonic('q')]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(0, "c").with_mnemonic('q')]),
+        ];
+        let problems = m.check_buttons(&level);
+        assert_eq!(problems.len(), 2);
+        assert_eq!(problems[0].buttons(), [0], "same cluster: listed once");
+        assert_eq!(problems[1].buttons(), [0, 1]);
+
+        // Disabled items clash with nothing.
+        let level = vec![
+            PieButton::new(PieDirection::East).with_mnemonic('x'),
+            PieButton::cluster(PieDirection::North)
+                .with_items(vec![ClusterItem::new(0, "a").with_mnemonic('x').with_enabled(false)]),
+        ];
+        assert!(m.check_buttons(&level).is_empty());
+        // A cluster child of a fan-out is still flagged.
+        let fan = vec![PieButton::new(PieDirection::East).with_fan_out(vec![PieButton::cluster(PieDirection::North)])];
+        assert!(matches!(
+            &m.check_buttons(&fan)[0],
+            ButtonProblem::InFanOut { problem, .. } if **problem == ButtonProblem::NestedInFanOut { button: 0 }
+        ));
+    }
+
+    #[test]
+    fn item_mnemonics_in_a_pinned_menu_yield_to_a_focused_text_field() {
+        let mut rig = with_auto(declared());
+        rig.menu.pin(CENTER);
+        rig.settle();
+        let c = rig.menu.cluster_mnemonics(&rig.buttons)[0][2].unwrap(); // Paste (9)
+        rig.focus_text = true;
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.frame_with(None, true, typed(c)), PieMenuResponse::None, "the text field has the key");
+        assert!(rig.menu.is_open());
+        rig.focus_text = false;
+        rig.ctx.memory_mut(|mem| mem.stop_text_input());
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.frame_with(None, true, typed(c)), PieMenuResponse::Selected(9));
+        assert!(rig.menu.is_open() && rig.menu.is_pinned());
+    }
+
+    #[test]
+    fn a_sub_pie_resolves_item_mnemonics_for_its_own_level() {
+        let root = vec![
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::cluster(PieDirection::North).with_items(items(&[(7, "Cut"), (3, "Zap"), (9, "Paste")])),
+                PieButton::new(PieDirection::South).with_label("Down"),
+            ]),
+            PieButton::new(PieDirection::West).with_label("Cat"),
+        ];
+        let mut rig = with_auto(root);
+        // At the root the C belongs to "Cat".
+        assert_eq!(rig.menu.mnemonics(&rig.buttons), [Some('m'), Some('c')]);
+        rig.frame(None, true, &[Key::Num6]);
+        assert_eq!(rig.menu.path(), &[0]);
+        rig.settle();
+        // In the sub-pie level the same key belongs to the item "Cut".
+        let level = rig.menu.current_buttons(&rig.buttons).to_vec();
+        let keys = rig.menu.cluster_mnemonics(&level);
+        assert_eq!(keys[0][0], Some('c'));
+        assert_eq!(rig.frame_with(None, true, typed('c')), PieMenuResponse::Selected(7));
+        assert_eq!(rig.menu.selected_path(), &[0, 0, 7]);
+    }
+}
