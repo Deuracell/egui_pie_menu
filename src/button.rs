@@ -265,9 +265,23 @@ pub struct ButtonView<'a> {
     pub rtl: bool,
     pub(crate) text_color: Color32,
     pub(crate) body_font: FontId,
+    pub(crate) opens_fan: bool,
 }
 
 impl ButtonView<'_> {
+    /// Whether selecting this button opens a sub-pie (replace style or fan-out) instead of
+    /// being an action of its own. Lets your closure draw such "folder" buttons differently.
+    pub fn opens_sub_pie(&self) -> bool {
+        !self.button.children().is_empty()
+    }
+
+    /// Whether this button opens its sub-pie as a fan-out ([`SubPieStyle::FanOut`], from
+    /// its own style or the menu's) rather than replacing the level. Implies
+    /// [`Self::opens_sub_pie`].
+    pub fn opens_fan_out(&self) -> bool {
+        self.opens_fan
+    }
+
     /// The text colour in effect for this button: what [`Self::label_text`] uses (egui's
     /// widget text colour for its state, or [`PieMenuSettings::text_color`] when set;
     /// greyed out when disabled). For drawing extras of your own, such as a marker at the

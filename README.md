@@ -120,6 +120,8 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
 | `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color` is resolved for the button's state (see "Text colour") |
 | `b.text_color()` | The text colour in effect for this button (what `label_text()` uses), for extras you draw yourself |
+| `b.opens_sub_pie()` | The button opens a sub-pie (replace style or fan-out) instead of being an action: lets you draw folder buttons differently |
+| `b.opens_fan_out()` | The button opens its sub-pie as a fan-out (implies `opens_sub_pie()`) |
 | `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour per "Text colour" below, egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
@@ -152,6 +154,11 @@ Related:
 |---|---|
 | Hold key/button, move mouse, release over a button | `Selected(idx)` |
 | Hold key/button, move mouse to centre, release | `Dismissed` |
+| Release in a fan-out on a fan button | `Selected(..)` of that button |
+| Release in a fan-out on its opening button | Nothing: the fan stays open (click or keyboard driven) |
+| Release in a fan-out over nothing (blocked sector, dead zone, outside the window) | `Dismissed` |
+| Click in a fan-out on nothing | The fan closes, the menu stays open (`None`) |
+| Release with nothing selectable (every button disabled, no pointer) | `Dismissed` |
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
 | Number key 1–9 or mnemonic key | `Selected(idx)` |
@@ -344,6 +351,7 @@ menu.settings.fan_out_radius = None;                    // the fan's own radius;
 - While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons. The parent's centre and its other buttons are greyed out, and those buttons cannot be highlighted.
 - The fan's highlighted button moves outward and grows slightly (see "Hover emphasis").
 - The pointer picks among the fan's buttons by angle from the opening button's centre. On the opening button itself, or pointing back at the parent, nothing is highlighted.
+- Releasing the key on the opening button keeps the fan open; releasing over nothing else in a fan dismisses the menu. A click on nothing closes the fan (the menu stays open) and, like Backspace or a back button in the fan, it does not pop back open while the pointer rests on its button: move off the button and back to reopen it.
 - `menu.open_fan_out()` returns the opening button's index and the highlighted fan button, if a fan is open. A fan is not a level: `menu.path()` and `menu.current_buttons(&root)` still describe the parent.
 
 #### Replace

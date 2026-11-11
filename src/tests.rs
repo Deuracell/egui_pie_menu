@@ -1248,6 +1248,143 @@ mod fan_out_tests {
         assert_eq!(rig.menu.open_fan_out(), None);
     }
 
+    // ── Missing a target in a fan, or at the root ────────────────────────────────
+
+    fn click_at(pos: Pos2) -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+    }
+
+    /// A point beside the fan's opening button, up and back towards the parent: in the
+    /// blocked sector, outside the button, and still outside the ring's inner area.
+    const BLOCKED: Pos2 = Pos2::new(485.0, 255.0);
+
+    #[test]
+    fn releasing_on_the_fans_button_keeps_it_open_but_releasing_on_nothing_dismisses() {
+        let at_ring = Pos2::new(505.0, 300.0);
+        let mut rig = Rig::new(buttons());
+        rig.point(at_ring);
+        let trigger = rig.trigger();
+        rig.point(trigger);
+        assert!(rig.menu.open_fan_out().is_some());
+        // Key released on the opening button: like a sub-pie button, it opens and stays.
+        assert_eq!(rig.frame(Some(trigger), false, &[]).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_some());
+
+        // Key released over nothing (the blocked sector): cancel, as in the centre.
+        let mut rig = Rig::new(buttons());
+        rig.frame(None, true, &[Key::Num6]); // opens the fan by key
+        rig.point(BLOCKED);
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)), "nothing is highlighted there");
+        assert_eq!(rig.frame(Some(BLOCKED), false, &[]).0, PieMenuResponse::Dismissed);
+        assert!(!rig.menu.is_open());
+    }
+
+    #[test]
+    fn clicking_on_nothing_closes_the_fan_and_it_stays_closed_under_the_resting_pointer() {
+        let at_ring = Pos2::new(505.0, 300.0);
+        let mut rig = Rig::new(buttons());
+        rig.point(at_ring);
+        let trigger = rig.trigger();
+        assert!(rig.menu.open_fan_out().is_some());
+        // Click on the opening button: the fan closes, the menu stays.
+        assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+        assert_eq!(rig.menu.open_fan_out(), None);
+        for _ in 0..3 {
+            rig.time += 0.1;
+            rig.frame(Some(at_ring), true, &[]);
+        }
+        assert_eq!(rig.menu.open_fan_out(), None, "no popping straight back open under the pointer");
+        // Moving away and out again opens it as usual.
+        rig.point(Pos2::new(450.0, 300.0));
+        rig.point(at_ring);
+        assert!(rig.menu.open_fan_out().is_some());
+
+        // The same for a click in the blocked sector.
+        let mut rig = Rig::new(buttons());
+        rig.frame(None, true, &[Key::Num6]);
+        rig.point(BLOCKED);
+        assert_eq!(rig.frame_with(Some(BLOCKED), true, click_at(BLOCKED)).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
+    }
+
+    #[test]
+    fn backspace_closes_the_fan_for_good_while_the_pointer_rests_on_its_button() {
+        let at_ring = Pos2::new(505.0, 300.0);
+        let mut rig = Rig::new(buttons());
+        rig.point(at_ring);
+        assert!(rig.menu.open_fan_out().is_some());
+        rig.frame(Some(at_ring), true, &[Key::Backspace]);
+        for _ in 0..3 {
+            rig.time += 0.1;
+            rig.frame(Some(at_ring), true, &[]);
+        }
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    #[test]
+    fn releasing_with_nothing_selectable_dismisses_instead_of_stranding_the_menu() {
+        let all_disabled = || vec![PieButton::new(PieDirection::North).with_enabled(false)];
+        let above = Some(Pos2::new(400.0, 200.0));
+        let mut rig = Rig::new(all_disabled());
+        rig.frame(above, true, &[]);
+        assert_eq!(rig.frame(above, false, &[]).0, PieMenuResponse::Dismissed);
+        // No pointer at all at release (outside the window): also a cancel.
+        let mut rig = Rig::new(buttons());
+        assert_eq!(rig.frame(None, false, &[]).0, PieMenuResponse::Dismissed);
+    }
+
+    /// The closure can tell folders (buttons that only open something) from actions.
+    #[test]
+    fn button_view_tells_what_a_button_opens() {
+        let root = vec![
+            PieButton::new(PieDirection::East).with_fan_out(vec![PieButton::new(PieDirection::North)]),
+            PieButton::new(PieDirection::North).with_label("Plain"),
+            PieButton::new(PieDirection::West)
+                .with_children(vec![PieButton::new(PieDirection::North)])
+                .with_sub_pie_style(Some(SubPieStyle::Replace)),
+        ];
+        let mut rig = Rig::new(root.clone());
+        rig.frame(None, true, &[Key::Num6]); // opens the fan so its child is drawn too
+        let ctx = egui::Context::default();
+        let mut seen = Vec::new();
+        let mut m = PieMenu::new();
+        m.settings.animations.reveal = RevealAnimation::None;
+        m.open(CENTER);
+        m.reveal();
+        for key in [None, None, Some(Key::Num6), None] {
+            let events = key
+                .into_iter()
+                .map(|key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
+                .collect();
+            let input = egui::RawInput { events, ..Default::default() };
+            seen.clear();
+            let mut out = ctx.run_ui(input, |ui| {
+                m.show_with_pointer(ui.ctx(), &root, None, true, |ui, b| {
+                    seen.push((b.path.to_vec(), b.opens_sub_pie(), b.opens_fan_out()));
+                    ui.label("x");
+                });
+            });
+            out.textures_delta.clear();
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            [
+                (vec![0], true, true),       // fan-out
+                (vec![0, 0], false, false),  // the fan's child
+                (vec![1], false, false),     // a plain action
+                (vec![2], true, false),      // a replace-style sub-pie
+            ]
+        );
+    }
+
     #[test]
     fn problems_cover_blocked_directions_and_nesting() {
         let m = PieMenu::new();
