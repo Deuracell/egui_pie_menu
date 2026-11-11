@@ -1265,16 +1265,18 @@ mod fan_out_tests {
     const BLOCKED: Pos2 = Pos2::new(485.0, 255.0);
 
     #[test]
-    fn releasing_on_the_fans_button_keeps_it_open_but_releasing_on_nothing_dismisses() {
+    fn releasing_on_the_fans_button_breaks_it_out_but_releasing_on_nothing_dismisses() {
         let at_ring = Pos2::new(505.0, 300.0);
         let mut rig = Rig::new(buttons());
         rig.point(at_ring);
         let trigger = rig.trigger();
         rig.point(trigger);
         assert!(rig.menu.open_fan_out().is_some());
-        // Key released on the opening button: like a sub-pie button, it opens and stays.
+        // Key released on the opening button: the fan breaks out into a sub-pie.
         assert_eq!(rig.frame(Some(trigger), false, &[]).0, PieMenuResponse::None);
-        assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_some());
+        assert!(rig.menu.is_open());
+        assert_eq!(rig.menu.path(), &[0]);
+        assert_eq!(rig.menu.open_fan_out(), None);
 
         // Key released over nothing (the blocked sector): cancel, as in the centre.
         let mut rig = Rig::new(buttons());
@@ -1289,10 +1291,11 @@ mod fan_out_tests {
     fn clicking_on_nothing_closes_the_fan_and_it_stays_closed_under_the_resting_pointer() {
         let at_ring = Pos2::new(505.0, 300.0);
         let mut rig = Rig::new(buttons());
+        rig.menu.settings.fan_out_opener_action = FanOpenerAction::Dismiss;
         rig.point(at_ring);
         let trigger = rig.trigger();
         assert!(rig.menu.open_fan_out().is_some());
-        // Click on the opening button: the fan closes, the menu stays.
+        // Click on the opening button (with the Dismiss setting): the fan closes, the menu stays.
         assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::None);
         assert!(rig.menu.is_open());
         assert_eq!(rig.menu.open_fan_out(), None);
@@ -1312,6 +1315,74 @@ mod fan_out_tests {
         rig.point(BLOCKED);
         assert_eq!(rig.frame_with(Some(BLOCKED), true, click_at(BLOCKED)).0, PieMenuResponse::None);
         assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
+    }
+
+    #[test]
+    fn releasing_on_the_opener_breaks_out_and_backspace_does_not_reopen_the_fan() {
+        let at_ring = Pos2::new(505.0, 300.0);
+        let mut rig = Rig::new(buttons());
+        rig.point(at_ring);
+        assert!(rig.menu.open_fan_out().is_some());
+        assert_eq!(rig.frame(Some(at_ring), false, &[]).0, PieMenuResponse::None);
+        assert_eq!(rig.menu.path(), &[0]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+        // Inside: the same children as a sub-pie; a number key selects one.
+        let (resp, drawn) = rig.frame(Some(at_ring), false, &[]);
+        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2]]);
+        // Backspace goes back to the root; the pointer rests on the opener beyond the ring.
+        rig.frame(Some(at_ring), false, &[Key::Backspace]);
+        for _ in 0..4 {
+            rig.time += 0.1;
+            rig.frame(Some(at_ring), false, &[]);
+        }
+        assert!(rig.menu.path().is_empty());
+        assert_eq!(rig.menu.open_fan_out(), None, "no popping back open under the resting pointer");
+
+        // And a number key inside a break-out selects with the full path.
+        let mut rig = Rig::new(buttons());
+        rig.point(at_ring);
+        rig.frame(Some(at_ring), false, &[]);
+        rig.frame(Some(at_ring), false, &[]);
+        assert_eq!(rig.frame(Some(at_ring), false, &[Key::Num8]).0, PieMenuResponse::Selected(0));
+        assert_eq!(rig.menu.selected_path(), &[0, 0]);
+        assert!(!rig.menu.is_open());
+    }
+
+    #[test]
+    fn clicking_the_opener_breaks_the_fan_out_by_default() {
+        let at_ring = Pos2::new(505.0, 300.0);
+        let mut rig = Rig::new(buttons());
+        rig.point(at_ring);
+        let trigger = rig.trigger();
+        assert!(rig.menu.open_fan_out().is_some());
+        assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::None);
+        assert!(rig.menu.is_open());
+        assert_eq!(rig.menu.path(), &[0]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    #[test]
+    fn dismiss_setting_makes_releasing_on_the_opener_a_cancel() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.fan_out_opener_action = FanOpenerAction::Dismiss;
+        rig.point(Pos2::new(505.0, 300.0));
+        let trigger = rig.trigger();
+        rig.point(trigger);
+        assert!(rig.menu.open_fan_out().is_some());
+        assert_eq!(rig.frame(Some(trigger), false, &[]).0, PieMenuResponse::Dismissed);
+        assert!(!rig.menu.is_open());
+    }
+
+    #[test]
+    fn breaking_out_with_the_button_centre_opens_the_sub_pie_at_the_opener() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.sub_pie_center = SubPieCenter::Button;
+        let opener = rig.trigger();
+        rig.point(Pos2::new(505.0, 300.0));
+        rig.frame(Some(opener), false, &[]);
+        assert_eq!(rig.menu.path(), &[0]);
+        assert_eq!(rig.menu.position, opener);
     }
 
     #[test]

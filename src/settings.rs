@@ -218,12 +218,28 @@ pub enum SubPieStyle {
     /// parent. While open it has the keyboard: number keys and mnemonics reach only it.
     ///
     /// Releasing the key over a fan button selects it; releasing on the opening button
-    /// keeps the fan open (click or keyboard driven); releasing over nothing else (the
+    /// does what [`PieMenuSettings::fan_out_opener_action`] says (by default the fan
+    /// breaks out into a replace-style sub-pie); releasing over nothing else (the
     /// blocked sector, the fan's dead zone, outside the window) dismisses the menu. A
     /// click on nothing closes the fan and the menu stays open; the fan does not pop
     /// back open while the pointer rests on its button. Backspace and a back button
     /// in the fan close it the same way.
     FanOut,
+}
+
+/// What selecting the opening button of an open fan-out does
+/// ([`PieMenuSettings::fan_out_opener_action`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FanOpenerAction {
+    /// Selecting the fan's own opening button (releasing the key on it, or clicking it)
+    /// turns the fan into a replace-style sub-pie of the same children (see
+    /// [`SubPieCenter`] for where it opens); inside it Backspace or a centre click goes
+    /// back, like any sub-pie.
+    #[default]
+    BreakOut,
+    /// Releasing the key on the opening button dismisses the menu (cancel, like
+    /// releasing in the centre); clicking it just closes the fan.
+    Dismiss,
 }
 
 /// Where a sub-pie is centred when it opens (and where its parent reappears on going back).
@@ -506,6 +522,9 @@ pub struct PieMenuSettings {
     /// [`SubPieStyle::FanOut`]: distance from the opening button's centre to the inner
     /// edge of the fan's buttons. `None` (default): the same as [`Self::layout_radius`].
     pub fan_out_radius: Option<f32>,
+    /// [`SubPieStyle::FanOut`]: what selecting the fan's own opening button does.
+    /// See [`FanOpenerAction`]. Default: [`FanOpenerAction::BreakOut`].
+    pub fan_out_opener_action: FanOpenerAction,
     /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
     /// right-to-left UIs. Number keys and number hints follow the *displayed* positions,
     /// and [`HintSide::Trailing`] then means "left of the label". Off by default.
@@ -539,6 +558,7 @@ impl Default for PieMenuSettings {
             sub_pie_style: SubPieStyle::Replace,
             fan_out_delay: Duration::ZERO,
             fan_out_radius: None,
+            fan_out_opener_action: FanOpenerAction::BreakOut,
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
             text_color: None,
