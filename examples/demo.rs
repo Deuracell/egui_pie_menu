@@ -1353,6 +1353,16 @@ impl eframe::App for Demo {
                     return;
                 };
                 let hovered = b.hovered;
+                // The pie's own highlight is the only hover feedback: egui's per-widget
+                // hover/press outlines would add a second, inconsistent one on top.
+                {
+                    let w = &mut ui.visuals_mut().widgets;
+                    let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);
+                    w.hovered.bg_stroke = stroke;
+                    w.active.bg_stroke = stroke;
+                    w.hovered.expansion = expansion;
+                    w.active.expansion = expansion;
+                }
                 let bg = if !b.enabled {
                     cfg.color.gamma_multiply(0.25)
                 } else if hovered {

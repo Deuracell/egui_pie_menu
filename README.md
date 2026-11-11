@@ -136,6 +136,21 @@ pub fn show(
 ) -> PieMenuResponse
 ```
 
+**egui's own hover outline.** egui widgets drawn inside a pie button (an `egui::Button`, a checkbox) paint their own hover and press outline when the pointer is on the actual widget, on top of the pie's highlight (`b.hovered`, `b.text_color()`). If you want the pie's highlight to be the only feedback, neutralise those visuals on the button's `ui` at the top of the render closure:
+
+```rust
+{
+    let w = &mut ui.visuals_mut().widgets;
+    let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);
+    w.hovered.bg_stroke = stroke;
+    w.active.bg_stroke = stroke;
+    w.hovered.expansion = expansion;
+    w.active.expansion = expansion;
+}
+```
+
+An explicit `.stroke(..)` on a button keeps working.
+
 Related:
 
 | Call / field | Meaning |
