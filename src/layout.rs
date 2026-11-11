@@ -70,7 +70,7 @@ impl PieMenu {
     }
 
     /// Where on the layout shape (unit radius) a button's inner face/corner sits, as
-    /// displayed. Cardinals, and diagonals without [`PieMenuSettings::intercardinal_height`],
+    /// displayed. Cardinals, and diagonals without [`PieMenuLayoutSettings::intercardinal_height`],
     /// use their fixed direction. With an intercardinal height, a diagonal slides *along* the
     /// shape to the point that puts its centre at that height (so it follows the curve);
     /// this depends on the button's size and the radius. Its angle is also the angle used
@@ -78,7 +78,7 @@ impl PieMenu {
     pub(crate) fn layout_vec(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
         let v = Self::direction_vec(dir, sf);
         let diagonal = v.x.abs() > 0.5 && v.y.abs() > 0.5;
-        let (Some(t), true) = (self.settings.intercardinal_height, diagonal && radius > 0.0) else {
+        let (Some(t), true) = (self.settings.layout.intercardinal_height, diagonal && radius > 0.0) else {
             return v;
         };
         let hh = size.y / 2.0;
@@ -285,21 +285,21 @@ mod tests {
 
         fn menu(height: Option<f32>, sf: f32) -> PieMenu {
             let mut m = PieMenu::new();
-            m.settings.intercardinal_height = height;
-            m.settings.shape_factor = sf;
+            m.settings.layout.intercardinal_height = height;
+            m.settings.layout.shape_factor = sf;
             m
         }
 
         /// Inner corner of the NE button (centre minus the half-size push outward).
         fn ne_corner(m: &PieMenu) -> Vec2 {
-            let r = m.settings.layout_radius;
-            m.button_offset(&PieDirection::NorthEast, SIZE, r, m.settings.shape_factor) - Vec2::new(HALF.x, -HALF.y)
+            let r = m.settings.layout.radius;
+            m.button_offset(&PieDirection::NorthEast, SIZE, r, m.settings.layout.shape_factor) - Vec2::new(HALF.x, -HALF.y)
         }
 
         #[test]
         fn default_keeps_the_inner_corner_on_the_circle() {
             let m = menu(None, 0.0);
-            let r = m.settings.layout_radius;
+            let r = m.settings.layout.radius;
             let d = std::f32::consts::FRAC_1_SQRT_2 * r;
             assert!((ne_corner(&m) - Vec2::new(d, -d)).length() < 1e-3);
         }
@@ -307,7 +307,7 @@ mod tests {
         #[test]
         fn half_puts_diagonal_centres_halfway_and_on_the_curve() {
             let m = menu(Some(0.5), 0.0);
-            let r = m.settings.layout_radius;
+            let r = m.settings.layout.radius;
             let n = m.button_offset(&PieDirection::North, SIZE, r, 0.0);
             let e = m.button_offset(&PieDirection::East, SIZE, r, 0.0);
             for (dir, sign) in [
@@ -327,7 +327,7 @@ mod tests {
         fn follows_the_square_and_diamond_shapes() {
             for sf in [1.0, -1.0, 0.5] {
                 let m = menu(Some(0.4), sf);
-                let r = m.settings.layout_radius;
+                let r = m.settings.layout.radius;
                 let c = ne_corner(&m) / r;
                 let on_shape = PieMenu::curve_vec((-c.y).atan2(c.x), sf);
                 assert!((Vec2::new(c.x, -c.y) - on_shape).length() < 1e-3, "sf {sf}: {c:?} vs {on_shape:?}");
@@ -337,7 +337,7 @@ mod tests {
         #[test]
         fn picking_follows_the_lowered_diagonals() {
             let b = vec![PieButton::new(PieDirection::East), PieButton::new(PieDirection::NorthEast)];
-            let r = PieMenu::new().settings.layout_radius;
+            let r = PieMenu::new().settings.layout.radius;
             let dirs = |m: &PieMenu| -> Vec<Vec2> {
                 b.iter().map(|b| m.layout_vec(&b.direction, SIZE, r, 0.0)).collect()
             };

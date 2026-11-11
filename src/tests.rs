@@ -210,7 +210,7 @@ mod subpie_tests {
 
     fn opened(center: SubPieCenter) -> (egui::Context, PieMenu) {
         let mut m = PieMenu::new();
-        m.settings.sub_pie_center = center;
+        m.settings.sub_pies.center = center;
         m.open(CENTER);
         m.reveal();
         let ctx = egui::Context::default();
@@ -289,7 +289,7 @@ mod subpie_tests {
         assert!(m.path().is_empty());
 
         let (ctx, mut m) = opened(SubPieCenter::Parent);
-        m.settings.sub_pie_hover_delay = Some(Duration::from_millis(500));
+        m.settings.sub_pies.hover_delay = Some(Duration::from_millis(500));
         frame(&ctx, &mut m, 1.0, above, &[]); // timer starts
         frame(&ctx, &mut m, 1.4, above, &[]);
         assert!(m.path().is_empty(), "not yet");
@@ -312,7 +312,7 @@ mod subpie_tests {
         let above = Some(Pos2::new(400.0, 200.0)); // North: "More" at the root, "Leaf" inside
         let below = Some(Pos2::new(400.0, 400.0)); // South: the back button inside
         let (ctx, mut m) = opened(SubPieCenter::Parent);
-        m.settings.sub_pie_hover_delay = Some(Duration::from_millis(500));
+        m.settings.sub_pies.hover_delay = Some(Duration::from_millis(500));
 
         // Entering by key with the pointer already on the back button's direction: it is
         // ignored while the pointer stays there, however long.
@@ -347,8 +347,8 @@ mod subpie_tests {
         ])];
         let above = Some(Pos2::new(400.0, 200.0));
         let mut m = PieMenu::new();
-        m.settings.sub_pie_center = SubPieCenter::Parent;
-        m.settings.sub_pie_hover_delay = Some(Duration::from_millis(500));
+        m.settings.sub_pies.center = SubPieCenter::Parent;
+        m.settings.sub_pies.hover_delay = Some(Duration::from_millis(500));
         m.open(CENTER);
         m.reveal();
         let ctx = egui::Context::default();
@@ -1068,7 +1068,7 @@ mod fan_out_tests {
         use egui::emath::TSTransform;
         let nested = vec![PieButton::new(PieDirection::East).with_children(vec![PieButton::new(PieDirection::North)])];
         let mut rig = Rig::new(nested);
-        rig.menu.settings.sub_pie_center = SubPieCenter::Parent;
+        rig.menu.settings.sub_pies.center = SubPieCenter::Parent;
         let north = Pos2::new(400.0, 180.0);
         let hover = |rig: &mut Rig, at: Pos2| {
             for _ in 0..5 {
@@ -1154,7 +1154,7 @@ mod fan_out_tests {
     #[test]
     fn delay_holds_the_fan_back() {
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.fan_out_delay = Duration::from_millis(500);
+        rig.menu.settings.sub_pies.fan_out.delay = Duration::from_millis(500);
         let at_ring = Pos2::new(505.0, 300.0);
         rig.time = 1.0;
         rig.point(at_ring);
@@ -1174,7 +1174,7 @@ mod fan_out_tests {
         let replace = follows.clone().with_sub_pie_style(Some(SubPieStyle::Replace));
         let mut m = PieMenu::new();
         assert!(!m.opens_fan(&follows) && m.opens_fan(&fan) && !m.opens_fan(&replace));
-        m.settings.sub_pie_style = SubPieStyle::FanOut;
+        m.settings.sub_pies.style = SubPieStyle::FanOut;
         assert!(m.opens_fan(&follows) && m.opens_fan(&fan) && !m.opens_fan(&replace));
         assert!(!m.opens_fan(&PieButton::new(PieDirection::East)), "no children, no fan");
 
@@ -1212,7 +1212,7 @@ mod fan_out_tests {
         let mut rig = Rig::with_screen(Vec::new(), Vec2::new(10.0, 10.0));
         rig.frame(None, true, &[]);
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.screen_margin = 250.0;
+        rig.menu.settings.layout.screen_margin = 250.0;
         rig.frame(None, true, &[]);
         rig.frame(None, true, &[Key::Num6]);
     }
@@ -1226,8 +1226,8 @@ mod fan_out_tests {
             PieButton::new(PieDirection::North).with_label("Deeper").with_children(vec![PieButton::new(PieDirection::North)]),
         ])];
         let mut rig = Rig::new(nested);
-        rig.menu.settings.sub_pie_center = SubPieCenter::Parent;
-        rig.menu.settings.sub_pie_hover_delay = Some(Duration::from_millis(500));
+        rig.menu.settings.sub_pies.center = SubPieCenter::Parent;
+        rig.menu.settings.sub_pies.hover_delay = Some(Duration::from_millis(500));
         let above = Some(Pos2::new(400.0, 200.0));
         rig.time = 1.0;
         rig.frame(above, true, &[]); // the timer starts
@@ -1297,8 +1297,8 @@ mod fan_out_tests {
     #[test]
     fn huge_delays_do_not_panic() {
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.fan_out_delay = Duration::MAX;
-        rig.menu.settings.sub_pie_hover_delay = Some(Duration::MAX);
+        rig.menu.settings.sub_pies.fan_out.delay = Duration::MAX;
+        rig.menu.settings.sub_pies.hover_delay = Some(Duration::MAX);
         for t in [1.0, 2.0, 3.0] {
             rig.time = t;
             rig.point(Pos2::new(505.0, 300.0));
@@ -1306,7 +1306,7 @@ mod fan_out_tests {
         assert_eq!(rig.menu.open_fan_out(), None, "never opens");
     }
 
-    /// Every fan child can be pointed at, also when `intercardinal_height` moves the
+    /// Every fan child can be pointed at, also when `layout.intercardinal_height` moves the
     /// diagonal buttons (the blocked sector must not swallow an allowed child).
     #[test]
     fn every_fan_child_is_reachable_with_intercardinal_height() {
@@ -1318,7 +1318,7 @@ mod fan_out_tests {
                 .map(|d| PieButton::new(*d).with_label(format!("{d:?}")))
                 .collect();
             let mut rig = Rig::new(vec![PieButton::new(parent).with_label("More").with_fan_out(children)]);
-            rig.menu.settings.intercardinal_height = Some(height);
+            rig.menu.settings.layout.intercardinal_height = Some(height);
             rig.frame(None, true, &[Key::Num9]); // opens the fan by key
             rig.frame(None, true, &[]);
             assert!(rig.menu.open_fan_out().is_some());
@@ -1486,7 +1486,7 @@ mod fan_out_tests {
     fn clicking_on_nothing_closes_the_fan_and_it_stays_closed_under_the_resting_pointer() {
         let at_ring = Pos2::new(505.0, 300.0);
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.fan_out_opener_action = FanOpenerAction::Dismiss;
+        rig.menu.settings.sub_pies.fan_out.opener_action = FanOpenerAction::Dismiss;
         rig.point(at_ring);
         let trigger = rig.trigger();
         assert!(rig.menu.open_fan_out().is_some());
@@ -1561,7 +1561,7 @@ mod fan_out_tests {
     #[test]
     fn dismiss_setting_makes_releasing_on_the_opener_a_cancel() {
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.fan_out_opener_action = FanOpenerAction::Dismiss;
+        rig.menu.settings.sub_pies.fan_out.opener_action = FanOpenerAction::Dismiss;
         rig.point(Pos2::new(505.0, 300.0));
         let trigger = rig.trigger();
         rig.point(trigger);
@@ -1573,7 +1573,7 @@ mod fan_out_tests {
     #[test]
     fn breaking_out_with_the_button_centre_opens_the_sub_pie_at_the_opener() {
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.sub_pie_center = SubPieCenter::Button;
+        rig.menu.settings.sub_pies.center = SubPieCenter::Button;
         let opener = rig.trigger();
         rig.point(Pos2::new(505.0, 300.0));
         rig.frame(Some(opener), false, &[]);
@@ -1775,7 +1775,7 @@ mod fan_out_tests {
     #[test]
     fn a_fan_with_its_own_radius_breaks_out_at_that_radius() {
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.fan_out_radius = Some(140.0);
+        rig.menu.settings.sub_pies.fan_out.radius = Some(140.0);
         rig.menu.settings.animations.reveal = RevealAnimation::Fade;
         rig.time = 1.0;
         rig.point(AT_RING);
@@ -2226,7 +2226,7 @@ mod cluster_tests {
         /// A point in the cluster's sector (straight up from the centre, past the dead
         /// zone) that is on none of the items.
         fn dead_spot(&self) -> Pos2 {
-            let p = self.centre() + Vec2::new(0.0, -(self.menu.settings.dead_zone_radius + 3.0));
+            let p = self.centre() + Vec2::new(0.0, -(self.menu.settings.layout.dead_zone_radius + 3.0));
             assert!(self.rects.values().all(|r| !r.contains(p)), "the spot must be off every item");
             p
         }

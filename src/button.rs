@@ -17,7 +17,7 @@ pub enum PieButtonKind {
     #[default]
     Action,
     /// Opens a sub-pie of `children`. `style` overrides
-    /// [`PieMenuSettings::sub_pie_style`] for this button; `None` follows it.
+    /// [`PieMenuSubPieSettings::style`] for this button; `None` follows it.
     SubPie { children: Vec<PieButton>, style: Option<SubPieStyle> },
     /// A back button: inside a sub-pie it returns to the parent level (like Backspace);
     /// in a fan-out it closes the fan. At the root level, where there is nothing to go
@@ -186,7 +186,7 @@ impl PieButton {
     }
 
     /// Makes this button open a sub-pie containing `children` when selected, shown in the
-    /// menu's [`PieMenuSettings::sub_pie_style`].
+    /// menu's [`PieMenuSubPieSettings::style`].
     ///
     /// Replace style: inside the sub-pie, Backspace or a click on the centre goes back one
     /// level. The render closure's [`ButtonView::path`] says where each button sits, and
@@ -205,7 +205,7 @@ impl PieButton {
         self
     }
 
-    /// Overrides the menu's [`PieMenuSettings::sub_pie_style`] for this button's sub-pie
+    /// Overrides the menu's [`PieMenuSubPieSettings::style`] for this button's sub-pie
     /// (`None`: follow the menu again). Does nothing on a button without one.
     pub fn with_sub_pie_style(mut self, style: Option<SubPieStyle>) -> Self {
         if let PieButtonKind::SubPie { style: own, .. } = &mut self.kind {

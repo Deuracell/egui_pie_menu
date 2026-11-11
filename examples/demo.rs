@@ -482,7 +482,7 @@ fn config_at_mut<'a>(
 /// Problems (shared key / direction, bad fan-out children) of every level, each prefixed
 /// with its sub-pie's name. A fan-out's children are checked as part of their parent's level.
 fn collect_problems(menu: &PieMenu, configs: &[ButtonConfig], level: &str, out: &mut Vec<String>) {
-    let style = menu.settings.sub_pie_style;
+    let style = menu.settings.sub_pies.style;
     for p in menu.check_buttons(&build_buttons(configs, style, false)) {
         out.push(if level.is_empty() { p.to_string() } else { format!("{level}: {p}") });
     }
@@ -664,7 +664,7 @@ fn button_list_editor(
     configs: &mut [ButtonConfig],
     fan: Option<FanInfo>,
 ) {
-    let style = menu.settings.sub_pie_style;
+    let style = menu.settings.sub_pies.style;
     // This level's buttons as the menu will see them: the mnemonic in effect per config
     // (configs without a button have none) and the configs with a problem, shown in red.
     let buttons = build_buttons(configs, style, fan.is_some());
@@ -900,7 +900,7 @@ impl eframe::App for Demo {
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         let d = PieMenuSettings::default(); // defaults for the reset buttons
-        self.buttons = build_buttons(&self.button_configs, self.menu.settings.sub_pie_style, false);
+        self.buttons = build_buttons(&self.button_configs, self.menu.settings.sub_pies.style, false);
         // Problems (shared key / direction) in any level are shown in red in the editor;
         // the menu stays closed until they are fixed, because debug builds assert on them
         // when the level opens.
@@ -942,21 +942,21 @@ impl eframe::App for Demo {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height", |ui| {
                     ui.label("Radius");
-                    px_drag(ui, &mut self.menu.settings.layout_radius, d.layout_radius, 40.0..=200.0);
+                    px_drag(ui, &mut self.menu.settings.layout.radius, d.layout.radius, 40.0..=200.0);
 
                     ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
-                    drag_reset(ui, &mut self.menu.settings.shape_factor, d.shape_factor, -1.0..=1.0, 0.01);
+                    drag_reset(ui, &mut self.menu.settings.layout.shape_factor, d.layout.shape_factor, -1.0..=1.0, 0.01);
 
-                    let mut own_height = self.menu.settings.intercardinal_height.is_some();
+                    let mut own_height = self.menu.settings.layout.intercardinal_height.is_some();
                     if ui.checkbox(&mut own_height, "Intercardinal height")
                         .on_hover_text("Place NE/SE/SW/NW at a fraction of the N/S height (0.5 = halfway between N/S and E/W); they slide along the layout shape. Off: at 45°.")
                         .changed()
                     {
-                        self.menu.settings.intercardinal_height = own_height.then_some(self.intercardinal_height);
+                        self.menu.settings.layout.intercardinal_height = own_height.then_some(self.intercardinal_height);
                     }
                     ui.add_enabled_ui(own_height, |ui| {
                         if drag_reset_with(ui, &mut self.intercardinal_height, 0.5, 0.0..=1.0, |d| d.speed(0.001).fixed_decimals(3)) {
-                            self.menu.settings.intercardinal_height = Some(self.intercardinal_height);
+                            self.menu.settings.layout.intercardinal_height = Some(self.intercardinal_height);
                         }
                     });
                 });
@@ -1035,10 +1035,10 @@ impl eframe::App for Demo {
                         SubPieStyle::FanOut => "Fan out beside the parent",
                     };
                     egui::ComboBox::from_id_salt("sub_pie_style_menu")
-                        .selected_text(style_label(self.menu.settings.sub_pie_style))
+                        .selected_text(style_label(self.menu.settings.sub_pies.style))
                         .show_ui(ui, |ui| {
                             for s in [SubPieStyle::Replace, SubPieStyle::FanOut] {
-                                ui.selectable_value(&mut self.menu.settings.sub_pie_style, s, style_label(s));
+                                ui.selectable_value(&mut self.menu.settings.sub_pies.style, s, style_label(s));
                             }
                         });
 
@@ -1078,20 +1078,20 @@ impl eframe::App for Demo {
 
                     ui.label(RichText::new("Fan-out").strong());
                     ui.label("Delay before it opens (ms)");
-                    let mut ms = self.menu.settings.fan_out_delay.as_millis() as u64;
+                    let mut ms = self.menu.settings.sub_pies.fan_out.delay.as_millis() as u64;
                     if drag_reset(ui, &mut ms, 0, 0..=2000, 1.0) {
-                        self.menu.settings.fan_out_delay = Duration::from_millis(ms);
+                        self.menu.settings.sub_pies.fan_out.delay = Duration::from_millis(ms);
                     }
-                    let mut own_radius = self.menu.settings.fan_out_radius.is_some();
+                    let mut own_radius = self.menu.settings.sub_pies.fan_out.radius.is_some();
                     if ui.checkbox(&mut own_radius, "Own radius")
                         .on_hover_text("Distance from the opening button's centre to the fan's buttons. Off: the menu's radius.")
                         .changed()
                     {
-                        self.menu.settings.fan_out_radius = own_radius.then_some(self.fan_radius);
+                        self.menu.settings.sub_pies.fan_out.radius = own_radius.then_some(self.fan_radius);
                     }
                     ui.add_enabled_ui(own_radius, |ui| {
-                        if px_drag(ui, &mut self.fan_radius, d.layout_radius, 40.0..=200.0) {
-                            self.menu.settings.fan_out_radius = Some(self.fan_radius);
+                        if px_drag(ui, &mut self.fan_radius, d.layout.radius, 40.0..=200.0) {
+                            self.menu.settings.sub_pies.fan_out.radius = Some(self.fan_radius);
                         }
                     });
 
@@ -1102,10 +1102,10 @@ impl eframe::App for Demo {
                         FanOpenerAction::Dismiss => "Dismiss the menu",
                     };
                     egui::ComboBox::from_id_salt("fan_opener_action")
-                        .selected_text(opener_label(self.menu.settings.fan_out_opener_action))
+                        .selected_text(opener_label(self.menu.settings.sub_pies.fan_out.opener_action))
                         .show_ui(ui, |ui| {
                             for a in [FanOpenerAction::BreakOut, FanOpenerAction::Dismiss] {
-                                ui.selectable_value(&mut self.menu.settings.fan_out_opener_action, a, opener_label(a));
+                                ui.selectable_value(&mut self.menu.settings.sub_pies.fan_out.opener_action, a, opener_label(a));
                             }
                         });
 
@@ -1118,24 +1118,24 @@ impl eframe::App for Demo {
                         SubPieCenter::Button => "At the opening button",
                     };
                     egui::ComboBox::from_id_salt("sub_pie_center")
-                        .selected_text(label(self.menu.settings.sub_pie_center))
+                        .selected_text(label(self.menu.settings.sub_pies.center))
                         .show_ui(ui, |ui| {
                             for c in [SubPieCenter::Pointer, SubPieCenter::Parent, SubPieCenter::Button] {
-                                ui.selectable_value(&mut self.menu.settings.sub_pie_center, c, label(c));
+                                ui.selectable_value(&mut self.menu.settings.sub_pies.center, c, label(c));
                             }
                         });
 
-                    let mut auto = self.menu.settings.sub_pie_hover_delay.is_some();
+                    let mut auto = self.menu.settings.sub_pies.hover_delay.is_some();
                     if ui.checkbox(&mut auto, "Navigate on hover")
                         .on_hover_text("Resting the pointer on a sub-pie button opens it after this delay, without a click or release; resting on a back button returns to the parent.")
                         .changed()
                     {
-                        self.menu.settings.sub_pie_hover_delay = auto.then(|| Duration::from_millis(self.sub_hover_ms));
+                        self.menu.settings.sub_pies.hover_delay = auto.then(|| Duration::from_millis(self.sub_hover_ms));
                     }
                     ui.add_enabled_ui(auto, |ui| {
                         ui.label("Hover delay (ms)");
                         if drag_reset(ui, &mut self.sub_hover_ms, DEFAULT_SUB_HOVER_MS, 0..=2000, 1.0) {
-                            self.menu.settings.sub_pie_hover_delay = Some(Duration::from_millis(self.sub_hover_ms));
+                            self.menu.settings.sub_pies.hover_delay = Some(Duration::from_millis(self.sub_hover_ms));
                         }
                     });
                     ui.label(RichText::new("Give a button a sub-pie or make it a back button in the Button list.").small());
@@ -1441,7 +1441,7 @@ impl eframe::App for Demo {
             let button_h = self.button_height;
 
             // The title is the open (replace-style) sub-pie's parent, or "Edit" at the root.
-            let style = self.menu.settings.sub_pie_style;
+            let style = self.menu.settings.sub_pies.style;
             let parent = route_configs(&self.button_configs, self.menu.path(), style).and_then(|r| r.last().copied());
             self.menu.title = Some(parent.map_or("Edit", |c| c.label.as_str()).to_string());
             let configs = &self.button_configs;
