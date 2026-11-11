@@ -216,6 +216,13 @@ pub enum SubPieStyle {
     /// have sub-pies of their own. It opens when the pointer reaches its button
     /// ([`PieMenuSettings::fan_out_delay`]) and closes when the pointer returns to the
     /// parent. While open it has the keyboard: number keys and mnemonics reach only it.
+    ///
+    /// Releasing the key over a fan button selects it; releasing on the opening button
+    /// keeps the fan open (click or keyboard driven); releasing over nothing else (the
+    /// blocked sector, the fan's dead zone, outside the window) dismisses the menu. A
+    /// click on nothing closes the fan and the menu stays open; the fan does not pop
+    /// back open while the pointer rests on its button. Backspace and a back button
+    /// in the fan close it the same way.
     FanOut,
 }
 

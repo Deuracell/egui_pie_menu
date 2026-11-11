@@ -83,6 +83,8 @@ enum LevelEvent {
     Pick(usize),
     /// A child of the open fan-out: (the fan's button, the child).
     FanPick(usize, usize),
+    /// A click in an open fan-out that hit no fan button: close the fan.
+    CloseFan,
 }
 
 /// What [`PieMenu::draw_level`] needs to draw one ring of buttons.
@@ -190,6 +192,9 @@ pub struct PieMenu {
     fan: Option<usize>,
     /// The button of the fan that was open last, while the parent's dimming eases out.
     last_fan: Option<usize>,
+    /// A fan the user just closed (click, Backspace, back button) while the pointer still
+    /// rests on its button: it does not reopen until the pointer has left that button.
+    fan_suppressed: Option<usize>,
     /// egui time the fan appeared (`None`: stamp on the next draw), for its animation.
     fan_shown_at: Option<f64>,
     /// Cached sizes of the fan's buttons from the previous frame.
@@ -251,6 +256,7 @@ impl PieMenu {
             display_center: Pos2::ZERO,
             fan: None,
             last_fan: None,
+            fan_suppressed: None,
             fan_shown_at: None,
             fan_sizes: Vec::new(),
             #[cfg(test)]
@@ -381,6 +387,7 @@ impl PieMenu {
         self.hover_since = None;
         self.close_fan();
         self.last_fan = None;
+        self.fan_suppressed = None;
         self.anim_gen = self.anim_gen.wrapping_add(1);
         self.display_center = pos;
         self.level_fresh = true;
@@ -451,6 +458,7 @@ impl PieMenu {
 
     fn open_fan(&mut self, trigger: usize) {
         self.fan = Some(trigger);
+        self.fan_suppressed = None;
         self.last_fan = Some(trigger);
         self.fan_shown_at = None;
         self.fan_sizes.clear();
@@ -464,6 +472,13 @@ impl PieMenu {
         self.fan = None;
         self.fan_hover = None;
         self.fan_pending = None;
+    }
+
+    /// The user closes the open fan: like [`Self::close_fan`], and it stays closed while
+    /// the pointer rests where it would reopen it.
+    fn dismiss_fan(&mut self) {
+        self.fan_suppressed = self.fan;
+        self.close_fan();
     }
 
     /// Shows the pie menu for this frame. Call it every frame; it does nothing (and
@@ -549,7 +564,7 @@ impl PieMenu {
                 && ctx.input(|i| i.pointer.primary_clicked())
                 && current_mouse_pos.is_some_and(|p| (p - self.display_center).length() <= thr);
             if backspace && self.fan.is_some() {
-                self.close_fan();
+                self.dismiss_fan();
                 return PieMenuResponse::None;
             }
             if (backspace || centre_click) && !self.path.is_empty() {
@@ -583,10 +598,14 @@ impl PieMenu {
                     PieMenuResponse::Selected(idx)
                 }
             }
+            LevelEvent::CloseFan => {
+                self.dismiss_fan();
+                PieMenuResponse::None
+            }
             LevelEvent::FanPick(trigger, child) => {
                 let is_back = level.get(trigger).and_then(|b| b.children().get(child)).is_some_and(|b| b.is_back());
                 if is_back {
-                    self.close_fan();
+                    self.dismiss_fan();
                     PieMenuResponse::None
                 } else {
                     self.selected_path = self.path.clone();
@@ -696,6 +715,7 @@ impl PieMenu {
         self.hover_since = None;
         self.close_fan();
         self.last_fan = None;
+        self.fan_suppressed = None;
         self.level_fresh = true;
         self.inert_hover = None;
         self.entered_forward = false;
@@ -923,6 +943,7 @@ impl PieMenu {
                         rtl: mirror,
                         text_color: button_text_color(self.settings.text_color, &visuals, is_hovered, button.enabled),
                         body_font: body_font.clone(),
+                        opens_fan: self.opens_fan(button),
                     })
                 });
 
@@ -1187,7 +1208,10 @@ impl PieMenu {
                 // A fan-out opens once the pointer has reached its button (as far out as
                 // the ring) and rested on it for `fan_out_delay`.
                 let reached = current_mouse_pos.is_some_and(|p| (p - center).length() >= radius);
-                match level_pick.filter(|&i| reached && self.opens_fan(&buttons[i])) {
+                if self.fan_suppressed.is_some() && !(reached && level_pick == self.fan_suppressed) {
+                    self.fan_suppressed = None; // the pointer has left that button
+                }
+                match level_pick.filter(|&i| reached && self.fan_suppressed != Some(i) && self.opens_fan(&buttons[i])) {
                     Some(i) => {
                         let since = match self.fan_pending {
                             Some((j, since)) if j == i => since,
@@ -1394,7 +1418,8 @@ impl PieMenu {
         {
             return match (current_mouse_pos, &fan) {
                 // In an open fan a click selects the highlighted child, if any.
-                (Some(_), Some(fan)) => self.fan_hover.map_or(LevelEvent::None, |child| LevelEvent::FanPick(fan.trigger, child)),
+                // A click on nothing (the opening button, the blocked sector) closes the fan.
+                (Some(_), Some(fan)) => self.fan_hover.map_or(LevelEvent::CloseFan, |child| LevelEvent::FanPick(fan.trigger, child)),
                 (Some(p), None) if (p - center).length() > dead_zone => {
                     self.hovered_index.map_or(LevelEvent::None, LevelEvent::Pick)
                 }
@@ -1409,10 +1434,14 @@ impl PieMenu {
         if !key_down && !self.release_handled {
             self.release_handled = true;
             if let Some(fan) = &fan {
-                // Released on a fan child: select it. Released on the fan's button: the fan
-                // stays open, click/keyboard driven.
+                // Released on a fan child: select it. Released on the fan's button: like a
+                // sub-pie button it opens and stays, click/keyboard driven. Released over
+                // nothing: cancel, as releasing in the centre does.
                 if let Some(child) = self.fan_hover {
                     return LevelEvent::FanPick(fan.trigger, child);
+                }
+                if !current_mouse_pos.is_some_and(|p| fan.trigger_rect.contains(p)) {
+                    return LevelEvent::Dismissed;
                 }
             } else if let Some(mouse_pos) = current_mouse_pos {
                 if (mouse_pos - center).length() <= dead_zone {
@@ -1420,6 +1449,11 @@ impl PieMenu {
                 } else if let Some(idx) = self.hovered_index {
                     return LevelEvent::Pick(idx);
                 }
+                // Nothing to select (every button disabled): cancel rather than strand the menu.
+                return LevelEvent::Dismissed;
+            } else {
+                // No pointer at release (it left the window): cancel.
+                return LevelEvent::Dismissed;
             }
         }
 

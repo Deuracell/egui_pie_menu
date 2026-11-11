@@ -117,6 +117,7 @@ struct Demo {
     fan_radius: f32,
     /// Marker for sub-pie and back buttons that have no icon of their own.
     icons: MarkerIcons,
+    sub_pie_look: SubPieLook,
 }
 
 impl Demo {
@@ -173,6 +174,7 @@ impl Demo {
             sub_hover_ms: DEFAULT_SUB_HOVER_MS,
             fan_radius: 100.0,
             icons: MarkerIcons::default(),
+            sub_pie_look: SubPieLook::default(),
         }
     }
 }
@@ -191,6 +193,15 @@ enum MarkerPlacement {
     FarEnd,
     /// Before the label, ahead of the button's icon (the opposite end to `FarEnd`).
     Start,
+}
+
+/// How a button that opens a sub-pie is drawn, compared with a plain action button.
+#[derive(Clone, Copy, PartialEq, Default)]
+enum SubPieLook {
+    #[default]
+    Same,
+    Outlined,
+    Dimmer,
 }
 
 /// The marker of a sub-pie button and of a back button. It has a slot of its own, so a
@@ -912,7 +923,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Sub-pies",
-                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius marker icon arrow position far end start", |ui| {
+                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius marker icon arrow position far end start folder look outline dim", |ui| {
                     ui.label("Style")
                         .on_hover_text("Replace: a sub-pie takes its parent's place, one level at a time. Fan-out: it opens around its button while the parent stays visible (up to five buttons, none facing the parent). A button can override this in the Button list.");
                     let style_label = |s: SubPieStyle| match s {
@@ -938,6 +949,20 @@ impl eframe::App for Demo {
                         .show_ui(ui, |ui| {
                             for p in [MarkerPlacement::FarEnd, MarkerPlacement::Start] {
                                 ui.selectable_value(&mut self.icons.placement, p, place_label(p));
+                            }
+                        });
+                    ui.label("Sub-pie button look")
+                        .on_hover_text("How buttons that open a sub-pie are drawn, to tell them from actions. Uses ButtonView::opens_sub_pie.");
+                    let look_label = |l: SubPieLook| match l {
+                        SubPieLook::Same => "Same as the others",
+                        SubPieLook::Outlined => "Outlined, paler fill",
+                        SubPieLook::Dimmer => "Dimmer fill",
+                    };
+                    egui::ComboBox::from_id_salt("sub_pie_look")
+                        .selected_text(look_label(self.sub_pie_look))
+                        .show_ui(ui, |ui| {
+                            for l in [SubPieLook::Same, SubPieLook::Outlined, SubPieLook::Dimmer] {
+                                ui.selectable_value(&mut self.sub_pie_look, l, look_label(l));
                             }
                         });
                     ui.label("Sub-pie marker")
@@ -1303,6 +1328,7 @@ impl eframe::App for Demo {
             self.menu.title = Some(parent.map_or("Edit", |c| c.label.as_str()).to_string());
             let configs = &self.button_configs;
             let icons = &self.icons;
+            let sub_pie_look = self.sub_pie_look;
 
             // Does nothing while the menu is closed; closes itself on any response but
             // `None` (a pinned menu stays open after a selection).
@@ -1319,6 +1345,16 @@ impl eframe::App for Demo {
                     cfg.color
                 } else {
                     cfg.color.gamma_multiply(0.6)
+                };
+                // Buttons that open a sub-pie can look different from actions.
+                let (bg, stroke) = if b.opens_sub_pie() && !cfg.back {
+                    match sub_pie_look {
+                        SubPieLook::Same => (bg, egui::Stroke::NONE),
+                        SubPieLook::Outlined => (bg.gamma_multiply(0.3), egui::Stroke::new(1.5, bg)),
+                        SubPieLook::Dimmer => (bg.gamma_multiply(0.55), egui::Stroke::NONE),
+                    }
+                } else {
+                    (bg, egui::Stroke::NONE)
                 };
                 // Label and digit colours come from the library: egui's widget colours
                 // for the hover state, or the forced colour; disabled is greyed out.
@@ -1356,6 +1392,7 @@ impl eframe::App for Demo {
                     // padding, content centred in a row of exactly that height.
                     ButtonKind::Checkbox => egui::Frame::new()
                         .fill(bg)
+                        .stroke(stroke)
                         .corner_radius(6.0)
                         .inner_margin(Vec2::new(10.0, 0.0))
                         .show(ui, |ui| {
@@ -1386,6 +1423,7 @@ impl eframe::App for Demo {
                         ui.spacing_mut().button_padding = Vec2::new(10.0, 0.0);
                         let mut button = hint_button(text, hint, hint_gap)
                             .fill(bg)
+                            .stroke(stroke)
                             .corner_radius(6.0)
                             .min_size(Vec2::new(0.0, button_h));
                         if let Some(m) = far_marker {
