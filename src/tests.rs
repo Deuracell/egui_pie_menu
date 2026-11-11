@@ -1081,7 +1081,7 @@ mod fan_out_tests {
         rig.frame(Some(north), true, &[Key::Num6]); // into the sub-pie
         hover(&mut rig, north);
         assert_eq!(rig.menu.path(), &[0]);
-        let lit = transform(&rig, rig.menu.id, 0);
+        let lit = transform(&rig, rig.menu.level_ring_id(&[0]), 0);
         assert_eq!(lit.scaling, 1.0, "{lit:?}");
         assert!((lit.translation - Vec2::new(0.0, -6.0)).length() < 1e-3, "{lit:?}");
         assert!((scale_of(&rig, &[0, 0]) - 1.08).abs() < 1e-4);
@@ -1241,8 +1241,11 @@ mod fan_out_tests {
         rig.time = 1.7;
         let (_, drawn) = rig.frame(above, true, &[]);
         assert_eq!(paths(&drawn), [vec![0, 0]], "the sub-pie is drawn");
-        // (The first frame of new buttons asks for a repaint to size them; look one later.)
+        // (New buttons have their own Areas: the first frames ask for repaints to size and
+        // show them; look a couple later.)
         rig.time = 1.75;
+        rig.frame(above, true, &[]);
+        rig.time = 1.8;
         rig.frame(above, true, &[]);
         assert!(
             rig.repaint_delay > Duration::ZERO && rig.repaint_delay <= Duration::from_millis(500),
@@ -2742,5 +2745,253 @@ mod cluster_tests {
         assert_eq!(keys[0][0], Some('c'));
         assert_eq!(rig.frame_with(None, true, typed('c')), PieMenuResponse::Selected(7));
         assert_eq!(rig.menu.selected_path(), &[0, 0, 7]);
+    }
+}
+
+mod first_frame_tests {
+    //! A button's painted position in the first frame it is painted must be the one it
+    //! settles at (no pop), whatever level, fan or opening came before. The per-frame
+    //! positions are those of the painted label text in `FullOutput::shapes`.
+    use super::*;
+    use egui::epaint::Shape;
+
+    const CENTER: Pos2 = Pos2::new(400.0, 300.0);
+    const AT_RING: Pos2 = Pos2::new(505.0, 300.0);
+
+    fn collect_texts(shape: &Shape, out: &mut Vec<(String, Pos2)>) {
+        match shape {
+            Shape::Text(t) => out.push((t.galley.text().to_string(), t.pos)),
+            Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    struct Probe {
+        ctx: egui::Context,
+        menu: PieMenu,
+        buttons: Vec<PieButton>,
+        t: f64,
+    }
+
+    impl Probe {
+        fn new(buttons: Vec<PieButton>, reveal: RevealAnimation) -> Self {
+            let mut menu = PieMenu::new();
+            menu.settings.animations.reveal = reveal;
+            menu.settings.sub_pies.fan_out.delay = Duration::ZERO;
+            menu.open(CENTER);
+            menu.reveal();
+            Self { ctx: egui::Context::default(), menu, buttons, t: 0.0 }
+        }
+
+        /// Runs one frame; returns every painted text with its position.
+        fn frame(&mut self, pointer: Option<Pos2>, key_down: bool, events: Vec<egui::Event>) -> Vec<(String, Pos2)> {
+            self.t += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                time: Some(self.t),
+                events,
+                ..Default::default()
+            };
+            let (menu, buttons) = (&mut self.menu, &self.buttons);
+            let mut out = self.ctx.run_ui(input, |ui| {
+                menu.show_with_pointer(ui.ctx(), buttons, pointer, key_down, |ui, b| {
+                    ui.label(b.button.label.clone());
+                });
+            });
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            out.shapes.iter().for_each(|c| collect_texts(&c.shape, &mut texts));
+            texts
+        }
+
+        fn key(&mut self, pointer: Option<Pos2>, key: Key) -> Vec<(String, Pos2)> {
+            let ev = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+            self.frame(pointer, true, vec![ev])
+        }
+
+        fn idle(&mut self, pointer: Option<Pos2>, n: usize) -> Vec<Vec<(String, Pos2)>> {
+            (0..n).map(|_| self.frame(pointer, true, Vec::new())).collect()
+        }
+    }
+
+    fn pos_of(texts: &[(String, Pos2)], label: &str) -> Option<Pos2> {
+        texts.iter().find(|(l, _)| l == label).map(|(_, p)| *p)
+    }
+
+    /// `frames[0]` is the trigger frame. The first painted position must equal the settled
+    /// (last) one; with `RevealAnimation::None` it must be painted by the second frame after.
+    fn assert_no_pop(frames: &[Vec<(String, Pos2)>], label: &str, reveal: RevealAnimation, what: &str) {
+        let seq: Vec<Option<Pos2>> = frames.iter().map(|f| pos_of(f, label)).collect();
+        let first = seq.iter().position(|p| p.is_some()).unwrap_or_else(|| panic!("{what}: {label:?} never painted"));
+        let settled = seq.last().unwrap().unwrap_or_else(|| panic!("{what}: {label:?} not painted at the end"));
+        let at_first = seq[first].unwrap();
+        assert!((at_first - settled).length() < 0.01, "{what}: {label:?} pops from {at_first:?} to {settled:?} ({seq:?})");
+        // Each later frame stays put too.
+        for p in seq[first..].iter().flatten() {
+            assert!((*p - settled).length() < 0.01, "{what}: {label:?} moves later ({seq:?})");
+        }
+        if matches!(reveal, RevealAnimation::None) {
+            assert!(first <= 2, "{what}: {label:?} first painted on frame {first} ({seq:?})");
+        }
+    }
+
+    const REVEALS: [RevealAnimation; 2] = [RevealAnimation::None, RevealAnimation::Fade];
+
+    fn nested_root() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::East).with_label("A").with_children(vec![
+                PieButton::new(PieDirection::North).with_label("A very wide child label"),
+                PieButton::new(PieDirection::South).with_label("x"),
+            ]),
+            PieButton::new(PieDirection::North).with_label("Up"),
+            PieButton::new(PieDirection::South).with_label("Down below, a long root label"),
+        ]
+    }
+
+    fn fan_root() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::East).with_label("More").with_fan_out(vec![
+                PieButton::new(PieDirection::North).with_label("Above"),
+                PieButton::new(PieDirection::East).with_label("A considerably longer fan child"),
+                PieButton::new(PieDirection::South).with_label("Un"),
+            ]),
+            PieButton::new(PieDirection::North).with_label("Plain"),
+        ]
+    }
+
+    const FAN_LABELS: [&str; 3] = ["Above", "A considerably longer fan child", "Un"];
+
+    #[test]
+    fn first_open_paints_each_button_where_it_settles() {
+        for reveal in REVEALS {
+            let root = vec![
+                PieButton::new(PieDirection::North).with_label("N"),
+                PieButton::new(PieDirection::South).with_label("A much longer south label"),
+                PieButton::new(PieDirection::West).with_label("West side"),
+            ];
+            let mut p = Probe::new(root, reveal);
+            let frames = p.idle(None, 6);
+            for l in ["N", "A much longer south label", "West side"] {
+                assert_no_pop(&frames, l, reveal, "first open");
+            }
+        }
+    }
+
+    #[test]
+    fn descending_into_a_sub_pie_paints_the_children_where_they_settle() {
+        for reveal in REVEALS {
+            let mut p = Probe::new(nested_root(), reveal);
+            p.idle(None, 4);
+            let mut frames = vec![p.key(None, Key::Num6)];
+            frames.extend(p.idle(None, 6));
+            assert_eq!(p.menu.path(), &[0]);
+            for l in ["A very wide child label", "x"] {
+                assert_no_pop(&frames, l, reveal, "descend");
+            }
+        }
+    }
+
+    #[test]
+    fn going_back_paints_the_root_where_it_settles() {
+        for reveal in REVEALS {
+            let mut p = Probe::new(nested_root(), reveal);
+            p.idle(None, 4);
+            p.key(None, Key::Num6);
+            p.idle(None, 4);
+            let mut frames = vec![p.key(None, Key::Backspace)];
+            frames.extend(p.idle(None, 6));
+            assert!(p.menu.path().is_empty());
+            for l in ["Up", "Down below, a long root label", "A"] {
+                assert_no_pop(&frames, l, reveal, "go back");
+            }
+        }
+    }
+
+    fn open_fan(p: &mut Probe) -> Vec<Vec<(String, Pos2)>> {
+        let mut frames = vec![p.frame(Some(AT_RING), true, Vec::new())];
+        frames.extend(p.idle(Some(AT_RING), 6));
+        assert!(p.menu.open_fan_out().is_some());
+        frames
+    }
+
+    #[test]
+    fn opening_a_fan_paints_the_children_where_they_settle_also_the_second_time() {
+        for reveal in REVEALS {
+            let mut p = Probe::new(fan_root(), reveal);
+            p.idle(Some(CENTER), 4);
+            let frames = open_fan(&mut p);
+            for l in FAN_LABELS {
+                assert_no_pop(&frames, l, reveal, "first fan");
+            }
+            p.key(Some(AT_RING), Key::Backspace);
+            assert!(p.menu.open_fan_out().is_none());
+            p.idle(Some(CENTER), 4);
+            let frames = open_fan(&mut p);
+            for l in FAN_LABELS {
+                assert_no_pop(&frames, l, reveal, "second fan");
+            }
+        }
+    }
+
+    #[test]
+    fn breaking_a_fan_out_never_moves_the_children() {
+        for reveal in REVEALS {
+            let mut p = Probe::new(fan_root(), reveal);
+            p.idle(Some(CENTER), 4);
+            open_fan(&mut p);
+            // Fully revealed fan: the settled positions.
+            p.t += 1.0;
+            let settled = p.frame(Some(AT_RING), true, Vec::new());
+            let before: Vec<Pos2> = FAN_LABELS.iter().map(|l| pos_of(&settled, l).expect("fan painted")).collect();
+            let trigger = p.menu.button_centers[0];
+            let click = |pressed| egui::Event::PointerButton { pos: trigger, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut frames = vec![p.frame(Some(trigger), true, vec![egui::Event::PointerMoved(trigger), click(true), click(false)])];
+            assert_eq!(p.menu.path(), &[0], "broken out");
+            frames.extend(p.idle(Some(AT_RING), 6));
+            for (l, at) in FAN_LABELS.iter().zip(&before) {
+                for (i, f) in frames.iter().enumerate() {
+                    let q = pos_of(f, l).unwrap_or_else(|| panic!("{l:?} not painted on frame {i} of the break-out"));
+                    assert!((q - *at).length() < 0.01, "{l:?} moved on frame {i}: {at:?} -> {q:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closing_and_reopening_paints_each_button_where_it_settles() {
+        for reveal in REVEALS {
+            let root = vec![
+                PieButton::new(PieDirection::North).with_label("N"),
+                PieButton::new(PieDirection::South).with_label("A much longer south label"),
+            ];
+            let mut p = Probe::new(root, reveal);
+            p.idle(None, 4);
+            p.menu.close();
+            p.idle(None, 2);
+            p.menu.open(CENTER);
+            p.menu.reveal();
+            let frames = p.idle(None, 6);
+            for l in ["N", "A much longer south label"] {
+                assert_no_pop(&frames, l, reveal, "reopen");
+            }
+        }
+    }
+
+    #[test]
+    fn visiting_the_same_sub_pie_twice_paints_the_children_where_they_settle() {
+        for reveal in REVEALS {
+            let mut p = Probe::new(nested_root(), reveal);
+            p.idle(None, 4);
+            p.key(None, Key::Num6);
+            p.idle(None, 4);
+            p.key(None, Key::Backspace);
+            p.idle(None, 4);
+            let mut frames = vec![p.key(None, Key::Num6)];
+            frames.extend(p.idle(None, 6));
+            assert_eq!(p.menu.path(), &[0]);
+            for l in ["A very wide child label", "x"] {
+                assert_no_pop(&frames, l, reveal, "second visit");
+            }
+        }
     }
 }
