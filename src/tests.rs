@@ -1521,11 +1521,11 @@ mod fan_out_tests {
         assert_eq!(rig.frame(Some(at_ring), false, &[]).0, PieMenuResponse::None);
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(rig.menu.open_fan_out(), None);
-        // Inside: the same children as a sub-pie (plus the opener, which stays as the centre
-        // piece; no reveal animation here, so the main ring is already gone).
+        // Inside: the same children as a sub-pie (no reveal animation here, so the main
+        // ring, the opener included, is already gone).
         let (resp, drawn) = rig.frame(Some(at_ring), false, &[]);
         assert_eq!(resp, PieMenuResponse::None);
-        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0]]);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2]]);
         // Backspace goes back to the root; the pointer rests on the opener beyond the ring.
         rig.frame(Some(at_ring), false, &[Key::Backspace]);
         for _ in 0..4 {
@@ -1645,38 +1645,43 @@ mod fan_out_tests {
     }
 
     #[test]
-    fn breaking_out_fades_the_main_ring_and_keeps_the_opener_lit_and_in_place() {
+    fn breaking_out_fades_the_whole_main_ring_including_the_opener() {
         let mut rig = fan_rig(true);
         let opener_id = rig.menu.id.with(0usize);
         let plain_id = rig.menu.id.with(1usize);
         let (opener_rect, plain_rect) = (area(&rig, opener_id), area(&rig, plain_id));
         break_out(&mut rig, true);
+        let mut opener_opacities = Vec::new();
         let mut plain_opacities = Vec::new();
         for step in 0..=4 {
             let (_, drawn) = rig.frame(Some(AT_RING), true, &[]);
-            assert_eq!(area(&rig, opener_id), opener_rect, "the opener never moves");
-            assert_eq!(opacity_of(&rig, &[0]), Some(1.0), "the opener stays at full opacity");
-            assert!(drawn.contains(&(vec![0], true)), "and lit");
+            if step < 4 {
+                assert!(drawn.contains(&(vec![0], true)), "the opener stays lit while it fades");
+            }
             for i in 0..3 {
                 assert_eq!(opacity_of(&rig, &[0, i]), Some(1.0));
             }
+            opener_opacities.push(opacity_of(&rig, &[0]));
             plain_opacities.push(opacity_of(&rig, &[1]));
             if step < 2 {
                 assert_eq!(area(&rig, plain_id), plain_rect, "the fading ring stays at its old position");
+                assert_eq!(area(&rig, opener_id), opener_rect, "the fading opener stays at its old position");
             }
             rig.time += 0.05;
         }
-        // 200 ms in 50 ms steps: from the dimmed opacity, strictly down, then gone.
-        let first = plain_opacities[0].expect("drawn on the first frame");
-        assert!((first - DIMMED_OPACITY).abs() < 1e-4, "{first}");
-        assert!(plain_opacities[1].is_some_and(|o| o < first));
-        assert!(plain_opacities[2].is_some_and(|o| o < plain_opacities[1].unwrap()));
-        assert!(plain_opacities[3].is_some_and(|o| o < plain_opacities[2].unwrap()));
-        assert_eq!(plain_opacities[4], None, "not drawn once the fade is over");
-        // After the transition only the opener and the children are drawn.
+        // 200 ms in 50 ms steps: strictly down (opener from full, the rest from the dimmed
+        // opacity), then gone.
+        for (series, start) in [(&opener_opacities, 1.0), (&plain_opacities, DIMMED_OPACITY)] {
+            let first = series[0].expect("drawn on the first frame");
+            assert!((first - start).abs() < 1e-4, "{first} vs {start}");
+            assert!(series[1].is_some_and(|o| o < first));
+            assert!(series[2].is_some_and(|o| o < series[1].unwrap()));
+            assert!(series[3].is_some_and(|o| o < series[2].unwrap()));
+            assert_eq!(series[4], None, "not drawn once the fade is over");
+        }
+        // After the transition only the children are drawn.
         let (_, drawn) = rig.frame(Some(AT_RING), true, &[]);
-        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0]]);
-        assert_eq!(area(&rig, opener_id), opener_rect);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2]]);
     }
 
     /// Alpha of the painted background circles: (at the new centre, at the old centre).
@@ -1726,7 +1731,7 @@ mod fan_out_tests {
         let fan_center = rig.trigger();
         break_out(&mut rig, true);
         let (_, drawn) = rig.frame(Some(AT_RING), true, &[]);
-        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0]], "no other main-ring button");
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2]], "no main-ring button, the opener included");
         assert_eq!(rig.menu.display_center, fan_center);
         let (new, old) = circle_alphas(&rig, fan_center, CENTER);
         assert_eq!(new, Some(rig.menu.settings.center_indicator.background_fill_color.a()));

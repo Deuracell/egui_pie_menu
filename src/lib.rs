@@ -108,8 +108,9 @@ struct LevelDraw<'a> {
     id: egui::Id,
     /// Route from the root to this ring (each button's `path` is this plus its index).
     path_prefix: &'a [usize],
-    /// Draw only this button of the ring (`None`: all of them).
-    only: Option<usize>,
+    /// Multiplied into every button's opacity (1.0: untouched; the fading main ring of a
+    /// break-out uses `1 - fade`).
+    opacity_scale: f32,
 }
 
 /// An open fan-out, laid out for this frame.
@@ -125,7 +126,7 @@ struct Fan<'a> {
 
 /// A fan-out that was broken out into a sub-pie: what the transition needs. The sub-pie
 /// itself is an ordinary level (see [`PieMenu::break_out`]); this is the main ring fading
-/// out around the opener, which stays drawn as the new level's centre piece.
+/// out, the opener included.
 struct BreakOut {
     /// egui time of the break-out, for the fades.
     started: f64,
@@ -720,8 +721,8 @@ impl PieMenu {
 
     /// Breaks the open fan of button `trigger` out into a sub-pie level, in place: the
     /// children stay exactly where the fan drew them (same centre, radius, Area ids and
-    /// cached sizes) and the main ring fades out around the opener, which stays drawn as
-    /// the new level's centre piece (see [`BreakOut`]).
+    /// cached sizes) and the main ring, the opener included, fades out (see [`BreakOut`]).
+    /// The parent's state is kept while the level is open so that going back restores it.
     fn break_out(&mut self, ctx: &egui::Context, trigger: usize, mouse: Option<Pos2>, key_down: bool) {
         if self.breakout.is_some() {
             // A fan inside a broken-out level: no transition, an ordinary sub-pie.
@@ -968,9 +969,6 @@ impl PieMenu {
         let mut path = level.path_prefix.to_vec();
         path.push(0);
         for (idx, button) in level.buttons.iter().enumerate() {
-            if level.only.is_some_and(|only| only != idx) {
-                continue;
-            }
             // Each axis is offset independently (see `button_offset`), which keeps NE/NW at
             // the same Y and SE/SW at the same Y even when button widths differ.
             let eff_dir = Self::eff(&button.direction, mirror);
@@ -1024,6 +1022,9 @@ impl PieMenu {
                     }
                     if dimmed {
                         ui.multiply_opacity(level.dim_opacity);
+                    }
+                    if level.opacity_scale != 1.0 {
+                        ui.multiply_opacity(level.opacity_scale);
                     }
                     // Buttons are single-line. An Area keeps last frame's size as its max
                     // width, so content that grows (a number hint added, a label changed)
@@ -1497,7 +1498,7 @@ impl PieMenu {
                 // A broken-out level keeps the Areas the fan drew its buttons in.
                 id: self.breakout.as_ref().map_or(self.id, |b| self.id.with(("fan", b.opener))),
                 path_prefix: &path,
-                only: None,
+                opacity_scale: 1.0,
             },
             &mut sizes,
             Some(&mut centers),
@@ -1506,20 +1507,20 @@ impl PieMenu {
         self.button_sizes = sizes;
         self.button_centers = centers;
 
-        // After a break-out: the main ring fades out where it was, and the opener stays
-        // drawn (lit, in place) as the centre piece of the new level.
+        // After a break-out: the whole main ring, the opener included (lit), fades out where
+        // it was; once the fade is over nothing of it is drawn any more.
         if let Some(mut b) = self.breakout.take() {
-            if b.opener < parent.len() {
+            if fade < 1.0 && b.opener < parent.len() {
                 b.parent_sizes.resize(parent.len(), Vec2::new(50.0, 24.0));
                 let up = &path[..path.len().saturating_sub(1)];
-                let ring = |only: Option<usize>, dim_except: Option<usize>, dim_opacity: f32| LevelDraw {
+                let draw = LevelDraw {
                     buttons: parent,
                     center: b.parent_center,
                     radius: b.parent_radius,
                     shown_at: None,
                     hovered: Some(b.opener),
-                    dim_except,
-                    dim_opacity,
+                    dim_except: Some(b.opener),
+                    dim_opacity: DIMMED_OPACITY,
                     emphasis: if up.is_empty() {
                         self.settings.animations.hover_emphasis
                     } else {
@@ -1527,12 +1528,7 @@ impl PieMenu {
                     },
                     id: self.id,
                     path_prefix: up,
-                    only,
-                };
-                let draw = if fade < 1.0 {
-                    ring(None, Some(b.opener), DIMMED_OPACITY * (1.0 - fade))
-                } else {
-                    ring(Some(b.opener), None, 1.0)
+                    opacity_scale: 1.0 - fade,
                 };
                 self.draw_level(ctx, now, &draw, &mut b.parent_sizes, None, render_button);
             }
@@ -1560,7 +1556,7 @@ impl PieMenu {
                     emphasis: self.settings.animations.sub_pie_hover_emphasis,
                     id: self.id.with(("fan", fan.trigger)),
                     path_prefix: &fan_path,
-                    only: None,
+                    opacity_scale: 1.0,
                 },
                 &mut sizes,
                 fan_centers.as_mut(),
