@@ -155,9 +155,10 @@ Related:
 | Hold key/button, move mouse, release over a button | `Selected(idx)` |
 | Hold key/button, move mouse to centre, release | `Dismissed` |
 | Release in a fan-out on a fan button | `Selected(..)` of that button |
-| Release in a fan-out on its opening button | Nothing: the fan stays open (click or keyboard driven) |
+| Release in a fan-out on its opening button | `BreakOut` (default): nothing, the fan becomes a replace-style sub-pie (click or keyboard driven); `Dismiss`: `Dismissed` (`settings.fan_out_opener_action`) |
 | Release in a fan-out over nothing (blocked sector, dead zone, outside the window) | `Dismissed` |
-| Click in a fan-out on nothing | The fan closes, the menu stays open (`None`) |
+| Click in a fan-out on its opening button | `BreakOut` (default): the fan becomes a replace-style sub-pie; `Dismiss`: the fan closes (`None`) |
+| Click in a fan-out on nothing else | The fan closes, the menu stays open (`None`) |
 | Release with nothing selectable (every button disabled, no pointer) | `Dismissed` |
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
@@ -344,6 +345,7 @@ dir.fan_out_slots();                                    // … but only these fi
 
 menu.settings.fan_out_delay = Duration::ZERO;           // how long the pointer rests on the button first (default: none)
 menu.settings.fan_out_radius = None;                    // the fan's own radius; None = layout_radius
+menu.settings.fan_out_opener_action = FanOpenerAction::BreakOut; // selecting the fan's own button: break out (default) or Dismiss
 ```
 
 - A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child with a sub-pie of its own as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
@@ -351,7 +353,8 @@ menu.settings.fan_out_radius = None;                    // the fan's own radius;
 - While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons. The parent's centre and its other buttons are greyed out, and those buttons cannot be highlighted.
 - The fan's highlighted button moves outward and grows slightly (see "Hover emphasis").
 - The pointer picks among the fan's buttons by angle from the opening button's centre. On the opening button itself, or pointing back at the parent, nothing is highlighted.
-- Releasing the key on the opening button keeps the fan open; releasing over nothing else in a fan dismisses the menu. A click on nothing closes the fan (the menu stays open) and, like Backspace or a back button in the fan, it does not pop back open while the pointer rests on its button: move off the button and back to reopen it.
+- Selecting the fan's own opening button (releasing the key on it, or clicking it) is set by `settings.fan_out_opener_action`. `BreakOut` (default): the fan becomes a replace-style sub-pie of the same children (it opens where `sub_pie_center` says; Backspace or a centre click goes back). `Dismiss`: releasing on it dismisses the menu, and clicking it just closes the fan.
+- Releasing over nothing else in a fan dismisses the menu. A click on nothing else closes the fan (the menu stays open) and, like Backspace or a back button in the fan, it does not pop back open while the pointer rests on its button: move off the button and back to reopen it. The same holds after going back from a break-out.
 - `menu.open_fan_out()` returns the opening button's index and the highlighted fan button, if a fan is open. A fan is not a level: `menu.path()` and `menu.current_buttons(&root)` still describe the parent.
 
 #### Replace

@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{ButtonProblem, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
+use egui_pie_menu::{ButtonProblem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -198,8 +198,8 @@ enum MarkerPlacement {
 /// How a button that opens a sub-pie is drawn, compared with a plain action button.
 #[derive(Clone, Copy, PartialEq, Default)]
 enum SubPieLook {
-    #[default]
     Same,
+    #[default]
     Outlined,
     Dimmer,
 }
@@ -923,7 +923,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Sub-pies",
-                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius marker icon arrow position far end start folder look outline dim", |ui| {
+                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius opener break out dismiss marker icon arrow position far end start folder look outline dim", |ui| {
                     ui.label("Style")
                         .on_hover_text("Replace: a sub-pie takes its parent's place, one level at a time. Fan-out: it opens around its button while the parent stays visible (up to five buttons, none facing the parent). A button can override this in the Button list.");
                     let style_label = |s: SubPieStyle| match s {
@@ -990,6 +990,20 @@ impl eframe::App for Demo {
                             self.menu.settings.fan_out_radius = Some(self.fan_radius);
                         }
                     });
+
+                    ui.label("Selecting the fan's own button")
+                        .on_hover_text("What releasing the key on, or clicking, the button that opened the fan does. Break out: the fan becomes a replace-style sub-pie of the same children. Dismiss: releasing cancels the menu; a click just closes the fan.");
+                    let opener_label = |a: FanOpenerAction| match a {
+                        FanOpenerAction::BreakOut => "Break out as a sub-pie",
+                        FanOpenerAction::Dismiss => "Dismiss the menu",
+                    };
+                    egui::ComboBox::from_id_salt("fan_opener_action")
+                        .selected_text(opener_label(self.menu.settings.fan_out_opener_action))
+                        .show_ui(ui, |ui| {
+                            for a in [FanOpenerAction::BreakOut, FanOpenerAction::Dismiss] {
+                                ui.selectable_value(&mut self.menu.settings.fan_out_opener_action, a, opener_label(a));
+                            }
+                        });
 
                     ui.label(RichText::new("Replace").strong());
                     ui.label("Centre of a sub-pie")

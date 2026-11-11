@@ -85,6 +85,8 @@ enum LevelEvent {
     FanPick(usize, usize),
     /// A click in an open fan-out that hit no fan button: close the fan.
     CloseFan,
+    /// The fan's own opening button was selected: break the fan out into a sub-pie.
+    BreakOut(usize),
 }
 
 /// What [`PieMenu::draw_level`] needs to draw one ring of buttons.
@@ -602,6 +604,11 @@ impl PieMenu {
                 self.dismiss_fan();
                 PieMenuResponse::None
             }
+            LevelEvent::BreakOut(trigger) => {
+                self.close_fan();
+                self.descend(trigger, current_mouse_pos, key_down);
+                PieMenuResponse::None
+            }
             LevelEvent::FanPick(trigger, child) => {
                 let is_back = level.get(trigger).and_then(|b| b.children().get(child)).is_some_and(|b| b.is_back());
                 if is_back {
@@ -680,13 +687,15 @@ impl PieMenu {
 
     /// Returns to the parent level of the open sub-pie.
     fn go_back(&mut self, mouse: Option<Pos2>, key_down: bool) {
-        self.path.pop();
+        let left = self.path.pop();
         let parent_center = self.level_centers.pop();
         let center = match self.settings.sub_pie_center {
             SubPieCenter::Pointer if !self.pinned => mouse,
             _ => parent_center,
         };
         self.restart_level(center, key_down);
+        // The pointer may still rest on the button just left: it must not fan out again.
+        self.fan_suppressed = left;
     }
 
     /// Forgets the open sub-pie(s); the root level reappears where it was when it was left
@@ -1414,12 +1423,18 @@ impl PieMenu {
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)
         // receive the click event before we consume it.
+        let opener = self.settings.fan_out_opener_action;
         if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked())
         {
             return match (current_mouse_pos, &fan) {
                 // In an open fan a click selects the highlighted child, if any.
-                // A click on nothing (the opening button, the blocked sector) closes the fan.
-                (Some(_), Some(fan)) => self.fan_hover.map_or(LevelEvent::CloseFan, |child| LevelEvent::FanPick(fan.trigger, child)),
+                // A click on the opening button breaks the fan out (or closes it, as set);
+                // a click on nothing else (the blocked sector) closes the fan.
+                (Some(p), Some(fan)) => match self.fan_hover {
+                    Some(child) => LevelEvent::FanPick(fan.trigger, child),
+                    None if fan.trigger_rect.contains(p) && opener == FanOpenerAction::BreakOut => LevelEvent::BreakOut(fan.trigger),
+                    None => LevelEvent::CloseFan,
+                },
                 (Some(p), None) if (p - center).length() > dead_zone => {
                     self.hovered_index.map_or(LevelEvent::None, LevelEvent::Pick)
                 }
@@ -1434,15 +1449,16 @@ impl PieMenu {
         if !key_down && !self.release_handled {
             self.release_handled = true;
             if let Some(fan) = &fan {
-                // Released on a fan child: select it. Released on the fan's button: like a
-                // sub-pie button it opens and stays, click/keyboard driven. Released over
-                // nothing: cancel, as releasing in the centre does.
+                // Released on a fan child: select it. Released on the fan's button: break
+                // out into a sub-pie, or cancel, as set. Released over nothing: cancel, as
+                // releasing in the centre does.
                 if let Some(child) = self.fan_hover {
                     return LevelEvent::FanPick(fan.trigger, child);
                 }
-                if !current_mouse_pos.is_some_and(|p| fan.trigger_rect.contains(p)) {
-                    return LevelEvent::Dismissed;
+                if current_mouse_pos.is_some_and(|p| fan.trigger_rect.contains(p)) && opener == FanOpenerAction::BreakOut {
+                    return LevelEvent::BreakOut(fan.trigger);
                 }
+                return LevelEvent::Dismissed;
             } else if let Some(mouse_pos) = current_mouse_pos {
                 if (mouse_pos - center).length() <= dead_zone {
                     return LevelEvent::Dismissed;
