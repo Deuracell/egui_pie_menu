@@ -1353,6 +1353,10 @@ impl eframe::App for Demo {
                     return;
                 };
                 let hovered = b.hovered;
+                // Hover emphasis enlarges the content, not the layer (which would blur the
+                // text): scale the minimum height and the padding along with the label.
+                let button_h = button_h * b.scale();
+                let pad_x = 10.0 * b.scale();
                 // The pie's own highlight is the only hover feedback: egui's per-widget
                 // hover/press outlines would add a second, inconsistent one on top.
                 // (An app drawing plain widgets can call `b.use_pie_hover(ui)` instead.)
@@ -1419,7 +1423,7 @@ impl eframe::App for Demo {
                         .fill(bg)
                         .stroke(stroke)
                         .corner_radius(6.0)
-                        .inner_margin(Vec2::new(10.0, 0.0))
+                        .inner_margin(Vec2::new(pad_x, 0.0))
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.x = hint_gap;
                             ui.allocate_ui_with_layout(
@@ -1445,7 +1449,7 @@ impl eframe::App for Demo {
                         })
                         .response,
                     ButtonKind::Button => {
-                        ui.spacing_mut().button_padding = Vec2::new(10.0, 0.0);
+                        ui.spacing_mut().button_padding = Vec2::new(pad_x, 0.0);
                         let mut button = hint_button(text, hint, hint_gap)
                             .fill(bg)
                             .stroke(stroke)

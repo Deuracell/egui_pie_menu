@@ -266,6 +266,7 @@ pub struct ButtonView<'a> {
     pub(crate) text_color: Color32,
     pub(crate) body_font: FontId,
     pub(crate) opens_fan: bool,
+    pub(crate) scale: f32,
 }
 
 impl ButtonView<'_> {
@@ -280,6 +281,14 @@ impl ButtonView<'_> {
     /// [`Self::opens_sub_pie`].
     pub fn opens_fan_out(&self) -> bool {
         self.opens_fan
+    }
+
+    /// The scale to draw this button's content at: 1.0 normally, easing up to
+    /// [`HoverEmphasis::scale`] while the pie highlights it (when hover emphasis is on).
+    /// [`Self::label_text`] already uses it for the font size; scale your own icons,
+    /// paddings or minimum sizes by it to enlarge them crisply (no blurry layer scaling).
+    pub fn scale(&self) -> f32 {
+        self.scale
     }
 
     /// The text colour in effect for this button: what [`Self::label_text`] uses (egui's
@@ -316,7 +325,7 @@ impl ButtonView<'_> {
     /// The button's label with its mnemonic (if any) underlined, ready for
     /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's widget text colour
     /// for the button's state (`inactive` / `hovered`), or [`PieMenuSettings::text_color`]
-    /// when set; the font is egui's body font. Override with [`LabelText::color`] /
+    /// when set; the font is egui's body font, sized by [`Self::scale`]. Override with [`LabelText::color`] /
     /// [`LabelText::font`].
     pub fn label_text(&self) -> LabelText {
         LabelText {
@@ -324,7 +333,7 @@ impl ButtonView<'_> {
             text: self.button.label.clone(),
             mnemonic: self.mnemonic,
             color: self.text_color,
-            font: self.body_font.clone(),
+            font: FontId::new(self.body_font.size * self.scale, self.body_font.family.clone()),
             rtl: self.rtl,
         }
     }
