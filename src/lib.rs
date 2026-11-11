@@ -244,7 +244,7 @@ pub struct PieMenu {
     entered_forward: bool,
     /// Set while the level shown is a broken-out fan (see [`BreakOut`]).
     breakout: Option<BreakOut>,
-    /// The radius of the broken-out level (the fan's); `None`: `layout_radius`.
+    /// The radius of the broken-out level (the fan's); `None`: `settings.layout.radius`.
     level_radius: Option<f32>,
     /// Where the open fan's centre was drawn last frame, and its radius.
     fan_display_center: Pos2,
@@ -345,11 +345,11 @@ impl PieMenu {
     }
 
     /// Whether `button` opens its sub-pie as a fan-out: it has children, and its own
-    /// style (or else [`PieMenuSettings::sub_pie_style`]) is [`SubPieStyle::FanOut`].
+    /// style (or else [`PieMenuSubPieSettings::style`]) is [`SubPieStyle::FanOut`].
     pub fn opens_fan(&self, button: &PieButton) -> bool {
         match &button.kind {
             PieButtonKind::SubPie { children, style } => {
-                !children.is_empty() && style.unwrap_or(self.settings.sub_pie_style) == SubPieStyle::FanOut
+                !children.is_empty() && style.unwrap_or(self.settings.sub_pies.style) == SubPieStyle::FanOut
             }
             _ => false,
         }
@@ -607,7 +607,7 @@ impl PieMenu {
         // Backspace closes an open fan-out, otherwise goes back one level; so does a click
         // on the centre (when clicks are enabled).
         if self.visible && (self.fan.is_some() || !self.path.is_empty()) {
-            let thr = self.settings.dead_zone_radius;
+            let thr = self.settings.layout.dead_zone_radius;
             let backspace = self.keys_for_menu(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace));
             let centre_click = self.settings.input.select_on_primary_click
                 && ctx.input(|i| i.pointer.primary_clicked())
@@ -731,7 +731,7 @@ impl PieMenu {
 
     /// Opens the sub-pie of button `idx` of the current level.
     fn descend(&mut self, idx: usize, mouse: Option<Pos2>, key_down: bool) {
-        let center = match self.settings.sub_pie_center {
+        let center = match self.settings.sub_pies.center {
             // A pinned menu stays put rather than jumping to the pointer.
             SubPieCenter::Pointer => mouse.filter(|_| !self.pinned),
             SubPieCenter::Parent => None,
@@ -784,7 +784,7 @@ impl PieMenu {
 
     /// The radius of the level being shown.
     fn level_radius(&self) -> f32 {
-        self.level_radius.unwrap_or(self.settings.layout_radius)
+        self.level_radius.unwrap_or(self.settings.layout.radius)
     }
 
     /// Returns to the parent level of the open sub-pie.
@@ -792,7 +792,7 @@ impl PieMenu {
         let broken_out = self.breakout.take();
         let left = self.path.pop();
         let parent_center = self.level_centers.pop();
-        let center = match self.settings.sub_pie_center {
+        let center = match self.settings.sub_pies.center {
             _ if broken_out.is_some() => parent_center,
             SubPieCenter::Pointer if !self.pinned => mouse,
             _ => parent_center,
@@ -809,7 +809,7 @@ impl PieMenu {
     /// ([`SubPieCenter::Pointer`]: where the menu is now, unless pinned).
     fn back_to_root(&mut self) {
         let root_center = self.level_centers.first().copied();
-        if self.pinned || self.settings.sub_pie_center != SubPieCenter::Pointer {
+        if self.pinned || self.settings.sub_pies.center != SubPieCenter::Pointer {
             self.position = root_center.unwrap_or(self.position);
         }
         self.path.clear();
@@ -850,12 +850,12 @@ impl PieMenu {
     /// within the screen with the configured margin.
     fn clamp_center(&self, center: Pos2, buttons: &[PieButton], sizes: &[Vec2], radius: f32, screen: Rect) -> Pos2 {
         let mirror = self.settings.mirror_horizontal;
-        let margin = self.settings.screen_margin;
+        let margin = self.settings.layout.screen_margin;
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
         for (button, &size) in buttons.iter().zip(sizes) {
             let dir = Self::eff(&button.direction, mirror);
-            let offset = self.button_offset(&dir, size, radius, self.settings.shape_factor);
+            let offset = self.button_offset(&dir, size, radius, self.settings.layout.shape_factor);
             bb_min = bb_min.min(offset - size / 2.0);
             bb_max = bb_max.max(offset + size / 2.0);
         }
@@ -876,14 +876,14 @@ impl PieMenu {
         )
     }
 
-    /// Each button's displayed layout vector (which follows `intercardinal_height`), for
+    /// Each button's displayed layout vector (which follows `layout.intercardinal_height`), for
     /// hover picking and the centre highlight.
     fn layout_dirs(&self, buttons: &[PieButton], sizes: &[Vec2], radius: f32) -> Vec<Vec2> {
         let mirror = self.settings.mirror_horizontal;
         buttons
             .iter()
             .zip(sizes)
-            .map(|(b, &size)| self.layout_vec(&Self::eff(&b.direction, mirror), size, radius, self.settings.shape_factor))
+            .map(|(b, &size)| self.layout_vec(&Self::eff(&b.direction, mirror), size, radius, self.settings.layout.shape_factor))
             .collect()
     }
 
@@ -982,7 +982,7 @@ impl PieMenu {
     ) -> Vec<ItemHit> {
         let items = std::cell::RefCell::new(Vec::new());
         let mirror = self.settings.mirror_horizontal;
-        let shape_factor = self.settings.shape_factor;
+        let shape_factor = self.settings.layout.shape_factor;
         // Resolved once per frame for the view handed to the render closure.
         let (mnemonics, item_mnemonics) = resolve_all(level.buttons, self.settings.input.auto_mnemonics);
         let visuals = ctx.global_style().visuals.clone();
@@ -1204,10 +1204,10 @@ impl PieMenu {
             return LevelEvent::Dismissed;
         }
 
-        let shape_factor = self.settings.shape_factor;
+        let shape_factor = self.settings.layout.shape_factor;
         let mirror = self.settings.mirror_horizontal;
         let radius = self.level_radius();
-        let dead_zone = self.settings.dead_zone_radius;
+        let dead_zone = self.settings.layout.dead_zone_radius;
 
         // Shift the whole menu so every button stays within the screen rect with a margin.
         let screen_rect = ctx.content_rect();
@@ -1273,7 +1273,7 @@ impl PieMenu {
             }
             let size = self.button_sizes[trigger];
             let button_center = center + self.button_offset(&Self::eff(&button.direction, mirror), size, radius, shape_factor);
-            let fan_radius = self.settings.fan_out_radius.unwrap_or(radius);
+            let fan_radius = self.settings.sub_pies.fan_out.radius.unwrap_or(radius);
             self.fan_display_radius = fan_radius;
             let fan_center = self.clamp_center(button_center, children, &self.fan_sizes, fan_radius, screen_rect);
             self.fan_display_center = fan_center;
@@ -1361,7 +1361,7 @@ impl PieMenu {
                     let angle = v.y.atan2(v.x);
                     let back = center - fan.center;
                     // Pointing back at the parent picks nothing, unless the pointer is right
-                    // on a child (one pushed into that sector by `intercardinal_height`).
+                    // on a child (one pushed into that sector by `layout.intercardinal_height`).
                     let nearest_child = fan_dirs
                         .iter()
                         .zip(fan.children)
@@ -1381,7 +1381,7 @@ impl PieMenu {
                 self.fan_hover = None;
 
                 // A fan-out opens once the pointer has reached its button (as far out as
-                // the ring) and rested on it for `fan_out_delay`.
+                // the ring) and rested on it for `sub_pies.fan_out.delay`.
                 let reached = current_mouse_pos.is_some_and(|p| (p - center).length() >= radius);
                 if self.fan_suppressed.is_some() && !(reached && level_pick == self.fan_suppressed) {
                     self.fan_suppressed = None; // the pointer has left that button
@@ -1393,7 +1393,7 @@ impl PieMenu {
                             _ => now,
                         };
                         self.fan_pending = Some((i, since));
-                        let remaining = self.settings.fan_out_delay.as_secs_f64() - (now - since);
+                        let remaining = self.settings.sub_pies.fan_out.delay.as_secs_f64() - (now - since);
                         if remaining <= 0.0 {
                             self.open_fan(i);
                             ctx.request_repaint(); // the fan is laid out and drawn next frame
@@ -1420,7 +1420,7 @@ impl PieMenu {
             self.inert_hover = None;
         }
         let mut timer_pick = None;
-        if let Some(delay) = self.settings.sub_pie_hover_delay
+        if let Some(delay) = self.settings.sub_pies.hover_delay
             && self.fan.is_none()
         {
             let in_sub_pie = !self.path.is_empty();
@@ -1640,7 +1640,7 @@ impl PieMenu {
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)
         // receive the click event before we consume it.
-        let opener = self.settings.fan_out_opener_action;
+        let opener = self.settings.sub_pies.fan_out.opener_action;
         if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked())
         {
             if fan.is_none()

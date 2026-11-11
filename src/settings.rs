@@ -201,24 +201,24 @@ pub enum PieMenuDismissInput {
 }
 
 /// How a button's sub-pie is shown. The two styles are not interchangeable designs: pick
-/// one for the menu with [`PieMenuSettings::sub_pie_style`]; a single button can override
+/// one for the menu with [`PieMenuSubPieSettings::style`]; a single button can override
 /// it ([`crate::PieButton::with_fan_out`], [`crate::PieButton::with_sub_pie_style`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SubPieStyle {
     /// The sub-pie replaces its parent: one level is on screen at a time, to any depth.
     /// See [`SubPieCenter`], [`crate::PieButton::back`] and
-    /// [`PieMenuSettings::sub_pie_hover_delay`].
+    /// [`PieMenuSubPieSettings::hover_delay`].
     #[default]
     Replace,
     /// The sub-pie fans out around the button that opens it while the parent stays
     /// visible (greyed out). It holds up to five buttons: the three directions facing
     /// the parent are blocked ([`PieDirection::fan_out_slots`]), and its buttons cannot
     /// have sub-pies of their own. It opens when the pointer reaches its button
-    /// ([`PieMenuSettings::fan_out_delay`]) and closes when the pointer returns to the
+    /// ([`PieMenuFanOutSettings::delay`]) and closes when the pointer returns to the
     /// parent. While open it has the keyboard: number keys and mnemonics reach only it.
     ///
     /// Releasing the key over a fan button selects it; releasing on the opening button
-    /// does what [`PieMenuSettings::fan_out_opener_action`] says (by default the fan
+    /// does what [`PieMenuFanOutSettings::opener_action`] says (by default the fan
     /// breaks out into a replace-style sub-pie); releasing over nothing else (the
     /// blocked sector, the fan's dead zone, outside the window) dismisses the menu. A
     /// click on nothing closes the fan and the menu stays open; the fan does not pop
@@ -228,7 +228,7 @@ pub enum SubPieStyle {
 }
 
 /// What selecting the opening button of an open fan-out does
-/// ([`PieMenuSettings::fan_out_opener_action`]).
+/// ([`PieMenuFanOutSettings::opener_action`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FanOpenerAction {
     /// Selecting the fan's own opening button (releasing the key on it, or clicking it)
@@ -433,10 +433,10 @@ pub struct PieMenuAnimations {
     pub reveal_duration: Duration,
     /// [`RevealAnimation::SlideOut`]: layout radius (px) the buttons start from.
     /// `0.0` starts them at the centre; values above
-    /// [`PieMenuSettings::layout_radius`] make them slide inward.
+    /// [`PieMenuLayoutSettings::radius`] make them slide inward.
     pub slide_start_radius: f32,
     /// [`RevealAnimation::SlideOut`]: shape factor the layout starts with, blended to
-    /// [`PieMenuSettings::shape_factor`] during the slide (e.g. `-1.0` slides a diamond
+    /// [`PieMenuLayoutSettings::shape_factor`] during the slide (e.g. `-1.0` slides a diamond
     /// out into whatever the final shape is). `None` keeps the final shape throughout.
     pub slide_start_shape_factor: Option<f32>,
     /// [`RevealAnimation::SlideOut`]: fade the buttons in over this duration while they
@@ -472,11 +472,11 @@ impl Default for PieMenuAnimations {
     }
 }
 
-/// Top-level settings for a [`crate::PieMenu`].
+/// Geometry of the ring.
 #[derive(Clone, Debug)]
-pub struct PieMenuSettings {
+pub struct PieMenuLayoutSettings {
     /// Distance from the menu centre to the inner edge of each button, in logical pixels.
-    pub layout_radius: f32,
+    pub radius: f32,
     /// Controls the layout geometry: `0.0` = circle, `+1.0` = square, `-1.0` = diamond.
     ///
     /// Cardinal buttons (N/S/E/W) are unaffected; only the diagonal positions change.
@@ -489,15 +489,91 @@ pub struct PieMenuSettings {
     /// lower diagonals also move outward. Hover picking and the centre highlight follow.
     /// `None` (default): diagonals sit at 45° on the shape.
     pub intercardinal_height: Option<f32>,
-    /// Controls when the menu becomes visible and whether tap responses are possible.
-    /// See [`ShowBehavior`].
-    pub show_behavior: ShowBehavior,
     /// Minimum gap between the outermost button edge and the screen border.
     /// The whole menu shifts to maintain this margin instead of clipping buttons.
     pub screen_margin: f32,
     /// Radius of the dead zone around the centre: the mouse must be farther out than this
     /// before a button is highlighted. Releasing or clicking inside it selects nothing.
     pub dead_zone_radius: f32,
+}
+
+impl Default for PieMenuLayoutSettings {
+    fn default() -> Self {
+        Self {
+            radius: 100.0,
+            shape_factor: 0.0,
+            intercardinal_height: None,
+            screen_margin: 8.0,
+            dead_zone_radius: 12.0,
+        }
+    }
+}
+
+/// Fan-out sub-pies ([`SubPieStyle::FanOut`]).
+#[derive(Clone, Debug)]
+pub struct PieMenuFanOutSettings {
+    /// How long the pointer must rest on the opening button before its fan opens.
+    /// Default: zero (opens as the pointer reaches the button).
+    pub delay: Duration,
+    /// Distance from the opening button's centre to the inner edge of the fan's buttons.
+    /// `None` (default): the same as [`PieMenuLayoutSettings::radius`].
+    pub radius: Option<f32>,
+    /// What selecting the fan's own opening button does.
+    /// See [`FanOpenerAction`]. Default: [`FanOpenerAction::BreakOut`].
+    pub opener_action: FanOpenerAction,
+}
+
+impl Default for PieMenuFanOutSettings {
+    fn default() -> Self {
+        Self {
+            delay: Duration::ZERO,
+            radius: None,
+            opener_action: FanOpenerAction::BreakOut,
+        }
+    }
+}
+
+/// How sub-pies are shown and navigated.
+#[derive(Clone, Debug)]
+pub struct PieMenuSubPieSettings {
+    /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].
+    pub style: SubPieStyle,
+    /// Where a sub-pie is centred when it opens. See [`SubPieCenter`].
+    pub center: SubPieCenter,
+    /// [`SubPieStyle::Replace`]:
+    /// follow a button that leads to another pie once the pointer has rested on it this
+    /// long, without a click, key or release: a sub-pie button opens its sub-pie, and a
+    /// [`crate::PieButton::back`] button inside a sub-pie returns to the parent. The button
+    /// the pointer already points at when a level opens is ignored until the pointer has
+    /// left it once, so a resting pointer never bounces between levels. That applies after
+    /// going back (whatever it rests on) and to a back button after descending; a sub-pie
+    /// button under the pointer after descending starts its timer at once, so you can
+    /// rest on button after button without moving away in between.
+    /// `None` (default): off.
+    pub hover_delay: Option<Duration>,
+    /// Fan-out sub-pies ([`SubPieStyle::FanOut`]).
+    pub fan_out: PieMenuFanOutSettings,
+}
+
+impl Default for PieMenuSubPieSettings {
+    fn default() -> Self {
+        Self {
+            style: SubPieStyle::Replace,
+            center: SubPieCenter::Pointer,
+            hover_delay: None,
+            fan_out: PieMenuFanOutSettings::default(),
+        }
+    }
+}
+
+/// Top-level settings for a [`crate::PieMenu`].
+#[derive(Clone, Debug)]
+pub struct PieMenuSettings {
+    /// Geometry of the ring.
+    pub layout: PieMenuLayoutSettings,
+    /// Controls when the menu becomes visible and whether tap responses are possible.
+    /// See [`ShowBehavior`].
+    pub show_behavior: ShowBehavior,
     /// Keyboard and mouse input settings.
     pub input: PieMenuInput,
     /// Appearance of the center background circle and directional highlight.
@@ -510,30 +586,8 @@ pub struct PieMenuSettings {
     /// (a full-screen blocker). A pinned menu ([`crate::PieMenu::pin`]) never blocks,
     /// whatever this is set to. Default `true`.
     pub block_background: bool,
-    /// Where a sub-pie is centred when it opens. See [`SubPieCenter`].
-    pub sub_pie_center: SubPieCenter,
-    /// [`SubPieStyle::Replace`]:
-    /// follow a button that leads to another pie once the pointer has rested on it this
-    /// long, without a click, key or release: a sub-pie button opens its sub-pie, and a
-    /// [`crate::PieButton::back`] button inside a sub-pie returns to the parent. The button
-    /// the pointer already points at when a level opens is ignored until the pointer has
-    /// left it once, so a resting pointer never bounces between levels. That applies after
-    /// going back (whatever it rests on) and to a back button after descending; a sub-pie
-    /// button under the pointer after descending starts its timer at once, so you can
-    /// rest on button after button without moving away in between.
-    /// `None` (default): off.
-    pub sub_pie_hover_delay: Option<Duration>,
-    /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].
-    pub sub_pie_style: SubPieStyle,
-    /// [`SubPieStyle::FanOut`]: how long the pointer must rest on the opening button
-    /// before its fan opens. Default: zero (opens as the pointer reaches the button).
-    pub fan_out_delay: Duration,
-    /// [`SubPieStyle::FanOut`]: distance from the opening button's centre to the inner
-    /// edge of the fan's buttons. `None` (default): the same as [`Self::layout_radius`].
-    pub fan_out_radius: Option<f32>,
-    /// [`SubPieStyle::FanOut`]: what selecting the fan's own opening button does.
-    /// See [`FanOpenerAction`]. Default: [`FanOpenerAction::BreakOut`].
-    pub fan_out_opener_action: FanOpenerAction,
+    /// How sub-pies are shown and navigated.
+    pub sub_pies: PieMenuSubPieSettings,
     /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
     /// right-to-left UIs. Number keys and number hints follow the *displayed* positions,
     /// and [`HintSide::Trailing`] then means "left of the label". Off by default.
@@ -551,23 +605,14 @@ pub struct PieMenuSettings {
 impl Default for PieMenuSettings {
     fn default() -> Self {
         Self {
-            layout_radius: 100.0,
-            shape_factor: 0.0,
-            intercardinal_height: None,
+            layout: PieMenuLayoutSettings::default(),
             show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
-            screen_margin: 8.0,
-            dead_zone_radius: 12.0,
             input: PieMenuInput::default(),
             center_indicator: PieMenuCenterIndicatorSettings::default(),
             title: PieMenuTitleSettings::default(),
             animations: PieMenuAnimations::default(),
             block_background: true,
-            sub_pie_center: SubPieCenter::Pointer,
-            sub_pie_hover_delay: None,
-            sub_pie_style: SubPieStyle::Replace,
-            fan_out_delay: Duration::ZERO,
-            fan_out_radius: None,
-            fan_out_opener_action: FanOpenerAction::BreakOut,
+            sub_pies: PieMenuSubPieSettings::default(),
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
             text_color: None,
