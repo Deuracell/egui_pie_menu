@@ -783,6 +783,54 @@ mod fan_out_tests {
         assert!(!rig.menu.is_open());
     }
 
+    /// The layer transform of button `idx` of a ring whose Area ids are salted with `ring`.
+    fn transform(rig: &Rig, ring: egui::Id, idx: usize) -> egui::emath::TSTransform {
+        let layer = egui::LayerId::new(egui::Order::Tooltip, ring.with(idx));
+        rig.ctx.layer_transform_to_global(layer).unwrap_or_default()
+    }
+
+    #[test]
+    fn highlighted_button_is_emphasised_in_the_fan_and_optionally_everywhere() {
+        use egui::emath::TSTransform;
+        let hover_fan_child = |emphasis: HoverEmphasis| {
+            let mut rig = Rig::new(buttons());
+            rig.menu.settings.animations.hover_emphasis = emphasis;
+            rig.point(Pos2::new(505.0, 300.0));
+            let above = rig.trigger() + Vec2::new(0.0, -80.0); // the fan's "Above" (child 0)
+            for _ in 0..5 {
+                rig.time += 0.1;
+                rig.frame(Some(above), true, &[]);
+            }
+            rig
+        };
+        let fan_ring = |rig: &Rig| rig.menu.id.with(("fan", 0usize));
+
+        // Default: only the fan's highlighted button moves (outward: up) and grows.
+        let rig = hover_fan_child(HoverEmphasis::FanOut);
+        let lifted = transform(&rig, fan_ring(&rig), 0);
+        assert!((lifted.scaling - 1.08).abs() < 1e-4, "{lifted:?}");
+        let centre = rig.menu.fan_centers_for_test()[0];
+        assert!((lifted * centre - (centre + Vec2::new(0.0, -6.0))).length() < 1e-3, "centre moves 6 px outward");
+        assert_eq!(transform(&rig, fan_ring(&rig), 1), TSTransform::IDENTITY, "other fan buttons stay");
+        assert_eq!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY, "the parent's lit button stays");
+
+        // Off: nothing moves. All: the parent's highlighted button too.
+        let rig = hover_fan_child(HoverEmphasis::Off);
+        assert_eq!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
+        let rig = hover_fan_child(HoverEmphasis::All);
+        assert_ne!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
+        assert_ne!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY);
+
+        // It eases back to the identity once the pointer leaves (layer transforms are sticky).
+        let mut rig = hover_fan_child(HoverEmphasis::FanOut);
+        let beyond = rig.trigger() + Vec2::new(120.0, 0.0);
+        for _ in 0..5 {
+            rig.time += 0.1;
+            rig.frame(Some(beyond), true, &[]);
+        }
+        assert_eq!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
+    }
+
     #[test]
     fn closes_when_the_pointer_returns_to_the_parent() {
         let mut rig = Rig::new(buttons());

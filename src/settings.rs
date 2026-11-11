@@ -374,7 +374,21 @@ impl Default for PieMenuNumberHints {
     }
 }
 
-/// Reveal animation settings.
+/// Which rings of buttons emphasise their highlighted button (it moves outward and/or
+/// grows; see [`PieMenuAnimations::hover_shift`] and [`PieMenuAnimations::hover_scale`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HoverEmphasis {
+    /// Nowhere.
+    Off,
+    /// Only in an open fan-out (default): its centre is the opening button, so there is
+    /// no centre highlight to show which fan button the pointer picks.
+    #[default]
+    FanOut,
+    /// In every pie.
+    All,
+}
+
+/// Reveal and hover animation settings.
 #[derive(Clone, Debug)]
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
@@ -393,6 +407,15 @@ pub struct PieMenuAnimations {
     /// slide (it may be shorter or longer than the slide). `None` keeps them fully
     /// opaque from the start.
     pub slide_fade: Option<Duration>,
+    /// Where the highlighted button is emphasised. See [`HoverEmphasis`].
+    pub hover_emphasis: HoverEmphasis,
+    /// Hover emphasis: how far the highlighted button moves outward, in logical pixels.
+    pub hover_shift: f32,
+    /// Hover emphasis: how much the highlighted button grows (`1.0` = not at all). The
+    /// whole button is scaled about its centre, whatever your closure draws.
+    pub hover_scale: f32,
+    /// Hover emphasis: how long the button takes to move out and back.
+    pub hover_duration: Duration,
 }
 
 impl Default for PieMenuAnimations {
@@ -403,6 +426,10 @@ impl Default for PieMenuAnimations {
             slide_start_radius: 0.0,
             slide_start_shape_factor: None,
             slide_fade: Some(Duration::from_millis(200)),
+            hover_emphasis: HoverEmphasis::FanOut,
+            hover_shift: 6.0,
+            hover_scale: 1.08,
+            hover_duration: Duration::from_millis(100),
         }
     }
 }
@@ -439,7 +466,7 @@ pub struct PieMenuSettings {
     pub center_indicator: PieMenuCenterIndicatorSettings,
     /// Appearance of the title shown above the center indicator.
     pub title: PieMenuTitleSettings,
-    /// Reveal animation settings.
+    /// Reveal and hover animation settings.
     pub animations: PieMenuAnimations,
     /// While the menu is visible, swallow pointer input meant for widgets behind it
     /// (a full-screen blocker). A pinned menu ([`crate::PieMenu::pin`]) never blocks,
