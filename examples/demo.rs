@@ -184,27 +184,37 @@ const DEFAULT_BUTTON_HEIGHT: f32 = 24.0;
 const DEFAULT_SLIDE_START_SHAPE: f32 = -1.0; // start the slide as a diamond
 const DEFAULT_SUB_HOVER_MS: u64 = 400;
 
-/// The marker drawn before the label of a sub-pie button and of a back button when the
-/// button has no icon of its own. Editable in the "Sub-pies" section; empty = no marker.
+/// Where a sub-pie or back marker is drawn on its button.
+#[derive(Clone, Copy, PartialEq)]
+enum MarkerPlacement {
+    /// At the button's far end: the right edge, or the left when the layout is mirrored.
+    FarEnd,
+    /// Before the label, ahead of the button's icon (the opposite end to `FarEnd`).
+    Start,
+}
+
+/// The marker of a sub-pie button and of a back button. It has a slot of its own, so a
+/// button's icon never replaces it. Editable in the "Sub-pies" section; empty = no marker.
 #[derive(Clone)]
 struct MarkerIcons {
     sub_pie: String,
     back: String,
+    placement: MarkerPlacement,
 }
 
 impl Default for MarkerIcons {
     fn default() -> Self {
-        Self { sub_pie: "▶".into(), back: "◀".into() }
+        Self { sub_pie: "▶".into(), back: "◀".into(), placement: MarkerPlacement::FarEnd }
     }
 }
 
 impl MarkerIcons {
-    /// The icon to draw for `cfg`: its own, else the marker for its kind.
-    fn for_button<'a>(&'a self, cfg: &'a ButtonConfig) -> &'a str {
-        match (cfg.icon.as_str(), cfg.submenu, cfg.back) {
-            ("", true, _) => &self.sub_pie,
-            ("", _, true) => &self.back,
-            (icon, ..) => icon,
+    /// The marker for `cfg`'s kind of button ("" if none).
+    fn marker(&self, cfg: &ButtonConfig) -> &str {
+        match (cfg.submenu, cfg.back) {
+            (true, _) => &self.sub_pie,
+            (_, true) => &self.back,
+            _ => "",
         }
     }
 }
@@ -902,7 +912,7 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Sub-pies",
-                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius marker icon arrow", |ui| {
+                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius marker icon arrow position far end start", |ui| {
                     ui.label("Style")
                         .on_hover_text("Replace: a sub-pie takes its parent's place, one level at a time. Fan-out: it opens around its button while the parent stays visible (up to five buttons, none facing the parent). A button can override this in the Button list.");
                     let style_label = |s: SubPieStyle| match s {
@@ -917,11 +927,24 @@ impl eframe::App for Demo {
                             }
                         });
 
+                    ui.label("Marker position")
+                        .on_hover_text("Where the sub-pie and back markers sit on their buttons. Separate from the button's icon, which never replaces them.");
+                    let place_label = |p: MarkerPlacement| match p {
+                        MarkerPlacement::FarEnd => "Far end of the button",
+                        MarkerPlacement::Start => "Start, before the icon",
+                    };
+                    egui::ComboBox::from_id_salt("marker_placement")
+                        .selected_text(place_label(self.icons.placement))
+                        .show_ui(ui, |ui| {
+                            for p in [MarkerPlacement::FarEnd, MarkerPlacement::Start] {
+                                ui.selectable_value(&mut self.icons.placement, p, place_label(p));
+                            }
+                        });
                     ui.label("Sub-pie marker")
-                        .on_hover_text("Drawn before the label of a button that opens a sub-pie and has no icon of its own. Empty: none.");
+                        .on_hover_text("Drawn on a button that opens a sub-pie, whatever its icon. Empty: none.");
                     ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(60.0));
                     ui.label("Back marker")
-                        .on_hover_text("Drawn before the label of a back button that has no icon of its own. Empty: none.");
+                        .on_hover_text("Drawn on a back button, whatever its icon. Empty: none.");
                     ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(60.0));
 
                     ui.label(RichText::new("Fan-out").strong());
@@ -1206,7 +1229,7 @@ impl eframe::App for Demo {
                 // which come from the theme, can be checked in both.
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
+                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker at their far end (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
             });
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -1305,12 +1328,26 @@ impl eframe::App for Demo {
 
                 // Icon + label, with the mnemonic underlined.
                 let mut label = b.label_text();
-                // Without an icon of their own, sub-pie and back buttons get the marker
-                // from the "Sub-pies" section.
-                let icon = icons.for_button(cfg);
-                if !icon.is_empty() {
-                    label = label.prefix(format!("{icon}  "));
+                // Sub-pie and back buttons carry a marker (from the "Sub-pies" section) in a
+                // slot of its own: at the far end, or before the icon. The icon is the
+                // button's own and never replaces it.
+                let marker = icons.marker(cfg);
+                let far_end = icons.placement == MarkerPlacement::FarEnd;
+                let mut prefix = String::new();
+                if !marker.is_empty() && !far_end {
+                    prefix += &format!("{marker}  ");
                 }
+                if !cfg.icon.is_empty() {
+                    prefix += &format!("{}  ", cfg.icon);
+                }
+                if !prefix.is_empty() {
+                    label = label.prefix(prefix);
+                }
+                // Far end: in the label's colour, set apart from the text by a little space.
+                let far_marker = (!marker.is_empty() && far_end).then(|| {
+                    let text = if b.rtl { format!("{marker}  ") } else { format!("  {marker}") };
+                    RichText::new(text).color(b.text_color())
+                });
                 let text: egui::WidgetText = label.into();
 
                 let resp = match cfg.kind {
@@ -1328,6 +1365,8 @@ impl eframe::App for Demo {
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.set_min_height(button_h);
+                                    // Mirrored: the far end is the left.
+                                    if b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
                                     if let Some((h, false)) = &hint { ui.label(h.clone()); }
                                     let mut display = cfg.checked;
                                     if b.rtl {
@@ -1338,16 +1377,23 @@ impl eframe::App for Demo {
                                         ui.checkbox(&mut display, text);
                                     }
                                     if let Some((h, true)) = &hint { ui.label(h.clone()); }
+                                    if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
                                 },
                             );
                         })
                         .response,
                     ButtonKind::Button => {
                         ui.spacing_mut().button_padding = Vec2::new(10.0, 0.0);
-                        ui.add(hint_button(text, hint, hint_gap)
+                        let mut button = hint_button(text, hint, hint_gap)
                             .fill(bg)
                             .corner_radius(6.0)
-                            .min_size(Vec2::new(0.0, button_h)))
+                            .min_size(Vec2::new(0.0, button_h));
+                        if let Some(m) = far_marker {
+                            // egui lays text out left to right, so a mirrored layout's far
+                            // end is the left edge.
+                            button = if b.rtl { button.left_text(m) } else { button.right_text(m) };
+                        }
+                        ui.add(button)
                     }
                 };
                 if !cfg.tooltip.is_empty() {

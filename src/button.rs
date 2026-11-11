@@ -286,6 +286,14 @@ pub struct ButtonView<'a> {
 }
 
 impl ButtonView<'_> {
+    /// The text colour in effect for this button: what [`Self::label_text`] uses (egui's
+    /// widget text colour for its state, or [`PieMenuSettings::text_color`] when set;
+    /// greyed out when disabled). For drawing extras of your own, such as a marker at the
+    /// button's far end, to match the label.
+    pub fn text_color(&self) -> Color32 {
+        self.text_color
+    }
+
     /// The button's label with its mnemonic (if any) underlined, ready for
     /// `ui.label(..)` or `egui::Button::new(..)`. The colour is egui's widget text colour
     /// for the button's state (`inactive` / `hovered`), or [`PieMenuSettings::text_color`]

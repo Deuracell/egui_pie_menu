@@ -1007,3 +1007,38 @@ mod fan_out_tests {
         }
     }
 }
+
+mod view_color_tests {
+    use super::*;
+
+    /// `ButtonView::text_color` is the colour `label_text` paints with, forced or from the
+    /// theme, and greyed out for a disabled button.
+    #[test]
+    fn text_color_matches_the_label() {
+        let colors = |enabled: bool, forced: Option<Color32>| {
+            let ctx = egui::Context::default();
+            let buttons = vec![PieButton::new(PieDirection::North).with_label("Cut").with_enabled(enabled)];
+            let mut m = PieMenu::new();
+            m.settings.text_color = forced;
+            m.open(Pos2::new(400.0, 300.0));
+            m.reveal();
+            let mut seen = None;
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(Default::default(), |ui| {
+                    m.show(ui.ctx(), &buttons, true, |ui, b| {
+                        seen = Some(b.text_color());
+                        ui.label(b.label_text());
+                    });
+                });
+                out.textures_delta.clear();
+            }
+            (seen.expect("button drawn"), ctx.global_style().visuals.clone())
+        };
+        let (forced, _) = colors(true, Some(Color32::WHITE));
+        assert_eq!(forced, Color32::WHITE);
+        let (themed, v) = colors(true, None);
+        assert_eq!(themed, v.widgets.inactive.fg_stroke.color);
+        let (off, v) = colors(false, Some(Color32::WHITE));
+        assert_eq!(off, v.gray_out(Color32::WHITE));
+    }
+}
