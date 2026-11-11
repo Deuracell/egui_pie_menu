@@ -35,6 +35,7 @@ pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
 use egui::emath::TSTransform;
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
+use std::collections::HashMap;
 use std::time::Duration;
 
 pub mod settings;
@@ -137,8 +138,6 @@ struct BreakOut {
     /// Where the parent's centre (circle) and ring were drawn.
     parent_center: Pos2,
     parent_radius: f32,
-    /// The parent ring's cached button sizes.
-    parent_sizes: Vec<Vec2>,
     /// The opener's index in the parent ring.
     opener: usize,
 }
@@ -196,8 +195,11 @@ pub struct PieMenu {
     path: Vec<usize>,
     /// Full index path of the last leaf selection (see [`PieMenu::selected_path`]).
     selected_path: Vec<usize>,
-    /// Cached button sizes from the previous frame, used to centre each Area.
-    button_sizes: Vec<Vec2>,
+    /// Cached button sizes from the previous frame, used to centre each Area, per ring of
+    /// buttons (keyed by the ring's id, see [`PieMenu::level_ring_id`]). Every ring has its
+    /// own Areas, so a ring seen for the first time is hidden by egui for its sizing frame
+    /// instead of being painted at positions computed from another ring's sizes.
+    ring_sizes: HashMap<egui::Id, Vec<Vec2>>,
     /// Where each button of the level was drawn last frame (its final, un-animated
     /// centre), for [`SubPieCenter::Button`].
     button_centers: Vec<Pos2>,
@@ -221,8 +223,6 @@ pub struct PieMenu {
     fan_suppressed: Option<usize>,
     /// egui time the fan appeared (`None`: stamp on the next draw), for its animation.
     fan_shown_at: Option<f64>,
-    /// Cached sizes of the fan's buttons from the previous frame.
-    fan_sizes: Vec<Vec2>,
     /// Test-only: the fan buttons' final centres from the previous frame.
     #[cfg(test)]
     fan_centers: Vec<Pos2>,
@@ -279,7 +279,7 @@ impl PieMenu {
             shown_at: None,
             path: Vec::new(),
             selected_path: Vec::new(),
-            button_sizes: Vec::new(),
+            ring_sizes: HashMap::new(),
             button_centers: Vec::new(),
             level_centers: Vec::new(),
             hover_since: None,
@@ -289,7 +289,6 @@ impl PieMenu {
             last_fan: None,
             fan_suppressed: None,
             fan_shown_at: None,
-            fan_sizes: Vec::new(),
             #[cfg(test)]
             fan_centers: Vec::new(),
             fan_hover: None,
@@ -504,12 +503,35 @@ impl PieMenu {
         &self.fan_centers
     }
 
+    /// The id of the ring of buttons of the sub-pie level at `path` (the root, empty path:
+    /// the menu's own id). It names the ring's Areas and its size cache.
+    fn level_ring_id(&self, path: &[usize]) -> egui::Id {
+        if path.is_empty() { self.id } else { self.id.with(("level", path.to_vec())) }
+    }
+
+    /// The id of the ring of the fan of button `trigger` in the level at `path`.
+    fn fan_ring_id(&self, path: &[usize], trigger: usize) -> egui::Id {
+        if path.is_empty() { self.id.with(("fan", trigger)) } else { self.id.with(("fan", path.to_vec(), trigger)) }
+    }
+
+    /// The ring being shown: a broken-out level keeps its fan's ring (same Areas and sizes).
+    fn current_ring_id(&self) -> egui::Id {
+        match &self.breakout {
+            Some(b) => self.fan_ring_id(&self.path[..self.path.len().saturating_sub(1)], b.opener),
+            None => self.level_ring_id(&self.path),
+        }
+    }
+
+    /// Makes sure ring `id` has a cached size per button (placeholders for new ones).
+    fn ensure_ring_sizes(&mut self, id: egui::Id, count: usize) {
+        self.ring_sizes.entry(id).or_default().resize(count, Vec2::new(50.0, 24.0));
+    }
+
     fn open_fan(&mut self, trigger: usize) {
         self.fan = Some(trigger);
         self.fan_suppressed = None;
         self.last_fan = Some(trigger);
         self.fan_shown_at = None;
-        self.fan_sizes.clear();
         self.fan_hover = None;
         self.fan_armed = false;
         self.fan_pending = None;
@@ -759,7 +781,6 @@ impl PieMenu {
             started: now,
             parent_center: self.display_center,
             parent_radius: self.level_radius(),
-            parent_sizes: std::mem::replace(&mut self.button_sizes, std::mem::take(&mut self.fan_sizes)),
             opener: trigger,
         };
         let (center, radius) = (self.fan_display_center, self.fan_display_radius);
@@ -797,9 +818,6 @@ impl PieMenu {
             SubPieCenter::Pointer if !self.pinned => mouse,
             _ => parent_center,
         };
-        if let Some(b) = broken_out {
-            self.button_sizes = b.parent_sizes;
-        }
         self.restart_level(center, key_down);
         // The pointer may still rest on the button just left: it must not fan out again.
         self.fan_suppressed = left;
@@ -1126,11 +1144,9 @@ impl PieMenu {
         key_down: bool,
         render_button: &mut impl FnMut(&mut Ui, &ButtonView),
     ) -> LevelEvent {
-        // Ensure cached size vec is long enough
-        if self.button_sizes.len() < buttons.len() {
-            self.button_sizes
-                .resize(buttons.len(), Vec2::new(50.0, 24.0));
-        }
+        // This level's ring: its own Areas and size cache.
+        let ring = self.current_ring_id();
+        self.ensure_ring_sizes(ring, buttons.len());
 
         // egui's clock (seconds), also available on wasm.
         let now = ctx.input(|i| i.time);
@@ -1211,7 +1227,7 @@ impl PieMenu {
 
         // Shift the whole menu so every button stays within the screen rect with a margin.
         let screen_rect = ctx.content_rect();
-        let center = self.clamp_center(center, buttons, &self.button_sizes, radius, screen_rect);
+        let center = self.clamp_center(center, buttons, &self.ring_sizes[&ring], radius, screen_rect);
         self.display_center = center;
 
         // Block hover/interaction on background widgets while the menu is open.
@@ -1241,7 +1257,7 @@ impl PieMenu {
 
         // The button the pointer points at in this level, by angle against each button's
         // displayed layout vector. Nothing inside the dead zone.
-        let dirs = self.layout_dirs(buttons, &self.button_sizes, radius);
+        let dirs = self.layout_dirs(buttons, &self.ring_sizes[&ring], radius);
         let level_pick = current_mouse_pos.and_then(|p| {
             let mouse_vec = p - center;
             (mouse_vec.length() > dead_zone).then(|| Self::pick_button(buttons, mouse_vec, &dirs)).flatten()
@@ -1265,17 +1281,17 @@ impl PieMenu {
         }
 
         // Lay the open fan out around its button.
+        let mut fan_ring = ring;
         let fan: Option<Fan> = self.fan.map(|trigger| {
             let button = &buttons[trigger];
             let children = button.children();
-            if self.fan_sizes.len() < children.len() {
-                self.fan_sizes.resize(children.len(), Vec2::new(50.0, 24.0));
-            }
-            let size = self.button_sizes[trigger];
+            fan_ring = self.fan_ring_id(&self.path, trigger);
+            self.ensure_ring_sizes(fan_ring, children.len());
+            let size = self.ring_sizes[&ring][trigger];
             let button_center = center + self.button_offset(&Self::eff(&button.direction, mirror), size, radius, shape_factor);
             let fan_radius = self.settings.sub_pies.fan_out.radius.unwrap_or(radius);
             self.fan_display_radius = fan_radius;
-            let fan_center = self.clamp_center(button_center, children, &self.fan_sizes, fan_radius, screen_rect);
+            let fan_center = self.clamp_center(button_center, children, &self.ring_sizes[&fan_ring], fan_radius, screen_rect);
             self.fan_display_center = fan_center;
             Fan {
                 trigger,
@@ -1355,7 +1371,7 @@ impl PieMenu {
                 // parent (the blocked sector: three of the eight 45° slices).
                 self.hovered_index = Some(fan.trigger);
                 self.hover_since = None;
-                let fan_dirs = self.layout_dirs(fan.children, &self.fan_sizes, fan.radius);
+                let fan_dirs = self.layout_dirs(fan.children, &self.ring_sizes[&fan_ring], fan.radius);
                 self.fan_hover = current_mouse_pos.and_then(|p| {
                     let v = p - fan.center;
                     let angle = v.y.atan2(v.x);
@@ -1520,7 +1536,7 @@ impl PieMenu {
         // Draw the level's buttons, then the open fan's around its button. The caches are
         // taken out of `self` while its settings are borrowed for drawing.
         let path = self.path.clone();
-        let mut sizes = std::mem::take(&mut self.button_sizes);
+        let mut sizes = self.ring_sizes.remove(&ring).unwrap_or_default();
         let mut centers = std::mem::take(&mut self.button_centers);
         let cluster_items = self.draw_level(
             ctx,
@@ -1541,7 +1557,7 @@ impl PieMenu {
                     self.settings.animations.sub_pie_hover_emphasis
                 },
                 // A broken-out level keeps the Areas the fan drew its buttons in.
-                id: self.breakout.as_ref().map_or(self.id, |b| self.id.with(("fan", b.opener))),
+                id: ring,
                 path_prefix: &path,
                 opacity_scale: 1.0,
             },
@@ -1549,15 +1565,17 @@ impl PieMenu {
             Some(&mut centers),
             render_button,
         );
-        self.button_sizes = sizes;
+        self.ring_sizes.insert(ring, sizes);
         self.button_centers = centers;
 
         // After a break-out: the whole main ring, the opener included (lit), fades out where
         // it was; once the fade is over nothing of it is drawn any more.
-        if let Some(mut b) = self.breakout.take() {
+        if let Some(b) = self.breakout.take() {
             if fade < 1.0 && b.opener < parent.len() {
-                b.parent_sizes.resize(parent.len(), Vec2::new(50.0, 24.0));
                 let up = &path[..path.len().saturating_sub(1)];
+                let parent_ring = self.level_ring_id(up);
+                self.ensure_ring_sizes(parent_ring, parent.len());
+                let mut parent_sizes = self.ring_sizes.remove(&parent_ring).unwrap_or_default();
                 let draw = LevelDraw {
                     buttons: parent,
                     center: b.parent_center,
@@ -1571,11 +1589,12 @@ impl PieMenu {
                     } else {
                         self.settings.animations.sub_pie_hover_emphasis
                     },
-                    id: self.id,
+                    id: parent_ring,
                     path_prefix: up,
                     opacity_scale: 1.0 - fade,
                 };
-                self.draw_level(ctx, now, &draw, &mut b.parent_sizes, None, render_button);
+                self.draw_level(ctx, now, &draw, &mut parent_sizes, None, render_button);
+                self.ring_sizes.insert(parent_ring, parent_sizes);
             }
             self.breakout = Some(b);
         }
@@ -1584,7 +1603,7 @@ impl PieMenu {
             let shown_at = *self.fan_shown_at.get_or_insert(now);
             let mut fan_path = path.clone();
             fan_path.push(fan.trigger);
-            let mut sizes = std::mem::take(&mut self.fan_sizes);
+            let mut sizes = self.ring_sizes.remove(&fan_ring).unwrap_or_default();
             // Only tests look at where the fan's buttons ended up.
             let mut fan_centers: Option<Vec<Pos2>> = cfg!(test).then(Vec::new);
             self.draw_level(
@@ -1599,7 +1618,7 @@ impl PieMenu {
                     dim_except: None,
                     dim_opacity: 1.0,
                     emphasis: self.settings.animations.sub_pie_hover_emphasis,
-                    id: self.id.with(("fan", fan.trigger)),
+                    id: fan_ring,
                     path_prefix: &fan_path,
                     opacity_scale: 1.0,
                 },
@@ -1607,7 +1626,7 @@ impl PieMenu {
                 fan_centers.as_mut(),
                 render_button,
             );
-            self.fan_sizes = sizes;
+            self.ring_sizes.insert(fan_ring, sizes);
             #[cfg(test)]
             {
                 self.fan_centers = fan_centers.unwrap_or_default();
