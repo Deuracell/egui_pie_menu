@@ -398,14 +398,19 @@ impl Default for PieMenuNumberHints {
 }
 
 /// How much a pie emphasises its highlighted button: it moves outward and/or grows.
+/// The shift moves the button's layer (in whole physical pixels); the growth is applied
+/// to its content, see [`HoverEmphasis::scale`].
 /// Set separately for the root pie ([`PieMenuAnimations::hover_emphasis`]) and for
 /// sub-pies and fan-outs ([`PieMenuAnimations::sub_pie_hover_emphasis`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HoverEmphasis {
     /// How far the highlighted button moves outward, in logical pixels (`0.0`: not at all).
     pub shift: f32,
-    /// How much the highlighted button grows (`1.0`: not at all). The whole button is
-    /// scaled about its centre, whatever your closure draws.
+    /// How much the highlighted button's content grows (`1.0`: not at all). It is applied
+    /// through the font size, never by scaling the layer (which would blur the text):
+    /// [`crate::ButtonView::label_text`] follows it, and so does anything your closure scales by
+    /// [`crate::ButtonView::scale`]. Custom fixed-size widgets only grow if the closure scales
+    /// them.
     pub scale: f32,
 }
 
@@ -439,10 +444,14 @@ pub struct PieMenuAnimations {
     /// opaque from the start.
     pub slide_fade: Option<Duration>,
     /// Emphasis of the highlighted button in the root pie. Default: none (the centre
-    /// highlight already shows the direction).
+    /// highlight already shows the direction). The shift moves the button's layer (whole
+    /// pixels); the scale applies to the label text and to what the closure scales by
+    /// [`crate::ButtonView::scale`].
     pub hover_emphasis: HoverEmphasis,
     /// Emphasis of the highlighted button in sub-pies and fan-outs. Default: 6 px outward
-    /// and 8% larger; a fan-out has no centre highlight of its own to show the pick.
+    /// and 8% larger; a fan-out has no centre highlight of its own to show the pick. The
+    /// shift moves the button's layer (whole pixels); the scale applies to the label text
+    /// and to what the closure scales by [`crate::ButtonView::scale`].
     pub sub_pie_hover_emphasis: HoverEmphasis,
     /// How long a button takes to ease into its emphasis and back.
     pub hover_duration: Duration,

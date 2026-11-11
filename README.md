@@ -119,6 +119,7 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
 | `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color` is resolved for the button's state (see "Text colour") |
+| `b.scale()` | The scale to draw this button's content at: `1.0`, easing up to `HoverEmphasis::scale` while highlighted. `label_text()` uses it for the font size; multiply your own icons, paddings or minimum sizes by it |
 | `b.text_color()` | The text colour in effect for this button (what `label_text()` uses), for extras you draw yourself |
 | `b.opens_sub_pie()` | The button opens a sub-pie (replace style or fan-out) instead of being an action: lets you draw folder buttons differently |
 | `b.opens_fan_out()` | The button opens its sub-pie as a fan-out (implies `opens_sub_pie()`) |
@@ -261,7 +262,7 @@ menu.settings.animations.sub_pie_hover_emphasis = HoverEmphasis::NONE;   // turn
 menu.settings.animations.hover_duration = Duration::from_millis(100);    // easing, for both
 ```
 
-`shift` is in pixels outward, `scale` is the growth (`1.0` = none). The whole button is transformed as one layer, so it works with whatever your closure draws.
+`shift` is in pixels outward: the button's layer moves, in whole physical pixels. `scale` is the growth (`1.0` = none): it is applied to the content, never by scaling the layer (egui draws text as glyph images, so a layer scale blurs it). `b.label_text()` already uses it for the font size, which keeps the text crisp, and the button grows with its text. Anything else only grows if your closure scales it by `b.scale()` (icons, paddings, minimum sizes); custom fixed-size widgets stay as they are otherwise.
 
 ### Number hints
 
@@ -359,7 +360,7 @@ menu.settings.fan_out_opener_action = FanOpenerAction::BreakOut; // selecting th
 - A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child with a sub-pie of its own as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
 - It opens when the pointer reaches its button (as far out as the ring of buttons) or when the button is selected by number key, mnemonic, click or release. It closes when the pointer comes back in towards the centre.
 - While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons. The parent's centre and its other buttons are greyed out, and those buttons cannot be highlighted.
-- The fan's highlighted button moves outward and grows slightly (see "Hover emphasis").
+- The fan's highlighted button moves outward and its content grows slightly (see "Hover emphasis").
 - The pointer picks among the fan's buttons by angle from the opening button's centre. On the opening button itself, or pointing back at the parent, nothing is highlighted.
 - Selecting the fan's own opening button (releasing the key on it, or clicking it) is set by `settings.fan_out_opener_action`. `BreakOut` (default): the fan becomes a sub-pie of the same children, in place (Backspace or a centre click goes back). `Dismiss`: releasing on it dismisses the menu, and clicking it just closes the fan.
 - The break-out transition: the sub-pie opens exactly where the fan was (same centre, radius and buttons, no jump and no re-reveal), the main ring fades out where it was, the old centre fades out and the new one fades in (over `animations.reveal_duration`; instantly with `RevealAnimation::None`). The opener stays in place at full opacity as the sub-pie's centre piece: it is still drawn through your closure, its `b.path` ends with its own index and `b.idx` is its index in its own level (it is not selectable in the sub-pie). A click on the centre or Backspace goes back and restores the main pie where it was.

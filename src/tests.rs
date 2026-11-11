@@ -760,6 +760,10 @@ mod fan_out_tests {
         opacities: Vec<(Vec<usize>, f32)>,
         /// What the last frame painted.
         shapes: Vec<egui::epaint::ClippedShape>,
+        /// Per button the last frame drew: its path and `b.scale()`.
+        scales: Vec<(Vec<usize>, f32)>,
+        /// When set, the closure overrides the label font with it.
+        font_override: Option<egui::FontId>,
     }
 
     impl Rig {
@@ -772,7 +776,7 @@ mod fan_out_tests {
             menu.settings.animations.reveal = RevealAnimation::None;
             menu.open(CENTER);
             menu.reveal();
-            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0, screen, repaint_delay: Duration::MAX, opacities: Vec::new(), shapes: Vec::new() };
+            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0, screen, repaint_delay: Duration::MAX, opacities: Vec::new(), shapes: Vec::new(), scales: Vec::new(), font_override: None };
             rig.frame(None, true, &[]); // lays the buttons out
             rig.frame(None, true, &[]);
             rig
@@ -795,15 +799,23 @@ mod fan_out_tests {
             };
             let (mut resp, mut drawn) = (PieMenuResponse::None, Drawn::new());
             let mut opacities = Vec::new();
+            let mut scales = Vec::new();
+            let font_override = self.font_override.clone();
             let (menu, buttons) = (&mut self.menu, &self.buttons);
             let mut out = self.ctx.run_ui(input, |ui| {
                 resp = menu.show_with_pointer(ui.ctx(), buttons, pointer, key_down, |ui, b| {
                     drawn.push((b.path.to_vec(), b.hovered));
                     opacities.push((b.path.to_vec(), ui.opacity()));
-                    ui.label(b.label_text());
+                    scales.push((b.path.to_vec(), b.scale()));
+                    let label = match &font_override {
+                        Some(f) => b.label_text().font(f.clone()),
+                        None => b.label_text(),
+                    };
+                    ui.label(label);
                 });
             });
             out.textures_delta.clear();
+            self.scales = scales;
             self.opacities = opacities;
             self.shapes = std::mem::take(&mut out.shapes);
             self.repaint_delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
@@ -866,6 +878,27 @@ mod fan_out_tests {
         rig.ctx.layer_transform_to_global(layer).unwrap_or_default()
     }
 
+    /// `b.scale()` of the button at `path` in the last frame.
+    fn scale_of(rig: &Rig, path: &[usize]) -> f32 {
+        rig.scales.iter().find(|(p, _)| p == path).unwrap_or_else(|| panic!("{path:?} not drawn")).1
+    }
+
+    /// The font size the label `text` was painted with in the last frame.
+    fn painted_font_size(rig: &Rig, text: &str) -> f32 {
+        fn find(shape: &egui::Shape, text: &str) -> Option<f32> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == text => t.galley.job.sections.first().map(|s| s.format.font_id.size),
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find(s, text)),
+                _ => None,
+            }
+        }
+        rig.shapes.iter().find_map(|s| find(&s.shape, text)).unwrap_or_else(|| panic!("{text:?} not painted"))
+    }
+
+    fn body_size(rig: &Rig) -> f32 {
+        rig.ctx.global_style().text_styles[&egui::TextStyle::Body].size
+    }
+
     #[test]
     fn highlighted_button_is_emphasised_with_separate_amounts_for_root_and_sub_pies() {
         use egui::emath::TSTransform;
@@ -888,21 +921,26 @@ mod fan_out_tests {
         // Defaults: only the fan's highlighted button moves (outward: up) and grows.
         let rig = hover_fan_child(HoverEmphasis::NONE, None);
         let lifted = transform(&rig, fan_ring(&rig), 0);
-        assert!((lifted.scaling - 1.08).abs() < 1e-4, "{lifted:?}");
-        let centre = rig.menu.fan_centers_for_test()[0];
-        assert!((lifted * centre - (centre + Vec2::new(0.0, -6.0))).length() < 1e-3, "centre moves 6 px outward");
+        assert_eq!(lifted.scaling, 1.0, "the layer is never scaled: {lifted:?}");
+        assert!((lifted.translation - Vec2::new(0.0, -6.0)).length() < 1e-3, "moves 6 px outward: {lifted:?}");
+        assert!((scale_of(&rig, &[0, 0]) - 1.08).abs() < 1e-4, "the content grows instead");
+        assert!((painted_font_size(&rig, "Above") - body_size(&rig) * 1.08).abs() < 1e-3);
+        assert_eq!(scale_of(&rig, &[0, 1]), 1.0, "other fan buttons stay");
         assert_eq!(transform(&rig, fan_ring(&rig), 1), TSTransform::IDENTITY, "other fan buttons stay");
         assert_eq!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY, "the root's lit button stays");
 
         // Sub-pie amount off: nothing moves in the fan.
         let rig = hover_fan_child(HoverEmphasis::NONE, Some(HoverEmphasis::NONE));
         assert_eq!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
+        assert_eq!(scale_of(&rig, &[0, 0]), 1.0);
+        assert_eq!(painted_font_size(&rig, "Above"), body_size(&rig));
 
         // The root has its own amount: here it only moves, 10 px east, without growing.
         let rig = hover_fan_child(HoverEmphasis { shift: 10.0, scale: 1.0 }, None);
         let root = transform(&rig, rig.menu.id, 0);
-        assert!((root.scaling - 1.0).abs() < 1e-6 && (root.translation - Vec2::new(10.0, 0.0)).length() < 1e-3, "{root:?}");
-        assert!((transform(&rig, fan_ring(&rig), 0).scaling - 1.08).abs() < 1e-4, "the fan keeps its own");
+        assert!(root.scaling == 1.0 && (root.translation - Vec2::new(10.0, 0.0)).length() < 1e-3, "{root:?}");
+        assert_eq!(scale_of(&rig, &[0]), 1.0, "the root does not grow");
+        assert!((scale_of(&rig, &[0, 0]) - 1.08).abs() < 1e-4, "the fan keeps its own");
 
         // It eases back to the identity once the pointer leaves (layer transforms are sticky).
         let mut rig = hover_fan_child(HoverEmphasis::NONE, None);
@@ -912,6 +950,116 @@ mod fan_out_tests {
             rig.frame(Some(beyond), true, &[]);
         }
         assert_eq!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
+        assert_eq!(scale_of(&rig, &[0, 0]), 1.0);
+    }
+
+    /// Layers are only ever translated (a layer scale would blur the glyph images), by
+    /// whole physical pixels, in every state and at fractional pixels-per-point too.
+    #[test]
+    fn layer_transform_is_a_whole_pixel_translation_in_every_state() {
+        for ppp in [1.0f32, 1.5] {
+            let mut rig = Rig::new(buttons());
+            rig.ctx.set_pixels_per_point(ppp);
+            rig.menu.settings.animations.hover_emphasis = HoverEmphasis { shift: 4.3, scale: 1.2 };
+            let check = |rig: &Rig, what: &str| {
+                let rings = [rig.menu.id, rig.menu.id.with(("fan", 0usize))];
+                for ring in rings {
+                    for idx in 0..3 {
+                        let t = transform(rig, ring, idx);
+                        assert_eq!(t.scaling, 1.0, "{what} (ppp {ppp}): {t:?}");
+                        for v in [t.translation.x, t.translation.y] {
+                            let px = v * ppp;
+                            assert!((px - px.round()).abs() < 1e-4, "{what} (ppp {ppp}): {t:?}");
+                        }
+                    }
+                }
+            };
+            rig.point(Pos2::new(505.0, 300.0));
+            check(&rig, "idle");
+            let above = rig.trigger() + Vec2::new(0.0, -80.0);
+            let mut moved = false;
+            for step in 0..8 {
+                rig.time += 0.03;
+                rig.frame(Some(above), true, &[]);
+                moved |= transform(&rig, rig.menu.id.with(("fan", 0usize)), 0) != egui::emath::TSTransform::IDENTITY;
+                check(&rig, &format!("easing {step}"));
+            }
+            assert!(moved, "the highlighted button was shifted");
+            for _ in 0..5 {
+                rig.time += 0.1;
+                rig.frame(Some(above), true, &[]);
+            }
+            check(&rig, "fully emphasised");
+            let beyond = rig.trigger() + Vec2::new(120.0, 0.0);
+            for step in 0..8 {
+                rig.time += 0.03;
+                rig.frame(Some(beyond), true, &[]);
+                check(&rig, &format!("easing back {step}"));
+            }
+            for _ in 0..5 {
+                rig.time += 0.1;
+                rig.frame(Some(beyond), true, &[]);
+            }
+            check(&rig, "back to idle");
+        }
+    }
+
+    /// The scale reaches the content: `b.scale()` and the painted label font size follow
+    /// the eased emphasis; neighbours stay at 1.0; no emphasis never changes anything.
+    #[test]
+    fn label_font_size_follows_the_button_scale() {
+        let settle = |rig: &mut Rig, at: Pos2| {
+            for _ in 0..5 {
+                rig.time += 0.1;
+                rig.frame(Some(at), true, &[]);
+            }
+        };
+        let mut rig = Rig::new(buttons());
+        rig.point(Pos2::new(505.0, 300.0));
+        let body = body_size(&rig);
+        assert_eq!(scale_of(&rig, &[0, 0]), 1.0);
+        assert_eq!(painted_font_size(&rig, "Above"), body);
+        let above = rig.trigger() + Vec2::new(0.0, -80.0);
+        settle(&mut rig, above);
+        assert!((scale_of(&rig, &[0, 0]) - 1.08).abs() < 1e-5);
+        assert!((painted_font_size(&rig, "Above") - body * 1.08).abs() < 1e-4);
+        for (path, label) in [(vec![0, 1], "Beyond"), (vec![0, 2], "Under")] {
+            assert_eq!(scale_of(&rig, &path), 1.0);
+            assert_eq!(painted_font_size(&rig, label), body);
+        }
+        // Easing: somewhere strictly between.
+        let beyond = rig.trigger() + Vec2::new(120.0, 0.0);
+        rig.time += 0.03;
+        rig.frame(Some(beyond), true, &[]);
+        let mid = scale_of(&rig, &[0, 0]);
+        assert!(mid > 1.0 && mid < 1.08, "{mid}");
+        settle(&mut rig, beyond);
+        assert_eq!(scale_of(&rig, &[0, 0]), 1.0);
+        assert_eq!(painted_font_size(&rig, "Above"), body);
+
+        // No emphasis at all: never changes.
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.animations.sub_pie_hover_emphasis = HoverEmphasis::NONE;
+        rig.point(Pos2::new(505.0, 300.0));
+        let above = rig.trigger() + Vec2::new(0.0, -80.0);
+        settle(&mut rig, above);
+        assert!(rig.scales.iter().all(|(_, s)| *s == 1.0));
+        assert_eq!(painted_font_size(&rig, "Above"), body);
+    }
+
+    /// A caller's `.font(..)` override wins, whatever the emphasis.
+    #[test]
+    fn font_override_wins_over_the_emphasis_scale() {
+        let mut rig = Rig::new(buttons());
+        rig.font_override = Some(egui::FontId::monospace(20.0));
+        rig.point(Pos2::new(505.0, 300.0));
+        let above = rig.trigger() + Vec2::new(0.0, -80.0);
+        for _ in 0..5 {
+            rig.time += 0.1;
+            rig.frame(Some(above), true, &[]);
+        }
+        assert!((scale_of(&rig, &[0, 0]) - 1.08).abs() < 1e-5, "emphasised");
+        assert_eq!(painted_font_size(&rig, "Above"), 20.0);
     }
 
     /// A replace-style sub-pie level uses the sub-pie amount, the root level the root's.
@@ -933,7 +1081,10 @@ mod fan_out_tests {
         rig.frame(Some(north), true, &[Key::Num6]); // into the sub-pie
         hover(&mut rig, north);
         assert_eq!(rig.menu.path(), &[0]);
-        assert!((transform(&rig, rig.menu.id, 0).scaling - 1.08).abs() < 1e-4);
+        let lit = transform(&rig, rig.menu.id, 0);
+        assert_eq!(lit.scaling, 1.0, "{lit:?}");
+        assert!((lit.translation - Vec2::new(0.0, -6.0)).length() < 1e-3, "{lit:?}");
+        assert!((scale_of(&rig, &[0, 0]) - 1.08).abs() < 1e-4);
     }
 
     #[test]
@@ -1210,18 +1361,20 @@ mod fan_out_tests {
     fn animation_state_is_fresh_after_reopening() {
         use egui::emath::TSTransform;
         let mut rig = Rig::new(buttons());
-        rig.menu.settings.animations.hover_emphasis = HoverEmphasis { shift: 0.0, scale: 1.5 };
+        rig.menu.settings.animations.hover_emphasis = HoverEmphasis { shift: 5.0, scale: 1.5 };
         let above = Pos2::new(400.0, 200.0); // the root's "Plain" (North, index 1)
         for _ in 0..5 {
             rig.time += 0.1;
             rig.frame(Some(above), true, &[]);
         }
         assert_ne!(transform(&rig, rig.menu.id, 1), TSTransform::IDENTITY, "emphasised while hovered");
+        assert!(scale_of(&rig, &[1]) > 1.4);
         assert_eq!(rig.frame(Some(above), true, &[Key::Num8]).0, PieMenuResponse::Selected(1));
         rig.menu.open(CENTER);
         rig.menu.reveal();
         rig.frame(None, true, &[]);
         assert_eq!(transform(&rig, rig.menu.id, 1), TSTransform::IDENTITY, "a new menu starts un-emphasised");
+        assert_eq!(scale_of(&rig, &[1]), 1.0);
         assert!(rig.menu.last_fan.is_none());
     }
 

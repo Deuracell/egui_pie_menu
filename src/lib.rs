@@ -1004,6 +1004,15 @@ impl PieMenu {
                 *last = idx;
             }
 
+            // Hover emphasis, part 1: the eased amount, which scales the button's content
+            // through the font size (see `ButtonView::scale`).
+            let emphasis = ctx.animate_bool_with_time(
+                level.id.with((self.anim_gen, level.path_prefix, idx, "hover")),
+                is_hovered && !level.emphasis.is_none(),
+                anim.hover_duration.as_secs_f32(),
+            );
+            let scale = 1.0 + (level.emphasis.scale.max(0.0) - 1.0) * emphasis;
+
             let response = egui::Area::new(level.id.with(idx))
                 .order(egui::Order::Tooltip)
                 // egui's own area fade is always off: Fade replaces it, None means none.
@@ -1040,28 +1049,23 @@ impl PieMenu {
                         text_color: button_text_color(self.settings.text_color, &visuals, is_hovered, button.enabled),
                         body_font: body_font.clone(),
                         opens_fan: self.opens_fan(button),
+                        scale,
                     })
                 });
 
             sizes[idx] = response.response.rect.size();
 
-            // Hover emphasis: ease the highlighted button outward and/or larger by
-            // transforming its whole layer, so it works whatever the closure drew. Layer
-            // transforms are sticky, so the identity is set again once it has eased back.
-            let emphasis = ctx.animate_bool_with_time(
-                level.id.with((self.anim_gen, level.path_prefix, idx, "hover")),
-                is_hovered && !level.emphasis.is_none(),
-                anim.hover_duration.as_secs_f32(),
-            );
+            // Hover emphasis, part 2: shift the layer outward. Only translated, never
+            // scaled (a layer scale would resample the glyph images and blur the text),
+            // and snapped to whole physical pixels (fractional offsets blur them too).
+            // Layer transforms are sticky, so the identity is set again once eased back.
             let transform = if emphasis > 0.0 {
                 let outward = (final_center - level.center).normalized();
                 let outward = if outward.is_finite() { outward } else { Vec2::ZERO };
-                let scale = 1.0 + (level.emphasis.scale.max(0.0) - 1.0) * emphasis;
-                // Scale about the button's centre, then move it outward.
-                let pivot = final_center.to_vec2();
-                TSTransform::from_translation(pivot + outward * level.emphasis.shift * emphasis)
-                    * TSTransform::from_scaling(scale)
-                    * TSTransform::from_translation(-pivot)
+                let ppp = ctx.pixels_per_point();
+                let snap = |v: f32| (v * ppp).round() / ppp;
+                let shift = outward * level.emphasis.shift * emphasis;
+                TSTransform::from_translation(Vec2::new(snap(shift.x), snap(shift.y)))
             } else {
                 TSTransform::IDENTITY
             };
