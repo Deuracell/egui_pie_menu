@@ -231,6 +231,19 @@ menu.settings.animations.slide_start_shape_factor = Some(-1.0);          // star
 menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade while sliding; None = no fade
 ```
 
+### Hover emphasis
+
+The highlighted button can move outward and/or grow. By default this happens only in an open fan-out (which has no centre highlight of its own); it can be turned on for every pie or off:
+
+```rust
+menu.settings.animations.hover_emphasis = HoverEmphasis::All;   // Off · FanOut (default) · All
+menu.settings.animations.hover_shift = 6.0;                     // px outward
+menu.settings.animations.hover_scale = 1.08;                    // 1.0 = no growth
+menu.settings.animations.hover_duration = Duration::from_millis(100);
+```
+
+The whole button is transformed as one layer, so it works with whatever your closure draws.
+
 ### Number hints
 
 ```rust
@@ -325,7 +338,8 @@ menu.settings.fan_out_radius = None;                    // the fan's own radius;
 
 - A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child with a sub-pie or cluster as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
 - It opens when the pointer reaches its button (as far out as the ring of buttons) or when the button is selected by number key, mnemonic, click or release. It closes when the pointer comes back in towards the centre.
-- While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons, and the parent's other buttons are greyed out and cannot be highlighted.
+- While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons. The parent's centre and its other buttons are greyed out, and those buttons cannot be highlighted.
+- The fan's highlighted button moves outward and grows slightly (see "Hover emphasis").
 - The pointer picks among the fan's buttons by angle from the opening button's centre. On the opening button itself, or pointing back at the parent, nothing is highlighted.
 - `menu.open_fan_out()` returns the opening button's index and the highlighted fan button, if a fan is open. A fan is not a level: `menu.path()` and `menu.current_buttons(&root)` still describe the parent.
 

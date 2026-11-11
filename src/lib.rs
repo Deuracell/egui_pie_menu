@@ -32,6 +32,7 @@
 
 pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
+use egui::emath::TSTransform;
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
 use std::time::Duration;
 
@@ -89,8 +90,12 @@ struct LevelDraw<'a> {
     /// When the ring appeared, for the reveal animation.
     shown_at: Option<f64>,
     hovered: Option<usize>,
-    /// The parent ring while a fan is open: every button but this one is greyed out.
+    /// The parent ring while a fan is open: every button but this one is greyed out …
     dim_except: Option<usize>,
+    /// … to this opacity (eases to and from `DIMMED_OPACITY` as the fan opens and closes).
+    dim_opacity: f32,
+    /// Whether the highlighted button is emphasised (see `HoverEmphasis`).
+    emphasise: bool,
     /// Salt for the buttons' Area ids.
     id: egui::Id,
     /// Route from the root to this ring (each button's `path` is this plus its index).
@@ -108,7 +113,7 @@ struct Fan<'a> {
     trigger_rect: Rect,
 }
 
-/// Opacity of the parent's buttons while a fan-out is open.
+/// Opacity of the parent (its centre and its other buttons) while a fan-out is open.
 const DIMMED_OPACITY: f32 = 0.35;
 
 /// Radial (pie) menu widget.
@@ -163,10 +168,15 @@ pub struct PieMenu {
     hover_since: Option<(usize, f64)>,
     /// The open fan-out: index of its button in the level being shown.
     fan: Option<usize>,
+    /// The button of the fan that was open last, while the parent's dimming eases out.
+    last_fan: Option<usize>,
     /// egui time the fan appeared (`None`: stamp on the next draw), for its animation.
     fan_shown_at: Option<f64>,
     /// Cached sizes of the fan's buttons from the previous frame.
     fan_sizes: Vec<Vec2>,
+    /// Test-only: the fan buttons' final centres from the previous frame.
+    #[cfg(test)]
+    fan_centers: Vec<Pos2>,
     /// The fan child the pointer highlights.
     fan_hover: Option<usize>,
     /// The pointer has been out at the fan since it opened; coming back in then closes it.
@@ -214,8 +224,11 @@ impl PieMenu {
             level_centers: Vec::new(),
             hover_since: None,
             fan: None,
+            last_fan: None,
             fan_shown_at: None,
             fan_sizes: Vec::new(),
+            #[cfg(test)]
+            fan_centers: Vec::new(),
             fan_hover: None,
             fan_armed: false,
             fan_pending: None,
@@ -399,8 +412,15 @@ impl PieMenu {
         self.fan.map(|trigger| (trigger, self.fan_hover))
     }
 
+    /// Test helper: where each button of the open fan was drawn last frame.
+    #[cfg(test)]
+    pub(crate) fn fan_centers_for_test(&self) -> &[Pos2] {
+        &self.fan_centers
+    }
+
     fn open_fan(&mut self, trigger: usize) {
         self.fan = Some(trigger);
+        self.last_fan = Some(trigger);
         self.fan_shown_at = None;
         self.fan_sizes.clear();
         self.fan_hover = None;
@@ -610,6 +630,7 @@ impl PieMenu {
         }
         self.hover_since = None;
         self.close_fan();
+        self.last_fan = None;
         self.level_fresh = true;
         self.inert_hover = None;
         self.hovered_index = None;
@@ -800,7 +821,7 @@ impl PieMenu {
                         ui.set_opacity(opacity);
                     }
                     if dimmed {
-                        ui.multiply_opacity(DIMMED_OPACITY);
+                        ui.multiply_opacity(level.dim_opacity);
                     }
                     // Buttons are single-line. An Area keeps last frame's size as its max
                     // width, so content that grows (a number hint added, a label changed)
@@ -829,6 +850,28 @@ impl PieMenu {
                 });
 
             sizes[idx] = response.response.rect.size();
+
+            // Hover emphasis: ease the highlighted button outward and/or larger by
+            // transforming its whole layer, so it works whatever the closure drew. Layer
+            // transforms are sticky, so the identity is set again once it has eased back.
+            let emphasis = ctx.animate_bool_with_time(
+                level.id.with((idx, "hover")),
+                level.emphasise && is_hovered,
+                anim.hover_duration.as_secs_f32(),
+            );
+            let transform = if emphasis > 0.0 {
+                let outward = (final_center - level.center).normalized();
+                let outward = if outward.is_finite() { outward } else { Vec2::ZERO };
+                let scale = 1.0 + (anim.hover_scale.max(0.0) - 1.0) * emphasis;
+                // Scale about the button's centre, then move it outward.
+                let pivot = final_center.to_vec2();
+                TSTransform::from_translation(pivot + outward * anim.hover_shift * emphasis)
+                    * TSTransform::from_scaling(scale)
+                    * TSTransform::from_translation(-pivot)
+            } else {
+                TSTransform::IDENTITY
+            };
+            ctx.set_transform_layer(response.response.layer_id, transform);
         }
     }
 
@@ -941,18 +984,6 @@ impl PieMenu {
                 });
         }
 
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
-
-        // Center background circle
-        if let Some(radius) = self.settings.center_indicator.background_radius {
-            painter.circle(
-                center,
-                radius,
-                self.settings.center_indicator.background_fill_color,
-                self.settings.center_indicator.background_stroke,
-            );
-        }
-
         // Debug builds: assert once per open (and per sub-pie level) that this level's
         // buttons are well-formed. Only buttons shown together are compared.
         #[cfg(debug_assertions)]
@@ -1009,6 +1040,23 @@ impl PieMenu {
                 trigger_rect: Rect::from_center_size(button_center, size),
             }
         });
+
+        // The parent's centre (circle, highlight, title) and its other buttons are greyed out
+        // while a fan is open, easing in and out with it.
+        let dim = ctx.animate_bool_with_time(self.id.with("fan_dim"), fan.is_some(), 0.12);
+        let dim_opacity = 1.0 + (DIMMED_OPACITY - 1.0) * dim;
+        let mut painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
+        painter.multiply_opacity(dim_opacity);
+
+        // Center background circle
+        if let Some(radius) = self.settings.center_indicator.background_radius {
+            painter.circle(
+                center,
+                radius,
+                self.settings.center_indicator.background_fill_color,
+                self.settings.center_indicator.background_stroke,
+            );
+        }
 
         // Keys: an open fan has the keyboard to itself.
         if keys_for_menu {
@@ -1190,7 +1238,10 @@ impl PieMenu {
                 radius,
                 shown_at: self.shown_at,
                 hovered: self.hovered_index,
-                dim_except: fan.as_ref().map(|f| f.trigger),
+                // While the dimming eases out after a fan closed, its button stays the lit one.
+                dim_except: fan.as_ref().map(|f| f.trigger).or(self.last_fan.filter(|_| dim > 0.0)),
+                dim_opacity,
+                emphasise: self.settings.animations.hover_emphasis == HoverEmphasis::All,
                 id: self.id,
                 path_prefix: &path,
             },
@@ -1206,6 +1257,8 @@ impl PieMenu {
             let mut fan_path = path.clone();
             fan_path.push(fan.trigger);
             let mut sizes = std::mem::take(&mut self.fan_sizes);
+            // Only tests look at where the fan's buttons ended up.
+            let mut fan_centers: Option<Vec<Pos2>> = cfg!(test).then(Vec::new);
             self.draw_level(
                 ctx,
                 now,
@@ -1216,14 +1269,20 @@ impl PieMenu {
                     shown_at: Some(shown_at),
                     hovered: self.fan_hover,
                     dim_except: None,
+                    dim_opacity: 1.0,
+                    emphasise: self.settings.animations.hover_emphasis != HoverEmphasis::Off,
                     id: self.id.with(("fan", fan.trigger)),
                     path_prefix: &fan_path,
                 },
                 &mut sizes,
-                None,
+                fan_centers.as_mut(),
                 render_button,
             );
             self.fan_sizes = sizes;
+            #[cfg(test)]
+            {
+                self.fan_centers = fan_centers.unwrap_or_default();
+            }
         }
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)

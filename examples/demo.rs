@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{ButtonProblem, HintDigits, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
+use egui_pie_menu::{ButtonProblem, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -1079,6 +1079,36 @@ impl eframe::App for Demo {
                             }
                         });
                     }
+                });
+
+                section(ui, &query, &mut shown, "Hover emphasis",
+                    "hover emphasis highlight animation move shift outward grow scale enlarge fan-out fanout all pies duration", |ui| {
+                    let anim = &mut self.menu.settings.animations;
+                    ui.label("Emphasise the highlighted button")
+                        .on_hover_text("The highlighted button moves outward and/or grows. Fan-out only by default: a fan has no centre highlight of its own.");
+                    let label = |e: HoverEmphasis| match e {
+                        HoverEmphasis::Off => "Off",
+                        HoverEmphasis::FanOut => "In a fan-out only",
+                        HoverEmphasis::All => "In every pie",
+                    };
+                    egui::ComboBox::from_id_salt("hover_emphasis")
+                        .selected_text(label(anim.hover_emphasis))
+                        .show_ui(ui, |ui| {
+                            for e in [HoverEmphasis::Off, HoverEmphasis::FanOut, HoverEmphasis::All] {
+                                ui.selectable_value(&mut anim.hover_emphasis, e, label(e));
+                            }
+                        });
+                    ui.add_enabled_ui(anim.hover_emphasis != HoverEmphasis::Off, |ui| {
+                        ui.label("Move outward");
+                        px_drag(ui, &mut anim.hover_shift, d.animations.hover_shift, 0.0..=30.0);
+                        ui.label("Grow  (1 = not at all)");
+                        drag_reset(ui, &mut anim.hover_scale, d.animations.hover_scale, 1.0..=1.5, 0.01);
+                        ui.label("Duration (ms)");
+                        let mut ms = anim.hover_duration.as_millis() as u64;
+                        if drag_reset(ui, &mut ms, d.animations.hover_duration.as_millis() as u64, 0..=500, 1.0) {
+                            anim.hover_duration = Duration::from_millis(ms);
+                        }
+                    });
                 });
 
                 section(ui, &query, &mut shown, "Language / RTL", "language rtl right to left mirror hebrew arabic persian farsi russian unicode digits", |ui| {
