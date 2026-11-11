@@ -21,7 +21,7 @@ The crate is not published on crates.io. Depend on it through git and pin a rele
 
 ```toml
 [dependencies]
-egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", tag = "v0.36.0" }
+egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", tag = "v0.36.1" }
 ```
 
 Release tags mirror the egui version they target: the minor version tracks egui (`0.36.x` targets egui 0.36).
@@ -30,6 +30,7 @@ Release tags mirror the egui version they target: the minor version tracks egui 
 
 | Tag | egui / eframe |
 |---|---|
+| `v0.36.1` | 0.36 |
 | `v0.36.0` | 0.36 |
 | `v0.33.0` | 0.33 |
 
