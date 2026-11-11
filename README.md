@@ -118,6 +118,7 @@ The render closure receives a `ButtonView` (nothing to precompute before `show`)
 | `b.button` | The `&PieButton` (label, direction, …) |
 | `b.mnemonic` | The mnemonic key in effect (explicit or generated), if any |
 | `b.number_hint` | A hint to draw inside your own button; `None` when number keys are off. `h.color` is resolved for the button's state (see "Text colour") |
+| `b.text_color()` | The text colour in effect for this button (what `label_text()` uses), for extras you draw yourself |
 | `b.label_text()` | The label with the mnemonic underlined, for `ui.label(..)` / `egui::Button::new(..)`. Colour per "Text colour" below, egui body font; chain `.color(c)`, `.font(f)` or `.prefix("🗑  ")` (an un-underlined icon) to override |
 
 `show` signature:
