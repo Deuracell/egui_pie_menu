@@ -189,6 +189,10 @@ pub struct PieMenu {
     /// hover timer ignores it until the pointer has left it once, so arriving in a level
     /// never triggers the next navigation by itself.
     inert_hover: Option<usize>,
+    /// The current level was entered by descending into a sub-pie (not by going back or
+    /// opening the menu), so a sub-pie button under the resting pointer starts its timer at
+    /// once and the navigation flows on.
+    entered_forward: bool,
 }
 
 impl Default for PieMenu {
@@ -234,6 +238,7 @@ impl PieMenu {
             fan_pending: None,
             level_fresh: true,
             inert_hover: None,
+            entered_forward: false,
         }
     }
 
@@ -598,6 +603,7 @@ impl PieMenu {
         self.level_centers.push(self.position);
         self.path.push(idx);
         self.restart_level(center, key_down);
+        self.entered_forward = true;
     }
 
     /// Returns to the parent level of the open sub-pie.
@@ -633,6 +639,7 @@ impl PieMenu {
         self.last_fan = None;
         self.level_fresh = true;
         self.inert_hover = None;
+        self.entered_forward = false;
         self.hovered_index = None;
         self.checked_buttons = false;
         self.visible = true;
@@ -1123,10 +1130,14 @@ impl PieMenu {
 
         // Hover timer (replace-style sub-pies): resting on a button that leads to another
         // pie (a sub-pie button, or a back button inside a sub-pie) long enough goes there.
-        // The button the pointer already pointed at when this level opened is ignored until
-        // the pointer leaves it.
+        // The button the pointer already points at when a level opens is ignored until the
+        // pointer leaves it, so a resting pointer cannot bounce between levels: after going
+        // back, whatever it rests on; after descending, a back button (the way it came).
+        // A sub-pie button under the pointer after descending is not ignored: the timer
+        // starts at once and navigation flows through the levels.
         if std::mem::take(&mut self.level_fresh) {
-            self.inert_hover = self.hovered_index;
+            let forward = self.entered_forward;
+            self.inert_hover = self.hovered_index.filter(|&i| !forward || buttons[i].is_back());
         } else if self.inert_hover != self.hovered_index {
             self.inert_hover = None;
         }

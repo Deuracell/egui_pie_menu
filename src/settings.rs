@@ -485,7 +485,10 @@ pub struct PieMenuSettings {
     /// long, without a click, key or release: a sub-pie button opens its sub-pie, and a
     /// [`crate::PieButton::back`] button inside a sub-pie returns to the parent. The button
     /// the pointer already points at when a level opens is ignored until the pointer has
-    /// left it once, so a resting pointer never bounces between levels.
+    /// left it once, so a resting pointer never bounces between levels. That applies after
+    /// going back (whatever it rests on) and to a back button after descending; a sub-pie
+    /// button under the pointer after descending starts its timer at once, so you can
+    /// rest on button after button without moving away in between.
     /// `None` (default): off.
     pub sub_pie_hover_delay: Option<Duration>,
     /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].

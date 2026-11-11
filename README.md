@@ -368,7 +368,7 @@ menu.settings.sub_pie_hover_delay = Some(Duration::from_millis(400)); // follow 
 | `Parent` | in place of its parent | stays there |
 | `Button` | at the button that opened it | returns to the parent's own centre |
 
-With `sub_pie_hover_delay`, resting the pointer on any button that leads to another pie follows it without a click, key or release: a sub-pie button opens its sub-pie, and a back button inside a sub-pie returns to the parent. The button the pointer already points at when a level opens is ignored until the pointer has left it once, so a resting pointer never bounces between levels. Leaf buttons are never selected by hovering.
+With `sub_pie_hover_delay`, resting the pointer on any button that leads to another pie follows it without a click, key or release: a sub-pie button opens its sub-pie, and a back button inside a sub-pie returns to the parent. Navigation flows: after a sub-pie opens, a sub-pie button under the resting pointer starts its own timer straight away, so you can rest on button after button without moving away in between. So that a resting pointer never bounces between levels, the button it points at after going back is ignored until the pointer has left it once, and so is a back button right after descending. Leaf buttons are never selected by hovering.
 
 If the buttons change while a sub-pie is open so that its level no longer exists or has no buttons, the menu falls back to the root level. A pinned menu returns to its root level after a leaf selection.
 

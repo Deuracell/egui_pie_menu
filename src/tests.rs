@@ -336,6 +336,63 @@ mod subpie_tests {
     }
 
     #[test]
+    fn hover_delay_flows_through_nested_sub_pies_without_moving_but_never_bounces_back() {
+        // North opens "More", whose North button opens "Deeper", whose North button is a leaf.
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("More").with_children(vec![
+            PieButton::back(PieDirection::South),
+            PieButton::new(PieDirection::North).with_label("Deeper").with_children(vec![
+                PieButton::back(PieDirection::South),
+                PieButton::new(PieDirection::North).with_label("Leaf"),
+            ]),
+        ])];
+        let above = Some(Pos2::new(400.0, 200.0));
+        let mut m = PieMenu::new();
+        m.settings.sub_pie_center = SubPieCenter::Parent;
+        m.settings.sub_pie_hover_delay = Some(Duration::from_millis(500));
+        m.open(CENTER);
+        m.reveal();
+        let ctx = egui::Context::default();
+        let step = |m: &mut PieMenu, time: f64, keys: &[Key]| {
+            let pointer = if time < 0.0 { None } else { above };
+            let events = keys
+                .iter()
+                .map(|&key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
+                .collect();
+            let input = egui::RawInput { time: Some(time.abs()), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                m.show_with_pointer(ui.ctx(), &buttons, pointer, true, |ui, b| {
+                    ui.label(b.label_text());
+                });
+            });
+            out.textures_delta.clear();
+        };
+        // The menu opens with the pointer at the centre (a negative time means "no pointer")
+        // and then moves out to "More"; it never moves again after that.
+        step(&mut m, -0.0001, &[]);
+        step(&mut m, -0.0002, &[]);
+        for t in [1.0, 1.1, 1.4] {
+            step(&mut m, t, &[]);
+        }
+        assert!(m.path().is_empty(), "not yet");
+        step(&mut m, 1.6, &[]);
+        assert_eq!(m.path(), &[0]);
+        // … and, still not moving, the sub-pie button now under it opens too, a delay later.
+        step(&mut m, 1.7, &[]);
+        step(&mut m, 2.1, &[]);
+        assert_eq!(m.path(), &[0], "the timer runs from arrival");
+        step(&mut m, 2.3, &[]);
+        assert_eq!(m.path(), &[0, 1], "flowed on without moving away");
+        // The leaf under the pointer is never selected by resting.
+        step(&mut m, 9.0, &[]);
+        assert!(m.is_open() && m.path() == [0, 1]);
+        // Going back: the button the pointer rests on is ignored until it leaves.
+        step(&mut m, 9.1, &[Key::Backspace]);
+        step(&mut m, 9.2, &[]);
+        step(&mut m, 20.0, &[]);
+        assert_eq!(m.path(), &[0], "no bounce back into \"Deeper\"");
+    }
+
+    #[test]
     fn opposite_directions() {
         for d in PieDirection::ALL {
             assert_ne!(d.opposite(), d);
