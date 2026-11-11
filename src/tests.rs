@@ -756,6 +756,10 @@ mod fan_out_tests {
         screen: Vec2,
         /// How soon the last frame asked to be repainted.
         repaint_delay: Duration,
+        /// Per button the last frame drew: its path and the `ui.opacity()` it was given.
+        opacities: Vec<(Vec<usize>, f32)>,
+        /// What the last frame painted.
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Rig {
@@ -768,7 +772,7 @@ mod fan_out_tests {
             menu.settings.animations.reveal = RevealAnimation::None;
             menu.open(CENTER);
             menu.reveal();
-            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0, screen, repaint_delay: Duration::MAX };
+            let mut rig = Self { ctx: egui::Context::default(), menu, buttons, time: 0.0, screen, repaint_delay: Duration::MAX, opacities: Vec::new(), shapes: Vec::new() };
             rig.frame(None, true, &[]); // lays the buttons out
             rig.frame(None, true, &[]);
             rig
@@ -790,14 +794,18 @@ mod fan_out_tests {
                 ..Default::default()
             };
             let (mut resp, mut drawn) = (PieMenuResponse::None, Drawn::new());
+            let mut opacities = Vec::new();
             let (menu, buttons) = (&mut self.menu, &self.buttons);
             let mut out = self.ctx.run_ui(input, |ui| {
                 resp = menu.show_with_pointer(ui.ctx(), buttons, pointer, key_down, |ui, b| {
                     drawn.push((b.path.to_vec(), b.hovered));
+                    opacities.push((b.path.to_vec(), ui.opacity()));
                     ui.label(b.label_text());
                 });
             });
             out.textures_delta.clear();
+            self.opacities = opacities;
+            self.shapes = std::mem::take(&mut out.shapes);
             self.repaint_delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
             (resp, drawn)
         }
@@ -1360,10 +1368,11 @@ mod fan_out_tests {
         assert_eq!(rig.frame(Some(at_ring), false, &[]).0, PieMenuResponse::None);
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(rig.menu.open_fan_out(), None);
-        // Inside: the same children as a sub-pie; a number key selects one.
+        // Inside: the same children as a sub-pie (plus the opener, which stays as the centre
+        // piece; no reveal animation here, so the main ring is already gone).
         let (resp, drawn) = rig.frame(Some(at_ring), false, &[]);
         assert_eq!(resp, PieMenuResponse::None);
-        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2]]);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0]]);
         // Backspace goes back to the root; the pointer rests on the opener beyond the ring.
         rig.frame(Some(at_ring), false, &[Key::Backspace]);
         for _ in 0..4 {
@@ -1417,6 +1426,209 @@ mod fan_out_tests {
         rig.frame(Some(opener), false, &[]);
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(rig.menu.position, opener);
+    }
+
+    // ── Breaking a fan out into a sub-pie, in place ──────────────────────────────
+
+    const AT_RING: Pos2 = Pos2::new(505.0, 300.0);
+
+    /// A rig with the default fan open (East), fading reveals of 200 ms, time at 1.0.
+    fn fan_rig(fade: bool) -> Rig {
+        let mut rig = Rig::new(buttons());
+        if fade {
+            rig.menu.settings.animations.reveal = RevealAnimation::Fade;
+            rig.menu.settings.animations.reveal_duration = Duration::from_millis(200);
+        }
+        rig.time = 1.0;
+        rig.point(AT_RING);
+        rig.time = 2.0; // the fan's own reveal is over
+        rig.frame(Some(AT_RING), true, &[]);
+        rig.frame(Some(AT_RING), true, &[]);
+        assert!(rig.menu.open_fan_out().is_some());
+        rig
+    }
+
+    /// The rect of Area `id` (which must exist).
+    fn area(rig: &Rig, id: egui::Id) -> Rect {
+        rig.ctx.memory(|m| m.area_rect(id)).unwrap_or_else(|| panic!("no area {id:?}"))
+    }
+
+    /// The fan ring's children's Area rects.
+    fn fan_rects(rig: &Rig) -> Vec<Rect> {
+        (0..3).map(|i| area(rig, rig.menu.id.with(("fan", 0usize)).with(i))).collect()
+    }
+
+    fn opacity_of(rig: &Rig, path: &[usize]) -> Option<f32> {
+        rig.opacities.iter().find(|(p, _)| p == path).map(|(_, o)| *o)
+    }
+
+    /// The break-out trigger: a click on the opener, or the key released on it.
+    fn break_out(rig: &mut Rig, by_click: bool) {
+        let trigger = rig.trigger();
+        let resp = if by_click {
+            rig.frame_with(Some(trigger), true, click_at(trigger)).0
+        } else {
+            rig.frame(Some(AT_RING), false, &[]).0
+        };
+        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(rig.menu.path(), &[0]);
+    }
+
+    #[test]
+    fn breaking_out_keeps_the_children_exactly_where_the_fan_drew_them() {
+        for by_click in [true, false] {
+            let mut rig = fan_rig(true);
+            let fan_center = rig.menu.fan_centers_for_test().to_vec();
+            let before = fan_rects(&rig);
+            break_out(&mut rig, by_click);
+            let (_, drawn) = rig.frame(Some(AT_RING), false, &[]);
+            assert_eq!(fan_rects(&rig), before, "no jump (click: {by_click})");
+            for i in 0..3 {
+                assert!(paths(&drawn).contains(&vec![0, i]), "the children are drawn on that very frame");
+                assert_eq!(opacity_of(&rig, &[0, i]), Some(1.0), "no fading in");
+            }
+            assert_eq!(rig.menu.button_centers, fan_center, "same final centres");
+        }
+    }
+
+    #[test]
+    fn breaking_out_fades_the_main_ring_and_keeps_the_opener_lit_and_in_place() {
+        let mut rig = fan_rig(true);
+        let opener_id = rig.menu.id.with(0usize);
+        let plain_id = rig.menu.id.with(1usize);
+        let (opener_rect, plain_rect) = (area(&rig, opener_id), area(&rig, plain_id));
+        break_out(&mut rig, true);
+        let mut plain_opacities = Vec::new();
+        for step in 0..=4 {
+            let (_, drawn) = rig.frame(Some(AT_RING), true, &[]);
+            assert_eq!(area(&rig, opener_id), opener_rect, "the opener never moves");
+            assert_eq!(opacity_of(&rig, &[0]), Some(1.0), "the opener stays at full opacity");
+            assert!(drawn.contains(&(vec![0], true)), "and lit");
+            for i in 0..3 {
+                assert_eq!(opacity_of(&rig, &[0, i]), Some(1.0));
+            }
+            plain_opacities.push(opacity_of(&rig, &[1]));
+            if step < 2 {
+                assert_eq!(area(&rig, plain_id), plain_rect, "the fading ring stays at its old position");
+            }
+            rig.time += 0.05;
+        }
+        // 200 ms in 50 ms steps: from the dimmed opacity, strictly down, then gone.
+        let first = plain_opacities[0].expect("drawn on the first frame");
+        assert!((first - DIMMED_OPACITY).abs() < 1e-4, "{first}");
+        assert!(plain_opacities[1].is_some_and(|o| o < first));
+        assert!(plain_opacities[2].is_some_and(|o| o < plain_opacities[1].unwrap()));
+        assert!(plain_opacities[3].is_some_and(|o| o < plain_opacities[2].unwrap()));
+        assert_eq!(plain_opacities[4], None, "not drawn once the fade is over");
+        // After the transition only the opener and the children are drawn.
+        let (_, drawn) = rig.frame(Some(AT_RING), true, &[]);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0]]);
+        assert_eq!(area(&rig, opener_id), opener_rect);
+    }
+
+    /// Alpha of the painted background circles: (at the new centre, at the old centre).
+    fn circle_alphas(rig: &Rig, new: Pos2, old: Pos2) -> (Option<u8>, Option<u8>) {
+        let alpha_at = |at: Pos2| {
+            rig.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Circle(c) if (c.center - at).length() < 0.01 => Some(c.fill.a()),
+                _ => None,
+            })
+        };
+        (alpha_at(new), alpha_at(old))
+    }
+
+    #[test]
+    fn breaking_out_moves_the_centre_and_cross_fades_the_circles() {
+        let mut rig = fan_rig(true);
+        let fan_center = rig.trigger();
+        let old_center = rig.menu.display_center;
+        assert_eq!(old_center, CENTER);
+        let full = rig.menu.settings.center_indicator.background_fill_color.a();
+        // Dimmed while the fan is open.
+        let (_, dimmed) = circle_alphas(&rig, fan_center, old_center);
+        let dimmed = dimmed.expect("old circle drawn");
+        assert!((dimmed as f32 - full as f32 * DIMMED_OPACITY).abs() <= 2.0, "{dimmed} of {full}");
+
+        break_out(&mut rig, true);
+        assert_eq!(rig.menu.display_center, fan_center, "the new centre is the fan's drawn centre");
+        let mut series = Vec::new();
+        for _ in 0..6 {
+            rig.frame(Some(AT_RING), true, &[]);
+            series.push(circle_alphas(&rig, fan_center, old_center));
+            rig.time += 0.04;
+        }
+        let new: Vec<u8> = series.iter().map(|(n, _)| n.unwrap_or(0)).collect();
+        let old: Vec<u8> = series.iter().map(|(_, o)| o.unwrap_or(0)).collect();
+        assert!(new[0] <= 2, "the new centre starts invisible: {new:?}");
+        assert!(new.windows(2).all(|w| w[0] <= w[1]) && new[1] > new[0], "{new:?}");
+        assert!((*new.last().unwrap() as i32 - full as i32).abs() <= 2, "ends at the full alpha: {new:?}");
+        assert!((old[0] as f32 - dimmed as f32).abs() <= 2.0, "the old one starts dimmed: {old:?}");
+        assert!(old.windows(2).all(|w| w[0] >= w[1]) && old[1] < old[0], "{old:?}");
+        assert_eq!(*old.last().unwrap(), 0, "and is gone: {old:?}");
+    }
+
+    #[test]
+    fn breaking_out_without_a_reveal_animation_is_instant() {
+        let mut rig = fan_rig(false);
+        let fan_center = rig.trigger();
+        break_out(&mut rig, true);
+        let (_, drawn) = rig.frame(Some(AT_RING), true, &[]);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0]], "no other main-ring button");
+        assert_eq!(rig.menu.display_center, fan_center);
+        let (new, old) = circle_alphas(&rig, fan_center, CENTER);
+        assert_eq!(new, Some(rig.menu.settings.center_indicator.background_fill_color.a()));
+        assert_eq!(old, None);
+    }
+
+    #[test]
+    fn going_back_from_a_break_out_restores_the_main_pie_where_it_was() {
+        for centre_click in [true, false] {
+            let mut rig = fan_rig(true);
+            let trigger = rig.trigger();
+            let opener_rect = area(&rig, rig.menu.id.with(0usize));
+            break_out(&mut rig, true);
+            rig.time += 0.1;
+            rig.frame(Some(AT_RING), true, &[]);
+            assert!(rig.menu.breakout.is_some());
+            if centre_click {
+                rig.frame_with(Some(trigger), true, click_at(trigger));
+            } else {
+                rig.frame(Some(AT_RING), true, &[Key::Backspace]);
+            }
+            assert!(rig.menu.path().is_empty());
+            assert!(rig.menu.breakout.is_none() && rig.menu.level_radius.is_none());
+            assert_eq!((rig.menu.position, rig.menu.display_center), (CENTER, CENTER));
+            for _ in 0..5 {
+                rig.time += 0.1;
+                let (_, drawn) = rig.frame(Some(trigger), true, &[]);
+                assert_eq!(rig.menu.open_fan_out(), None, "the fan does not reopen under the pointer");
+                assert_eq!(paths(&drawn), [vec![0], vec![1]]);
+            }
+            assert_eq!(rig.menu.display_center, CENTER);
+            assert_eq!(area(&rig, rig.menu.id.with(0usize)), opener_rect, "the main ring is where it was");
+        }
+        // A fresh opening has no break-out state.
+        let mut rig = fan_rig(true);
+        break_out(&mut rig, false);
+        rig.menu.open(CENTER);
+        assert!(rig.menu.breakout.is_none() && rig.menu.level_radius.is_none());
+    }
+
+    #[test]
+    fn a_fan_with_its_own_radius_breaks_out_at_that_radius() {
+        let mut rig = Rig::new(buttons());
+        rig.menu.settings.fan_out_radius = Some(140.0);
+        rig.menu.settings.animations.reveal = RevealAnimation::Fade;
+        rig.time = 1.0;
+        rig.point(AT_RING);
+        rig.time = 2.0;
+        rig.frame(Some(AT_RING), true, &[]);
+        rig.frame(Some(AT_RING), true, &[]);
+        let before = fan_rects(&rig);
+        break_out(&mut rig, true);
+        rig.frame(Some(AT_RING), true, &[]);
+        assert_eq!(fan_rects(&rig), before);
+        assert_eq!(rig.menu.level_radius, Some(140.0));
     }
 
     #[test]
