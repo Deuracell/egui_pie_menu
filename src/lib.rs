@@ -94,8 +94,8 @@ struct LevelDraw<'a> {
     dim_except: Option<usize>,
     /// … to this opacity (eases to and from `DIMMED_OPACITY` as the fan opens and closes).
     dim_opacity: f32,
-    /// Whether the highlighted button is emphasised (see `HoverEmphasis`).
-    emphasise: bool,
+    /// How the highlighted button is emphasised.
+    emphasis: HoverEmphasis,
     /// Salt for the buttons' Area ids.
     id: egui::Id,
     /// Route from the root to this ring (each button's `path` is this plus its index).
@@ -856,16 +856,16 @@ impl PieMenu {
             // transforms are sticky, so the identity is set again once it has eased back.
             let emphasis = ctx.animate_bool_with_time(
                 level.id.with((idx, "hover")),
-                level.emphasise && is_hovered,
+                is_hovered && !level.emphasis.is_none(),
                 anim.hover_duration.as_secs_f32(),
             );
             let transform = if emphasis > 0.0 {
                 let outward = (final_center - level.center).normalized();
                 let outward = if outward.is_finite() { outward } else { Vec2::ZERO };
-                let scale = 1.0 + (anim.hover_scale.max(0.0) - 1.0) * emphasis;
+                let scale = 1.0 + (level.emphasis.scale.max(0.0) - 1.0) * emphasis;
                 // Scale about the button's centre, then move it outward.
                 let pivot = final_center.to_vec2();
-                TSTransform::from_translation(pivot + outward * anim.hover_shift * emphasis)
+                TSTransform::from_translation(pivot + outward * level.emphasis.shift * emphasis)
                     * TSTransform::from_scaling(scale)
                     * TSTransform::from_translation(-pivot)
             } else {
@@ -1241,7 +1241,12 @@ impl PieMenu {
                 // While the dimming eases out after a fan closed, its button stays the lit one.
                 dim_except: fan.as_ref().map(|f| f.trigger).or(self.last_fan.filter(|_| dim > 0.0)),
                 dim_opacity,
-                emphasise: self.settings.animations.hover_emphasis == HoverEmphasis::All,
+                // The root pie and sub-pies have their own amounts.
+                emphasis: if path.is_empty() {
+                    self.settings.animations.hover_emphasis
+                } else {
+                    self.settings.animations.sub_pie_hover_emphasis
+                },
                 id: self.id,
                 path_prefix: &path,
             },
@@ -1270,7 +1275,7 @@ impl PieMenu {
                     hovered: self.fan_hover,
                     dim_except: None,
                     dim_opacity: 1.0,
-                    emphasise: self.settings.animations.hover_emphasis != HoverEmphasis::Off,
+                    emphasis: self.settings.animations.sub_pie_hover_emphasis,
                     id: self.id.with(("fan", fan.trigger)),
                     path_prefix: &fan_path,
                 },

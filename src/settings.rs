@@ -374,18 +374,26 @@ impl Default for PieMenuNumberHints {
     }
 }
 
-/// Which rings of buttons emphasise their highlighted button (it moves outward and/or
-/// grows; see [`PieMenuAnimations::hover_shift`] and [`PieMenuAnimations::hover_scale`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum HoverEmphasis {
-    /// Nowhere.
-    Off,
-    /// Only in an open fan-out (default): its centre is the opening button, so there is
-    /// no centre highlight to show which fan button the pointer picks.
-    #[default]
-    FanOut,
-    /// In every pie.
-    All,
+/// How much a pie emphasises its highlighted button: it moves outward and/or grows.
+/// Set separately for the root pie ([`PieMenuAnimations::hover_emphasis`]) and for
+/// sub-pies and fan-outs ([`PieMenuAnimations::sub_pie_hover_emphasis`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoverEmphasis {
+    /// How far the highlighted button moves outward, in logical pixels (`0.0`: not at all).
+    pub shift: f32,
+    /// How much the highlighted button grows (`1.0`: not at all). The whole button is
+    /// scaled about its centre, whatever your closure draws.
+    pub scale: f32,
+}
+
+impl HoverEmphasis {
+    /// No emphasis.
+    pub const NONE: Self = Self { shift: 0.0, scale: 1.0 };
+
+    /// Whether this changes nothing.
+    pub fn is_none(self) -> bool {
+        self.shift == 0.0 && self.scale == 1.0
+    }
 }
 
 /// Reveal and hover animation settings.
@@ -407,14 +415,13 @@ pub struct PieMenuAnimations {
     /// slide (it may be shorter or longer than the slide). `None` keeps them fully
     /// opaque from the start.
     pub slide_fade: Option<Duration>,
-    /// Where the highlighted button is emphasised. See [`HoverEmphasis`].
+    /// Emphasis of the highlighted button in the root pie. Default: none (the centre
+    /// highlight already shows the direction).
     pub hover_emphasis: HoverEmphasis,
-    /// Hover emphasis: how far the highlighted button moves outward, in logical pixels.
-    pub hover_shift: f32,
-    /// Hover emphasis: how much the highlighted button grows (`1.0` = not at all). The
-    /// whole button is scaled about its centre, whatever your closure draws.
-    pub hover_scale: f32,
-    /// Hover emphasis: how long the button takes to move out and back.
+    /// Emphasis of the highlighted button in sub-pies and fan-outs. Default: 6 px outward
+    /// and 8% larger; a fan-out has no centre highlight of its own to show the pick.
+    pub sub_pie_hover_emphasis: HoverEmphasis,
+    /// How long a button takes to ease into its emphasis and back.
     pub hover_duration: Duration,
 }
 
@@ -426,9 +433,8 @@ impl Default for PieMenuAnimations {
             slide_start_radius: 0.0,
             slide_start_shape_factor: None,
             slide_fade: Some(Duration::from_millis(200)),
-            hover_emphasis: HoverEmphasis::FanOut,
-            hover_shift: 6.0,
-            hover_scale: 1.08,
+            hover_emphasis: HoverEmphasis::NONE,
+            sub_pie_hover_emphasis: HoverEmphasis { shift: 6.0, scale: 1.08 },
             hover_duration: Duration::from_millis(100),
         }
     }
