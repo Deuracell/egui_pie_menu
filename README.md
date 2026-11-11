@@ -233,16 +233,17 @@ menu.settings.animations.slide_fade = Some(Duration::from_millis(100));  // fade
 
 ### Hover emphasis
 
-The highlighted button can move outward and/or grow. By default this happens only in an open fan-out (which has no centre highlight of its own); it can be turned on for every pie or off:
+The highlighted button can move outward and/or grow, with separate amounts for the root pie and for sub-pies and fan-outs:
 
 ```rust
-menu.settings.animations.hover_emphasis = HoverEmphasis::All;   // Off · FanOut (default) · All
-menu.settings.animations.hover_shift = 6.0;                     // px outward
-menu.settings.animations.hover_scale = 1.08;                    // 1.0 = no growth
-menu.settings.animations.hover_duration = Duration::from_millis(100);
+// Root pie: off by default (its centre highlight already shows the direction).
+menu.settings.animations.hover_emphasis = HoverEmphasis { shift: 4.0, scale: 1.05 };
+// Sub-pies and fan-outs: 6 px outward and 8% larger by default; a fan-out has no centre highlight of its own.
+menu.settings.animations.sub_pie_hover_emphasis = HoverEmphasis::NONE;   // turn it off
+menu.settings.animations.hover_duration = Duration::from_millis(100);    // easing, for both
 ```
 
-The whole button is transformed as one layer, so it works with whatever your closure draws.
+`shift` is in pixels outward, `scale` is the growth (`1.0` = none). The whole button is transformed as one layer, so it works with whatever your closure draws.
 
 ### Number hints
 

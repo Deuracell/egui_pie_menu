@@ -790,11 +790,14 @@ mod fan_out_tests {
     }
 
     #[test]
-    fn highlighted_button_is_emphasised_in_the_fan_and_optionally_everywhere() {
+    fn highlighted_button_is_emphasised_with_separate_amounts_for_root_and_sub_pies() {
         use egui::emath::TSTransform;
-        let hover_fan_child = |emphasis: HoverEmphasis| {
+        let hover_fan_child = |root: HoverEmphasis, sub: Option<HoverEmphasis>| {
             let mut rig = Rig::new(buttons());
-            rig.menu.settings.animations.hover_emphasis = emphasis;
+            rig.menu.settings.animations.hover_emphasis = root;
+            if let Some(sub) = sub {
+                rig.menu.settings.animations.sub_pie_hover_emphasis = sub;
+            }
             rig.point(Pos2::new(505.0, 300.0));
             let above = rig.trigger() + Vec2::new(0.0, -80.0); // the fan's "Above" (child 0)
             for _ in 0..5 {
@@ -805,30 +808,55 @@ mod fan_out_tests {
         };
         let fan_ring = |rig: &Rig| rig.menu.id.with(("fan", 0usize));
 
-        // Default: only the fan's highlighted button moves (outward: up) and grows.
-        let rig = hover_fan_child(HoverEmphasis::FanOut);
+        // Defaults: only the fan's highlighted button moves (outward: up) and grows.
+        let rig = hover_fan_child(HoverEmphasis::NONE, None);
         let lifted = transform(&rig, fan_ring(&rig), 0);
         assert!((lifted.scaling - 1.08).abs() < 1e-4, "{lifted:?}");
         let centre = rig.menu.fan_centers_for_test()[0];
         assert!((lifted * centre - (centre + Vec2::new(0.0, -6.0))).length() < 1e-3, "centre moves 6 px outward");
         assert_eq!(transform(&rig, fan_ring(&rig), 1), TSTransform::IDENTITY, "other fan buttons stay");
-        assert_eq!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY, "the parent's lit button stays");
+        assert_eq!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY, "the root's lit button stays");
 
-        // Off: nothing moves. All: the parent's highlighted button too.
-        let rig = hover_fan_child(HoverEmphasis::Off);
+        // Sub-pie amount off: nothing moves in the fan.
+        let rig = hover_fan_child(HoverEmphasis::NONE, Some(HoverEmphasis::NONE));
         assert_eq!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
-        let rig = hover_fan_child(HoverEmphasis::All);
-        assert_ne!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
-        assert_ne!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY);
+
+        // The root has its own amount: here it only moves, 10 px east, without growing.
+        let rig = hover_fan_child(HoverEmphasis { shift: 10.0, scale: 1.0 }, None);
+        let root = transform(&rig, rig.menu.id, 0);
+        assert!((root.scaling - 1.0).abs() < 1e-6 && (root.translation - Vec2::new(10.0, 0.0)).length() < 1e-3, "{root:?}");
+        assert!((transform(&rig, fan_ring(&rig), 0).scaling - 1.08).abs() < 1e-4, "the fan keeps its own");
 
         // It eases back to the identity once the pointer leaves (layer transforms are sticky).
-        let mut rig = hover_fan_child(HoverEmphasis::FanOut);
+        let mut rig = hover_fan_child(HoverEmphasis::NONE, None);
         let beyond = rig.trigger() + Vec2::new(120.0, 0.0);
         for _ in 0..5 {
             rig.time += 0.1;
             rig.frame(Some(beyond), true, &[]);
         }
         assert_eq!(transform(&rig, fan_ring(&rig), 0), TSTransform::IDENTITY);
+    }
+
+    /// A replace-style sub-pie level uses the sub-pie amount, the root level the root's.
+    #[test]
+    fn replace_style_sub_pie_uses_the_sub_pie_emphasis() {
+        use egui::emath::TSTransform;
+        let nested = vec![PieButton::new(PieDirection::East).with_children(vec![PieButton::new(PieDirection::North)])];
+        let mut rig = Rig::new(nested);
+        rig.menu.settings.sub_pie_center = SubPieCenter::Parent;
+        let north = Pos2::new(400.0, 180.0);
+        let hover = |rig: &mut Rig, at: Pos2| {
+            for _ in 0..5 {
+                rig.time += 0.1;
+                rig.frame(Some(at), true, &[]);
+            }
+        };
+        hover(&mut rig, Pos2::new(520.0, 300.0)); // root: East highlighted, no emphasis by default
+        assert_eq!(transform(&rig, rig.menu.id, 0), TSTransform::IDENTITY);
+        rig.frame(Some(north), true, &[Key::Num6]); // into the sub-pie
+        hover(&mut rig, north);
+        assert_eq!(rig.menu.path(), &[0]);
+        assert!((transform(&rig, rig.menu.id, 0).scaling - 1.08).abs() < 1e-4);
     }
 
     #[test]
