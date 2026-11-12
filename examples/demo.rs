@@ -1590,7 +1590,7 @@ impl eframe::App for Demo {
                 });
         }
 
-        egui_pie_menu::dev_tool::show_dev_tool(ctx, &mut self.dev_tool_open, &mut self.menu.settings);
+        // the dev tool is embedded in the side panels (reworked next)
 
         egui::CentralPanel::default().show(ui, |ui| {
             // The panel's own area (not its clip rect, which can be larger), so the
