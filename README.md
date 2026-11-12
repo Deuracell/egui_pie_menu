@@ -686,9 +686,27 @@ Colours, strokes, fonts, labels and the title often come from your app rather th
 Each binding reads its value either once or every frame:
 
 - **Build**: once, where the menu is built. The expression takes the literal's place: `s.title.text_color = theme.accent;`, `.with_label(tr("edit.copy"))`, `.with_title(tr("menu.edit"))`.
-- **Live**: every frame. The menu is built with the value, and a block to run before `show` assigns the expression: `menu.settings.title.text_color = theme.accent;`, `buttons[1].label = format!("Undo ({n})");` (a button inside a sub-pie through `button_at_mut(&mut buttons, &[1, 0])`, a cluster item through `cluster_item_mut(number)`). A live label is assigned, so it has to be a `String`, and it can change its automatic mnemonic key as the text changes.
+- **Live**: every frame. The menu is built with the value (a live settings field is left out of `configure`), and a block to run before `show` assigns the expression: `menu.settings.title.text_color = theme.accent;`, `buttons[1].label = format!("Undo ({n})");` (a button inside a sub-pie through `button_at_mut(&mut buttons, &[1, 0])`, a cluster item through `cluster_item_mut(number)`). A live label is assigned, so it has to be a `String`, and it can change its automatic mnemonic key as the text changes.
 
 For an optional setting (`text_color`, the number hint colour) the expression is the inner value and the code wraps it in `Some(..)`. A `// needs in scope: theme, tr` line lists the names the expressions use. An empty expression is ignored (the code keeps the literal).
+
+**Variables from your app.** Register your app's values each frame under the expression that reads them in your code. Below a bound row, an "app value" picker then lists the variables of the right kind (with a colour swatch). A value bound to one shows the variable's real current value: its editor is greyed out and follows your app (switch your theme or language and the editors and the preview change with it). Typing a variable of the wrong kind (a font for a colour) is flagged.
+
+```rust
+let mut vars = Variables::new();
+vars.color("theme.accent", self.theme.accent)
+    .stroke("theme.outline", self.theme.outline)
+    .font("theme.title_font", self.theme.title_font.clone())
+    .text("tr(\"edit.copy\")", tr("edit.copy"));
+self.bindings.set_variables(vars);
+// Before drawing the editors and the preview:
+self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
+if let Some(VarValue::Text(t)) = self.bindings.variable_for(&BindTarget::Title) {
+    self.menu.title = Some(t.clone());
+}
+```
+
+The variables are not saved with the bindings (they are your app's state); register them again every frame.
 
 | Piece | What it does |
 |---|---|
@@ -696,6 +714,7 @@ For an optional setting (`text_color`, the number hint colour) the expression is
 | `field_editor_bound` / `group_editor_bound` | `field_editor` / `group_editor` with the ⛓ toggle on bindable fields and the expression and Build / Live below a bound one |
 | `button_inspector_bound` | `button_inspector` with the ⛓ toggle on labels; it keeps the bindings with their buttons as the tree changes (`Bindings::follow`, `prune`, `renumber_item` for doing that yourself) |
 | `binding_toggle` / `binding_details` | the two halves of a bound row, for your own rows (the demo's "Menu title") |
+| `Variables` / `VarValue` / `VarKind` | your app's values by expression name (`color`, `stroke`, `font`, `text`); `Bindings::set_variables`, `apply` (writes the variable values into the settings and labels), `variable_for` |
 | `menu_to_code_bound` | `menu_to_code` with the bindings; also `settings_to_code_bound`, `buttons_to_code_bound`, `live_bindings_code`, `free_identifiers` |
 
 ```rust
@@ -759,7 +778,7 @@ cargo run --example demo
   Right-click anywhere in the window (or hold Space) to open the menu. The demo is also the dev tool, in three panes:
 
 - Left, in two tabs, with one search box that filters both (the tab that is not showing carries the number of hits, for example "Buttons (3)"):
-  - **Menu**: one collapsing section per `SettingsGroup`, drawn with `group_editor`'s widgets (`field_editor_bound`: colours, strokes and fonts carry a ⛓ toggle to bind them to an expression of your app, see [Bindings](#bindings-values-from-your-app)), plus a few rows of the demo's own, tagged "demo" where they only change how the demo draws its buttons (number hints, button height, sub-pie look, markers, sample icons) and not the menu code. Choosing a fan-out as the menu-wide sub-pie style pins the sub-pies that cannot fan out to replace style (`set_menu_sub_pie_style`) and says which.
+  - **Menu**: one collapsing section per `SettingsGroup`, drawn with `group_editor`'s widgets (`field_editor_bound`: colours, strokes and fonts carry a ⛓ toggle to bind them to an expression of your app, see [Bindings](#bindings-values-from-your-app); the demo registers `theme.*` colours from egui's Dark / Light visuals and `tr("..")` labels and title in the chosen language as variables), plus a few rows of the demo's own, tagged "demo" where they only change how the demo draws its buttons (number hints, button height, sub-pie look, markers, sample icons) and not the menu code. Choosing a fan-out as the menu-wide sub-pie style pins the sub-pies that cannot fan out to replace style (`set_menu_sub_pie_style`) and says which.
   - **Buttons**: `button_tree` above, `button_inspector_bound` below (labels can be bound too) with the demo's own "Appearance" group (icon, tooltip, colour, checkbox, cluster layout) among its controls and, at the end, the menu-wide settings that affect the selected node. The demo keeps that appearance data in a table keyed by button path and follows `InspectorOutput::edits`.
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
@@ -860,7 +879,7 @@ Additive; nothing to change in existing code:
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
 - The `dev_tool` module: embeddable editors for the settings (`settings_editor`, `group_editor`, `field_editor`) and for a `PieButton` tree (`button_tree`, `button_tree_filtered`, `button_inspector`, `buttons_editor`), `preview_target` for a live preview, `set_menu_sub_pie_style`, and code generators ([Dev tool](#dev-tool)).
-- Dev tool bindings: bind colours, strokes, fonts, labels and the title to expressions of your app, read once or every frame ([Bindings](#bindings-values-from-your-app)). With them, `button_at` / `button_at_mut` (a button by path) and `PieButton::children_mut` / `cluster_item_mut`.
+- Dev tool bindings: bind colours, strokes, fonts, labels and the title to expressions of your app, read once or every frame, and register your app's values as `Variables` so the editors offer and show them ([Bindings](#bindings-values-from-your-app)). With them, `button_at` / `button_at_mut` (a button by path) and `PieButton::children_mut` / `cluster_item_mut`.
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
 
 ## License

@@ -3,10 +3,13 @@
 //!
 //! The dev tool cannot evaluate Rust, so a bound value keeps its literal as the **preview
 //! value**: the editor and the live preview go on using it, and only the generated code uses
-//! the expression.
+//! the expression. Your app can do better by registering [`Variables`]: their names are
+//! offered for the expression, and a value bound to one shows the variable's real value
+//! ([`Bindings::apply`]).
 use super::{SettingsField, TreeEdit};
 use crate::PieButton;
-use egui::{Color32, RichText, Ui};
+use crate::settings::PieMenuSettings;
+use egui::{Color32, FontId, RichText, Stroke, Ui};
 
 /// What a binding replaces.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -42,6 +45,17 @@ impl BindTarget {
     /// Whether the target is text (a label or the title) rather than a settings value.
     pub fn is_text(&self) -> bool {
         !matches!(self, BindTarget::Field(_))
+    }
+
+    /// The kind of value the target holds (what a [`Variables`] entry must be to fill it).
+    pub fn kind(&self) -> VarKind {
+        use SettingsField as F;
+        match self {
+            BindTarget::Field(F::CenterBackgroundStroke | F::CenterHighlightStroke | F::TitleBackgroundStroke) => VarKind::Stroke,
+            BindTarget::Field(F::TitleTextFont) => VarKind::Font,
+            BindTarget::Field(_) => VarKind::Color,
+            BindTarget::Title | BindTarget::Label(_) | BindTarget::ItemLabel(..) => VarKind::Text,
+        }
     }
 
     /// An example expression, shown as the hint of an empty expression.
@@ -106,6 +120,9 @@ impl Binding {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
 pub struct Bindings {
     entries: Vec<(BindTarget, Binding)>,
+    /// What your app registered this frame ([`Bindings::set_variables`]); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    variables: Variables,
 }
 
 impl Bindings {
@@ -196,6 +213,43 @@ impl Bindings {
         }
     }
 
+    /// Hands the editors this frame's [`Variables`] of your app: the expression row offers
+    /// their names, and a target bound to one is shown with its value ([`Bindings::apply`]).
+    pub fn set_variables(&mut self, variables: Variables) {
+        self.variables = variables;
+    }
+
+    pub fn variables(&self) -> &Variables {
+        &self.variables
+    }
+
+    /// The registered variable `target` is bound to: its expression is a variable's name and
+    /// the variable is of the target's [`BindTarget::kind`].
+    pub fn variable_for(&self, target: &BindTarget) -> Option<&VarValue> {
+        let name = self.get(target)?.active_expr()?;
+        self.variables.get(name).filter(|v| v.kind() == target.kind())
+    }
+
+    /// Writes the value of every variable-bound target into `settings` and `buttons`, so the
+    /// editors and the preview show your app's real values (call it each frame, after
+    /// [`Bindings::set_variables`] and before drawing). The title is not touched: read it with
+    /// [`Bindings::variable_for`]`(&BindTarget::Title)`. Returns `true` if anything changed.
+    pub fn apply(&self, settings: &mut PieMenuSettings, buttons: &mut [PieButton]) -> bool {
+        let mut changed = false;
+        for (target, _) in &self.entries {
+            let Some(value) = self.variable_for(target) else { continue };
+            changed |= match (target, value) {
+                (BindTarget::Field(f), v) => set_field(settings, *f, v),
+                (BindTarget::Label(p), VarValue::Text(t)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.label, t)),
+                (BindTarget::ItemLabel(p, n), VarValue::Text(t)) => crate::button_at_mut(buttons, p)
+                    .and_then(|b| b.cluster_item_mut(*n))
+                    .is_some_and(|i| set_if_changed(&mut i.label, t)),
+                _ => false,
+            };
+        }
+        changed
+    }
+
     /// Forgets the bindings of buttons and cluster items that are not in `buttons`.
     pub fn prune(&mut self, buttons: &[PieButton]) {
         self.entries.retain(|(t, _)| match t {
@@ -203,6 +257,148 @@ impl Bindings {
             BindTarget::ItemLabel(p, n) => crate::button_at(buttons, p).is_some_and(|b| b.cluster_items().iter().any(|i| i.number == *n)),
             _ => true,
         });
+    }
+}
+
+fn set_if_changed<T: PartialEq + Clone>(slot: &mut T, value: &T) -> bool {
+    if slot == value {
+        return false;
+    }
+    *slot = value.clone();
+    true
+}
+
+/// Writes `value` into a bindable `field` if the kinds match. Returns whether it changed.
+fn set_field(s: &mut PieMenuSettings, field: SettingsField, value: &VarValue) -> bool {
+    use SettingsField as F;
+    match (field, value) {
+        (F::HintColor, VarValue::Color(c)) => set_if_changed(&mut s.number_hints.color, &Some(*c)),
+        (F::TextColor, VarValue::Color(c)) => set_if_changed(&mut s.text_color, &Some(*c)),
+        (F::CenterBackgroundFillColor, VarValue::Color(c)) => set_if_changed(&mut s.center_indicator.background_fill_color, c),
+        (F::CenterHighlightFillColor, VarValue::Color(c)) => set_if_changed(&mut s.center_indicator.highlight_fill_color, c),
+        (F::TitleBackgroundColor, VarValue::Color(c)) => set_if_changed(&mut s.title.background_color, c),
+        (F::TitleTextColor, VarValue::Color(c)) => set_if_changed(&mut s.title.text_color, c),
+        (F::CenterBackgroundStroke, VarValue::Stroke(st)) => set_if_changed(&mut s.center_indicator.background_stroke, st),
+        (F::CenterHighlightStroke, VarValue::Stroke(st)) => set_if_changed(&mut s.center_indicator.highlight_stroke, st),
+        (F::TitleBackgroundStroke, VarValue::Stroke(st)) => set_if_changed(&mut s.title.background_stroke, st),
+        (F::TitleTextFont, VarValue::Font(f)) => set_if_changed(&mut s.title.text_font, f),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Variables
+// ---------------------------------------------------------------------------------------
+
+/// The kinds of value a binding can hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VarKind {
+    Color,
+    Stroke,
+    Font,
+    Text,
+}
+
+impl VarKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            VarKind::Color => "a colour",
+            VarKind::Stroke => "a stroke",
+            VarKind::Font => "a font",
+            VarKind::Text => "text",
+        }
+    }
+}
+
+/// The current value of one of your app's variables.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VarValue {
+    Color(Color32),
+    Stroke(Stroke),
+    Font(FontId),
+    Text(String),
+}
+
+impl VarValue {
+    pub fn kind(&self) -> VarKind {
+        match self {
+            VarValue::Color(_) => VarKind::Color,
+            VarValue::Stroke(_) => VarKind::Stroke,
+            VarValue::Font(_) => VarKind::Font,
+            VarValue::Text(_) => VarKind::Text,
+        }
+    }
+}
+
+/// Values of your app the dev tool can bind to, each under the Rust expression that reads it
+/// in your code. Build it each frame from your real state and hand it over with
+/// [`Bindings::set_variables`]:
+///
+/// ```
+/// use egui_pie_menu::dev_tool::*;
+/// # let accent = egui::Color32::LIGHT_BLUE;
+/// # fn tr(k: &str) -> String { k.to_uppercase() }
+/// let mut vars = Variables::new();
+/// vars.color("theme.accent", accent).text("tr(\"edit.copy\")", tr("edit.copy"));
+/// let mut bindings = Bindings::new();
+/// bindings.set_variables(vars);
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Variables {
+    entries: Vec<(String, VarValue)>,
+}
+
+impl Variables {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Registers (or replaces) `name`, the expression that reads the value in your code.
+    pub fn set(&mut self, name: impl Into<String>, value: VarValue) -> &mut Self {
+        let name = name.into();
+        match self.entries.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, v)) => *v = value,
+            None => self.entries.push((name, value)),
+        }
+        self
+    }
+
+    pub fn color(&mut self, name: impl Into<String>, value: Color32) -> &mut Self {
+        self.set(name, VarValue::Color(value))
+    }
+
+    pub fn stroke(&mut self, name: impl Into<String>, value: Stroke) -> &mut Self {
+        self.set(name, VarValue::Stroke(value))
+    }
+
+    pub fn font(&mut self, name: impl Into<String>, value: FontId) -> &mut Self {
+        self.set(name, VarValue::Font(value))
+    }
+
+    pub fn text(&mut self, name: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.set(name, VarValue::Text(value.into()))
+    }
+
+    pub fn get(&self, name: &str) -> Option<&VarValue> {
+        self.entries.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
+    /// All variables, in the order they were registered.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &VarValue)> {
+        self.entries.iter().map(|(n, v)| (n.as_str(), v))
+    }
+
+    /// The variables of one kind, in the order they were registered.
+    pub fn of_kind(&self, kind: VarKind) -> impl Iterator<Item = (&str, &VarValue)> {
+        self.iter().filter(move |(_, v)| v.kind() == kind)
     }
 }
 
@@ -358,9 +554,20 @@ pub fn binding_toggle(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget)
     true
 }
 
-/// The details of a bound `target` on a row of its own: the expression, Build / Live and a
-/// note; nothing if it is not bound. Returns `true` if the binding changed.
+/// The details of a bound `target`, below its row: Build / Live and the expression, then, if
+/// your app registered [`Variables`] of the target's kind, a picker of their names, and a
+/// note where one is due. Nothing if `target` is not bound. Returns `true` if the binding
+/// changed.
 pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget) -> bool {
+    let kind = target.kind();
+    let options: Vec<(String, VarValue)> = bindings.variables.of_kind(kind).map(|(n, v)| (n.to_string(), v.clone())).collect();
+    let other_kind = bindings
+        .get(target)
+        .and_then(Binding::active_expr)
+        .and_then(|e| bindings.variables.get(e))
+        .map(VarValue::kind)
+        .filter(|k| *k != kind);
+    let from_app = bindings.variable_for(target).is_some();
     let Some(binding) = bindings.get_mut(target) else {
         return false;
     };
@@ -383,28 +590,72 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
         let edit = egui::TextEdit::singleline(&mut binding.expr).code_editor().hint_text(target.example());
         changed |= ui.add_sized([width, ui.spacing().interact_size.y], edit).changed();
     });
-    let note = if binding.active_expr().is_none() {
-        Some("No expression yet: the code uses the value.")
+    if !options.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(ui.spacing().indent);
+            ui.label(RichText::new("app value:").weak()).on_hover_text("A value your app registered: pick one to bind to it.");
+            let current = options.iter().find(|(n, _)| n == binding.expr.trim()).map(|(n, _)| n.clone());
+            egui::ComboBox::from_id_salt(("pie_binding_vars", target))
+                .selected_text(current.clone().unwrap_or_else(|| "pick\u{2026}".to_string()))
+                .show_ui(ui, |ui| {
+                    for (name, value) in &options {
+                        ui.horizontal(|ui| {
+                            var_swatch(ui, value);
+                            if ui.selectable_label(current.as_ref() == Some(name), name).clicked() && current.as_ref() != Some(name) {
+                                binding.expr = name.clone();
+                                changed = true;
+                            }
+                        });
+                    }
+                });
+        });
+    }
+    let mismatch;
+    let (note, warn) = if binding.active_expr().is_none() {
+        (Some("No expression yet: the code uses the value."), true)
+    } else if let Some(k) = other_kind {
+        mismatch = format!("That is {} of your app; this needs {}.", k.name(), kind.name());
+        (Some(mismatch.as_str()), true)
     } else if binding.mode == BindingMode::Live && matches!(target, BindTarget::Label(_) | BindTarget::ItemLabel(..)) {
-        Some("A live label can change its automatic mnemonic key as the text changes.")
+        (Some("A live label can change its automatic mnemonic key as the text changes."), true)
+    } else if from_app {
+        (Some("From your app: the value above follows it."), false)
     } else {
-        None
+        (None, false)
     };
     if let Some(note) = note {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(ui.spacing().indent);
-            ui.label(RichText::new(note).small().color(Color32::from_rgb(220, 160, 60)));
+            let text = RichText::new(note).small();
+            ui.label(if warn { text.color(Color32::from_rgb(220, 160, 60)) } else { text.weak() });
         });
     }
     changed
 }
 
+/// A small sample of a variable's value for the picker: a colour swatch, a stroke's colour.
+fn var_swatch(ui: &mut Ui, value: &VarValue) {
+    let size = egui::vec2(ui.spacing().interact_size.y * 0.6, ui.spacing().interact_size.y * 0.6);
+    match value {
+        VarValue::Color(c) => {
+            egui::color_picker::show_color(ui, *c, size);
+        }
+        VarValue::Stroke(st) => {
+            egui::color_picker::show_color(ui, st.color, size);
+        }
+        VarValue::Font(_) | VarValue::Text(_) => {}
+    }
+}
+
 /// `editor` followed by [`binding_toggle`] on one row (so the labels stay aligned with
-/// unbound rows), then [`binding_details`]. Returns whether the editor or the binding changed.
+/// unbound rows), then [`binding_details`]. While the target follows one of your app's
+/// [`Variables`], the editor is shown disabled (its value comes from [`Bindings::apply`]).
+/// Returns whether the editor or the binding changed.
 pub(crate) fn bound_row(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget, editor: impl FnOnce(&mut Ui) -> bool) -> bool {
     let mut changed = false;
+    let from_app = bindings.variable_for(target).is_some();
     ui.horizontal(|ui| {
-        changed |= editor(ui);
+        changed |= ui.add_enabled_ui(!from_app, editor).inner;
         changed |= binding_toggle(ui, bindings, target);
     });
     changed | binding_details(ui, bindings, target)
@@ -488,6 +739,108 @@ mod tests {
         });
         out.textures_delta.clear();
         assert!(found, "the bind toggle glyph is missing from the default fonts");
+    }
+
+    fn app_vars() -> Variables {
+        let mut v = Variables::new();
+        v.color("theme.accent", Color32::from_rgb(1, 2, 3))
+            .stroke("theme.outline", Stroke::new(3.0, Color32::RED))
+            .font("theme.title_font", FontId::monospace(22.0))
+            .text("tr(\"copy\")", "Kopieren")
+            .text("tr(\"bold\")", "Fett");
+        v
+    }
+
+    #[test]
+    fn variables_register_and_replace() {
+        let mut v = app_vars();
+        assert_eq!(v.len(), 5);
+        v.color("theme.accent", Color32::WHITE);
+        assert_eq!(v.len(), 5, "same name replaces");
+        assert_eq!(v.get("theme.accent"), Some(&VarValue::Color(Color32::WHITE)));
+        let texts: Vec<&str> = v.of_kind(VarKind::Text).map(|(n, _)| n).collect();
+        assert_eq!(texts, ["tr(\"copy\")", "tr(\"bold\")"]);
+        assert_eq!(BindTarget::Field(SettingsField::TitleBackgroundStroke).kind(), VarKind::Stroke);
+        assert_eq!(BindTarget::Field(SettingsField::TextColor).kind(), VarKind::Color);
+        assert_eq!(BindTarget::Field(SettingsField::TitleTextFont).kind(), VarKind::Font);
+        assert_eq!(BindTarget::Title.kind(), VarKind::Text);
+        // Every bindable field takes a value of its kind through apply's writer.
+        for f in SettingsField::ALL.into_iter().filter(|f| f.is_bindable()) {
+            let value = match BindTarget::Field(f).kind() {
+                VarKind::Color => VarValue::Color(Color32::from_rgb(9, 9, 9)),
+                VarKind::Stroke => VarValue::Stroke(Stroke::new(9.0, Color32::BLUE)),
+                VarKind::Font => VarValue::Font(FontId::monospace(9.0)),
+                VarKind::Text => unreachable!(),
+            };
+            let mut s = PieMenuSettings::default();
+            assert!(set_field(&mut s, f, &value), "{f:?}");
+            assert!(!set_field(&mut s, f, &value), "{f:?}: unchanged the second time");
+            assert!(!set_field(&mut s, f, &VarValue::Text("x".into())), "{f:?}: wrong kind is ignored");
+        }
+    }
+
+    #[test]
+    fn apply_writes_variable_values() {
+        let mut buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Copy"),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "Bold")]),
+        ];
+        let mut settings = PieMenuSettings::default();
+        let mut b = Bindings::new();
+        b.set(BindTarget::Field(SettingsField::TextColor), Binding::new("theme.accent", BindingMode::Build));
+        b.set(BindTarget::Field(SettingsField::CenterHighlightStroke), Binding::new("theme.outline", BindingMode::Live));
+        b.set(BindTarget::Field(SettingsField::TitleTextFont), Binding::new("theme.title_font", BindingMode::Build));
+        b.set(BindTarget::Label(vec![0]), Binding::new(" tr(\"copy\") ", BindingMode::Build));
+        b.set(BindTarget::ItemLabel(vec![1], 1), Binding::new("tr(\"bold\")", BindingMode::Live));
+        // Wrong kind and unknown name: left alone.
+        b.set(BindTarget::Field(SettingsField::TitleTextColor), Binding::new("theme.title_font", BindingMode::Build));
+        b.set(BindTarget::Title, Binding::new("tr(\"nope\")", BindingMode::Build));
+        assert!(!b.apply(&mut settings, &mut buttons), "no variables yet");
+        b.set_variables(app_vars());
+        assert!(b.apply(&mut settings, &mut buttons));
+        assert_eq!(settings.text_color, Some(Color32::from_rgb(1, 2, 3)));
+        assert_eq!(settings.center_indicator.highlight_stroke, Stroke::new(3.0, Color32::RED));
+        assert_eq!(settings.title.text_font, FontId::monospace(22.0));
+        assert_eq!(settings.title.text_color, PieMenuSettings::default().title.text_color);
+        assert_eq!(buttons[0].label, "Kopieren");
+        assert_eq!(buttons[1].cluster_items()[0].label, "Fett");
+        assert!(!b.apply(&mut settings, &mut buttons), "nothing left to change");
+        assert!(b.variable_for(&BindTarget::Title).is_none());
+        assert!(b.variable_for(&BindTarget::Field(SettingsField::TitleTextColor)).is_none(), "a font is not a colour");
+        // A clone keeps the variables (only serialization leaves them out).
+        assert_eq!(b.clone().variables().len(), 5);
+    }
+
+    #[test]
+    fn bound_rows_draw_with_variables() {
+        let mut b = Bindings::new();
+        b.set_variables(app_vars());
+        let targets = [
+            BindTarget::Field(SettingsField::TextColor),
+            BindTarget::Field(SettingsField::CenterHighlightStroke),
+            BindTarget::Field(SettingsField::TitleTextColor),
+            BindTarget::Label(vec![0]),
+        ];
+        b.set(targets[0].clone(), Binding::new("theme.accent", BindingMode::Build));
+        b.set(targets[1].clone(), Binding::new("", BindingMode::Build));
+        b.set(targets[2].clone(), Binding::new("theme.title_font", BindingMode::Build));
+        b.set(targets[3].clone(), Binding::new("tr(\"copy\")", BindingMode::Live));
+        let before = b.clone();
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            for t in &targets {
+                let mut editor_enabled = None;
+                let changed = bound_row(ui, &mut b, t, |ui| {
+                    editor_enabled = Some(ui.is_enabled());
+                    false
+                });
+                assert!(!changed);
+                let follows = matches!(t, BindTarget::Field(SettingsField::TextColor) | BindTarget::Label(_));
+                assert_eq!(editor_enabled, Some(!follows), "{t:?}: the editor is disabled while it follows a variable");
+            }
+        });
+        out.textures_delta.clear();
+        assert_eq!(b, before);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu::dev_tool::{
-    BindTarget, Bindings, Selection, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
+    BindTarget, Bindings, Selection, VarValue, Variables, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
     button_tree, button_tree_filtered, field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
 };
@@ -80,6 +80,32 @@ const LANGS: &[Lang] = &[
     Lang { name: "فارسی", rtl: true, digits: HintDigits::Persian,
         labels: ["کپی", "چسباندن ویژه", "انجام مجدد", "ذخیره با نام…", "حذف دائمی", "برش", "واگرد", "شکستن خط"] },
 ];
+
+/// The menu title in each of `LANGS`.
+const TITLES: [&str; 5] = ["Edit", "Правка", "עריכה", "تحرير", "ویرایش"];
+
+/// Translation keys of the root labels (N clockwise to NW), for the `tr("..")` variables.
+const LABEL_KEYS: [&str; 8] = ["copy", "paste_special", "redo", "save_as", "delete", "cut", "undo", "word_wrap"];
+
+/// What the demo offers the dev tool to bind to, as an app would: `theme.*` from egui's
+/// current visuals (so the Dark / Light switch changes them) and `tr("..")` for the labels and
+/// the title in the current language.
+fn app_variables(visuals: &egui::Visuals, lang: usize) -> Variables {
+    let mut vars = Variables::new();
+    vars.color("theme.accent", visuals.selection.bg_fill)
+        .color("theme.text", visuals.strong_text_color())
+        .color("theme.weak_text", visuals.weak_text_color())
+        .color("theme.panel", visuals.panel_fill)
+        .color("theme.faint", visuals.faint_bg_color)
+        .color("theme.warn", visuals.warn_fg_color)
+        .stroke("theme.outline", egui::Stroke::new(2.0, visuals.selection.stroke.color))
+        .font("theme.title_font", egui::FontId::proportional(18.0));
+    vars.text("tr(\"edit\")", TITLES[lang]);
+    for (key, label) in LABEL_KEYS.iter().zip(LANGS[lang].labels) {
+        vars.text(format!("tr(\"{key}\")"), label);
+    }
+    vars
+}
 
 /// The tabs of the left-hand panel.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1483,7 +1509,8 @@ impl Demo {
             DemoRow::MenuTitle => {
                 ui.horizontal(|ui| {
                     name(ui, "Shown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.");
-                    ui.add(egui::TextEdit::singleline(&mut self.title).desired_width(120.0));
+                    let from_app = self.bindings.variable_for(&BindTarget::Title).is_some();
+                    ui.add_enabled(!from_app, egui::TextEdit::singleline(&mut self.title).desired_width(120.0));
                     binding_toggle(ui, &mut self.bindings, &BindTarget::Title);
                 });
                 binding_details(ui, &mut self.bindings, &BindTarget::Title);
@@ -1704,6 +1731,14 @@ impl eframe::App for Demo {
         // (e.g. a colour picker) is open, Esc belongs to it and must not also reach the
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
+        // The app's values the dev tool can bind to; what is bound to one shows its value.
+        self.bindings.set_variables(app_variables(ui.visuals(), self.lang));
+        self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
+        if let Some(VarValue::Text(title)) = self.bindings.variable_for(&BindTarget::Title)
+            && self.title != *title
+        {
+            self.title = title.clone();
+        }
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             ui.add_space(4.0);
             let query = self.search.trim().to_lowercase();
@@ -2046,6 +2081,18 @@ mod tests {
         // decor_mut stores the derived default.
         assert_eq!(decor_mut(&mut m, &[0, 5]).color, Color32::from_rgb(1, 2, 3));
         assert!(m.contains_key(&vec![0, 5]));
+    }
+
+    #[test]
+    fn app_variables_cover_every_language() {
+        assert_eq!(TITLES.len(), LANGS.len());
+        for lang in 0..LANGS.len() {
+            let vars = app_variables(&egui::Visuals::dark(), lang);
+            assert_eq!(vars.get("tr(\"edit\")"), Some(&VarValue::Text(TITLES[lang].to_string())));
+            assert_eq!(vars.get("tr(\"undo\")"), Some(&VarValue::Text(LANGS[lang].labels[6].to_string())));
+        }
+        let (light, dark) = (app_variables(&egui::Visuals::light(), 0), app_variables(&egui::Visuals::dark(), 0));
+        assert_ne!(light.get("theme.panel"), dark.get("theme.panel"), "the theme switch changes the theme variables");
     }
 
     #[test]
