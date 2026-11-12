@@ -75,8 +75,72 @@ What you get with no configuration:
 - Buttons with children open a sub-pie that replaces its parent at the pointer.
 - The widgets behind the menu do not receive pointer input while it is open; the layout is not mirrored (right-to-left layouts are opt-in).
 
+## Configuring the menu
+
+Every setting lives in `menu.settings` (see [Settings](#settings) for the full list). There are three ways to set them; they combine freely.
+
+```rust
+use egui_pie_menu::{PieMenu, PieMenuSettings};
+
+// 1. Assign fields on a menu you already have.
+let mut menu = PieMenu::new().with_title("Edit");
+menu.settings.layout.radius = 120.0;
+menu.settings.input.auto_mnemonics = true;
+
+// 2. `configure`: change the settings in a closure, in a single expression.
+let menu = PieMenu::new().with_title("Edit").configure(|s| {
+    s.layout.radius = 120.0;
+    s.input.auto_mnemonics = true;
+});
+
+// 3. Struct update syntax, then `with_settings`.
+let menu = PieMenu::new().with_settings(PieMenuSettings { mirror_horizontal: true, ..Default::default() });
+```
+
+`configure` edits the settings the menu has at that point, so it composes with `with_settings` and `with_title` in any order; a later `with_settings` replaces what an earlier `configure` changed.
+
+### The `blender_like()` preset
+
+`PieMenuSettings::blender_like()` is a ready-made starting point for a Blender-style feel. It changes exactly three things from the default:
+
+- `input.select_on_primary_click = false`: a selection happens by releasing the key that opened the menu, and primary clicks are ignored.
+- `text_color = Some(Color32::WHITE)`: white labels, hovered or not.
+- `number_hints.color = Some(Color32::WHITE)`: white number hints, hovered or not.
+
+Everything else is the default, and the result is an ordinary value you can keep changing:
+
+```rust
+let menu = PieMenu::new()
+    .with_settings(PieMenuSettings::blender_like())
+    .configure(|s| s.layout.radius = 110.0);
+```
+
+### Saving settings (`serde` feature)
+
+Off by default. Enable it to (de)serialise the settings, for example to keep the user's choices in a config file:
+
+```toml
+egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", tag = "v0.36.1", features = ["serde"] }
+```
+
+All settings types implement `Serialize` and `Deserialize`: `PieMenuSettings` and the groups inside it, `HoverEmphasis`, `HighlightShape` and the enums they use (`ShowBehavior`, `RevealAnimation`, `HintSide`, `HintDigits`, `SubPieStyle`, `SubPieCenter`, `FanOpenerAction`, `PieMenuDismissInput`). `PieButton` and `PieMenu` do not: buttons are built in code, and the menu holds runtime state. The feature also turns on egui's own `serde` feature, which makes the egui types in the settings (`Color32`, `Stroke`, `Margin`, `FontId`, `Key`, `PointerButton`) serialisable.
+
+The settings structs use `#[serde(default)]`: a field missing from the saved data takes its default value. Settings saved by an older version therefore keep loading when a later version adds settings.
+
+The crate does not pick a format. An example with `serde_json`, which you add to your own project (this snippet is not compiled here):
+
+```rust
+// Example using your own `serde_json` dependency.
+let json = serde_json::to_string_pretty(&menu.settings)?;
+std::fs::write("pie_menu.json", json)?;
+// Later:
+let json = std::fs::read_to_string("pie_menu.json")?;
+menu.settings = serde_json::from_str(&json)?;
+```
+
 ## Going further
 
+- [Configuring the menu](#configuring-the-menu): `configure`, the `blender_like()` preset, saving settings with the `serde` feature
 - [Buttons](#buttons): labels, mnemonics, disabled buttons, the hover query and `check_buttons`
 - [Drawing your buttons](#drawing-your-buttons): the render closure, `ButtonView`, number hints, text colour, mnemonic labels
 - [Reading the result](#reading-the-result): opening, `show`, `PieMenuResponse` and the interaction model
@@ -306,6 +370,7 @@ pub fn show(
 | `menu.close()` | Close without a response |
 | `menu.is_open()` / `menu.is_pinned()` | State queries |
 | `menu.title = Some("Edit".into())` | Text above the centre indicator (`with_title` at construction) |
+| `PieMenu::new().configure(\|s\| ..)` | Change the settings in a closure while building the menu (see "Configuring the menu") |
 | `menu.show_with_pointer(ctx, &buttons, pointer, key_down, ..)` | `show` with your own pointer position instead of egui's latest one |
 | `menu.pointer_area = Some(rect)` | The pointer only counts inside `rect` |
 
@@ -674,6 +739,14 @@ Nothing below needs changes in existing code:
 - Reveal animations (fade, slide out) and [hover emphasis](#hover-emphasis).
 - `ButtonView` helpers: `path`, `text_color()`, `scale()`, `use_pie_hover()`, `opens_sub_pie()`.
 - The `layout` and `sub_pies` setting groups, and demo icons ([Icons and images](#icons-and-images)).
+
+### Added after v0.36.1
+
+Additive; nothing to change in existing code:
+
+- `PieMenu::configure`: change the settings in a closure.
+- `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
+- The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
 
 ## License
 

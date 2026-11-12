@@ -323,6 +323,25 @@ impl PieMenu {
         self
     }
 
+    /// Changes the settings in a closure, so a menu can be built in one expression without
+    /// a `mut` binding or repeating `menu.settings.`. It works on the settings as they are
+    /// at that point, so it composes with [`Self::with_settings`] and [`Self::with_title`]
+    /// in any order (a later `with_settings` replaces the earlier changes).
+    ///
+    /// ```
+    /// use egui_pie_menu::PieMenu;
+    /// let menu = PieMenu::new().with_title("Edit").configure(|s| {
+    ///     s.layout.radius = 120.0;
+    ///     s.input.auto_mnemonics = true;
+    /// });
+    /// assert_eq!(menu.settings.layout.radius, 120.0);
+    /// assert!(menu.settings.input.auto_mnemonics);
+    /// ```
+    pub fn configure(mut self, f: impl FnOnce(&mut PieMenuSettings)) -> Self {
+        f(&mut self.settings);
+        self
+    }
+
     /// Problems in one level's buttons: several in one direction, or the same mnemonic
     /// on several enabled buttons (or cluster items, which share the level's keys); two
     /// items of a cluster with the same number; and, for each button that opens a fan-out, the same
