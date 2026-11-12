@@ -916,7 +916,7 @@ impl PieMenu {
         if self.settings.input.use_number_keys {
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
                 let dir = Self::eff(&button.direction, mirror);
-                let key = Self::direction_numpad(&dir);
+                let key = Self::direction_number_key(&dir);
                 let digit = Self::direction_digit(&dir).to_string();
                 let hit = ctx.input_mut(|i| {
                     let hit = i.consume_key(egui::Modifiers::NONE, key);
