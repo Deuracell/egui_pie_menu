@@ -1,12 +1,14 @@
 //! Embeddable dev tool pieces: editors for [`PieMenuSettings`] and for a [`PieButton`] tree,
 //! and generators for ready-to-paste Rust code (in the `configure` closure style).
 //!
-//! There is no window of its own: put [`settings_editor`] and [`buttons_editor`] in a side
-//! panel, show [`menu_to_code`] (or [`settings_to_code`] / [`buttons_to_code`]) with
-//! [`code_view`], and paste the result into your project.
+//! There is no window of its own: put [`settings_editor`] (or [`field_editor`] /
+//! [`group_editor`] for a layout of your own) and [`buttons_editor`] (or [`button_tree`] and
+//! [`button_inspector`], with [`preview_target`] for a live preview) in a side panel, show
+//! [`menu_to_code`] (or [`settings_to_code`] / [`buttons_to_code`]) with [`code_view`], and
+//! paste the result into your project.
 use crate::settings::*;
-use crate::{ButtonProblem, ClusterItem, Mnemonic, PieButton, PieButtonKind, PieMenu};
-use egui::{Color32, FontFamily, FontId, Margin, RichText, Stroke, Ui};
+use crate::{ClusterItem, Mnemonic, PieButton, PieButtonKind};
+use egui::{Color32, FontFamily, FontId, Margin, Stroke, Ui};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------------------
@@ -345,14 +347,17 @@ pub fn code_view(ui: &mut Ui, code: &str) {
 
 mod fields;
 pub use fields::*;
-#[allow(dead_code)] // used by the inspector (next step)
+
+// ---------------------------------------------------------------------------------------
+// Buttons: tree, inspector, legality
+// ---------------------------------------------------------------------------------------
+
+mod inspector;
 mod legality;
+pub use inspector::*;
+pub use legality::set_menu_sub_pie_style;
 
-// ---------------------------------------------------------------------------------------
-// Buttons editor
-// ---------------------------------------------------------------------------------------
-
-/// What kind of button the kind combo offers.
+/// What the kind combo offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KindChoice {
     Action,
@@ -383,34 +388,9 @@ fn kind_choice(b: &PieButton) -> KindChoice {
     }
 }
 
-/// Converts `button` to another kind, keeping direction, label, mnemonic and enabled. A new
-/// sub-pie starts with one child, a new cluster with one item numbered 0 (and, like
-/// [`PieButton::cluster`], no mnemonic). Does nothing when the kind is already `to`.
-fn convert_kind(button: &mut PieButton, to: KindChoice) {
-    if kind_choice(button) == to {
-        return;
-    }
-    button.kind = match to {
-        KindChoice::Action => PieButtonKind::Action,
-        KindChoice::Back => PieButtonKind::Back,
-        KindChoice::SubPie => {
-            PieButtonKind::SubPie { children: vec![PieButton::new(PieDirection::North).with_label("Item")], style: None }
-        }
-        KindChoice::Cluster => PieButtonKind::Cluster(vec![ClusterItem::new(0, "Item")]),
-    };
-    if to == KindChoice::Cluster {
-        button.mnemonic = Mnemonic::None;
-    }
-}
-
-/// The first of `candidates` that no button occupies.
-fn first_free_direction_in(buttons: &[PieButton], candidates: &[PieDirection]) -> Option<PieDirection> {
-    candidates.iter().copied().find(|d| buttons.iter().all(|b| b.direction != *d))
-}
-
 /// The first of the eight directions (clockwise from North) that no button occupies.
 pub fn first_free_direction(buttons: &[PieButton]) -> Option<PieDirection> {
-    first_free_direction_in(buttons, &PieDirection::ALL)
+    PieDirection::ALL.iter().copied().find(|d| buttons.iter().all(|b| b.direction != *d))
 }
 
 /// A ready-made sub-pie at `dir`: five children "Item 1".."Item 5" in the five fan-out slots
@@ -428,246 +408,6 @@ fn new_sub_pie(dir: PieDirection, fan: bool) -> PieButton {
         children.push(PieButton::back(dir.opposite()));
         PieButton::new(dir).with_label("Sub-pie").with_children(children)
     }
-}
-
-/// Mode combo (Auto / Key / None) plus a one-character field while it is a key.
-fn mnemonic_edit(ui: &mut Ui, m: &mut Mnemonic, salt: egui::Id) -> bool {
-    let mut changed = false;
-    let name = match m {
-        Mnemonic::Auto => "Auto",
-        Mnemonic::Key(_) => "Key",
-        Mnemonic::None => "None",
-    };
-    egui::ComboBox::from_id_salt(salt).selected_text(name).width(70.0).show_ui(ui, |ui| {
-        if ui.selectable_label(matches!(m, Mnemonic::Auto), "Auto").clicked() {
-            *m = Mnemonic::Auto;
-            changed = true;
-        }
-        if ui.selectable_label(matches!(m, Mnemonic::Key(_)), "Key").clicked() && !matches!(m, Mnemonic::Key(_)) {
-            *m = Mnemonic::Key('a');
-            changed = true;
-        }
-        if ui.selectable_label(matches!(m, Mnemonic::None), "None").clicked() {
-            *m = Mnemonic::None;
-            changed = true;
-        }
-    });
-    if let Mnemonic::Key(c) = m {
-        let mut text = c.to_string();
-        if ui.add(egui::TextEdit::singleline(&mut text).desired_width(24.0)).changed() {
-            // Typing appends: the newest character wins; an emptied field keeps the old key.
-            if let Some(n) = text.chars().last().filter(|n| *n != *c) {
-                *c = n;
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-fn problem_menu(auto_mnemonics: bool) -> PieMenu {
-    PieMenu::new().configure(|s| s.input.auto_mnemonics = auto_mnemonics)
-}
-
-/// Edits one cluster's items. Returns whether anything changed.
-fn items_edit(ui: &mut Ui, items: &mut Vec<ClusterItem>, salt: egui::Id) -> bool {
-    let mut changed = false;
-    let mut remove = None;
-    for (n, item) in items.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            changed |= ui.add(egui::DragValue::new(&mut item.number)).changed();
-            changed |= ui.add(egui::TextEdit::singleline(&mut item.label).desired_width(90.0)).changed();
-            changed |= mnemonic_edit(ui, &mut item.mnemonic, salt.with(("item_mnemonic", n)));
-            changed |= ui.checkbox(&mut item.enabled, "enabled").changed();
-            if ui.small_button("remove").clicked() {
-                remove = Some(n);
-            }
-        });
-    }
-    if let Some(n) = remove {
-        items.remove(n);
-        changed = true;
-    }
-    if ui.button("Add item").clicked() {
-        let next = items.iter().map(|i| i.number + 1).max().unwrap_or(0);
-        items.push(ClusterItem::new(next, "Item"));
-        changed = true;
-    }
-    changed
-}
-
-/// One button's controls. Returns `(changed, remove_requested)`.
-///
-/// `fan_parent` is the direction of the fan-out this button is a child of, if any: the
-/// directions facing that parent are blocked.
-fn button_body(
-    ui: &mut Ui,
-    b: &mut PieButton,
-    auto: bool,
-    level_problems: &[ButtonProblem],
-    index: usize,
-    fan_parent: Option<PieDirection>,
-    salt: egui::Id,
-) -> (bool, bool) {
-    let mut changed = false;
-    let mut remove = false;
-    ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt(salt.with("dir")).selected_text(format!("{:?}", b.direction)).show_ui(ui, |ui| {
-            for d in PieDirection::ALL {
-                let blocked = fan_parent.is_some_and(|p| p.blocks_fan_out(d));
-                if !blocked {
-                    changed |= ui.selectable_value(&mut b.direction, d, format!("{d:?}")).changed();
-                } else if b.direction == d {
-                    let text = RichText::new(format!("{d:?} (faces the parent)")).color(Color32::LIGHT_RED);
-                    let _ = ui.selectable_label(true, text);
-                } else {
-                    ui.add_enabled(false, egui::Button::selectable(false, format!("{d:?} (faces the parent)")));
-                }
-            }
-        });
-        changed |= ui.add(egui::TextEdit::singleline(&mut b.label).hint_text("label").desired_width(120.0)).changed();
-        if ui.button("Remove").clicked() {
-            remove = true;
-        }
-    });
-    ui.horizontal(|ui| {
-        if !b.is_cluster() {
-            ui.label("mnemonic");
-            changed |= mnemonic_edit(ui, &mut b.mnemonic, salt.with("mnemonic"));
-        }
-        changed |= ui.checkbox(&mut b.enabled, "enabled").changed();
-        let current = kind_choice(b);
-        egui::ComboBox::from_id_salt(salt.with("kind")).selected_text(current.name()).show_ui(ui, |ui| {
-            for k in KindChoice::ALL {
-                if ui.selectable_label(current == k, k.name()).clicked() && current != k {
-                    convert_kind(b, k);
-                    changed = true;
-                }
-            }
-        });
-    });
-    let direction = b.direction;
-    match &mut b.kind {
-        PieButtonKind::SubPie { children, style } => {
-            let shown = match style {
-                None => "menu default",
-                Some(SubPieStyle::Replace) => "Replace",
-                Some(SubPieStyle::FanOut) => "Fan-out",
-            };
-            ui.horizontal(|ui| {
-                ui.label("style");
-                egui::ComboBox::from_id_salt(salt.with("style")).selected_text(shown).show_ui(ui, |ui| {
-                    for (name, value) in
-                        [("menu default", None), ("Replace", Some(SubPieStyle::Replace)), ("Fan-out", Some(SubPieStyle::FanOut))]
-                    {
-                        changed |= ui.selectable_value(style, value, name).changed();
-                    }
-                });
-            });
-            let is_fan = *style == Some(SubPieStyle::FanOut);
-            let problems: Vec<ButtonProblem> = if is_fan {
-                level_problems
-                    .iter()
-                    .filter_map(|p| match p {
-                        ButtonProblem::InFanOut { parent, problem } if *parent == index => Some((**problem).clone()),
-                        _ => None,
-                    })
-                    .collect()
-            } else {
-                problem_menu(auto).check_buttons(children)
-            };
-            let slots = direction.fan_out_slots();
-            let candidates: &[PieDirection] = if is_fan { &slots } else { &PieDirection::ALL };
-            ui.label("children");
-            ui.indent(salt.with("children"), |ui| {
-                let fan_parent = is_fan.then_some(direction);
-                changed |= level_editor(ui, children, auto, &problems, candidates, fan_parent, salt.with("level"));
-            });
-        }
-        PieButtonKind::Cluster(items) => {
-            ui.label("items");
-            ui.indent(salt.with("items"), |ui| {
-                changed |= items_edit(ui, items, salt);
-            });
-        }
-        PieButtonKind::Action | PieButtonKind::Back => {}
-    }
-    (changed, remove)
-}
-
-/// One level of buttons: a header per button, the add control and the problems text.
-fn level_editor(
-    ui: &mut Ui,
-    buttons: &mut Vec<PieButton>,
-    auto: bool,
-    problems: &[ButtonProblem],
-    candidates: &[PieDirection],
-    fan_parent: Option<PieDirection>,
-    salt: egui::Id,
-) -> bool {
-    let mut changed = false;
-    let red: Vec<usize> = problems.iter().flat_map(|p| p.buttons()).collect();
-    let mut remove = None;
-    for (i, button) in buttons.iter_mut().enumerate() {
-        let label = if button.label.is_empty() { "(no label)" } else { button.label.as_str() };
-        let mut title = RichText::new(format!("{i} \u{b7} {label}"));
-        if red.contains(&i) {
-            title = title.color(Color32::LIGHT_RED);
-        }
-        let id = salt.with(i);
-        let body = egui::CollapsingHeader::new(title).id_salt(id).default_open(false).show(ui, |ui| {
-            button_body(ui, button, auto, problems, i, fan_parent, id)
-        });
-        if let Some((c, r)) = body.body_returned {
-            changed |= c;
-            if r {
-                remove = Some(i);
-            }
-        }
-    }
-    if let Some(i) = remove {
-        buttons.remove(i);
-        changed = true;
-    }
-    ui.horizontal(|ui| match first_free_direction_in(buttons, candidates) {
-        Some(d) => {
-            if ui.button("Add button").clicked() {
-                buttons.push(PieButton::new(d).with_label("New"));
-                changed = true;
-            }
-            if fan_parent.is_none() {
-                for (name, fan) in [("Add sub-pie", false), ("Add fan-out", true)] {
-                    if ui.button(name).clicked() {
-                        buttons.push(new_sub_pie(d, fan));
-                        changed = true;
-                    }
-                }
-            }
-        }
-        None => {
-            ui.add_enabled(false, egui::Button::new("Add button"));
-            if fan_parent.is_none() {
-                ui.add_enabled(false, egui::Button::new("Add sub-pie"));
-                ui.add_enabled(false, egui::Button::new("Add fan-out"));
-            }
-            ui.colored_label(Color32::ORANGE, "no free direction left");
-        }
-    });
-    for p in problems.iter().filter(|p| !matches!(p, ButtonProblem::InFanOut { .. })) {
-        ui.colored_label(Color32::LIGHT_RED, p.to_string());
-    }
-    changed
-}
-
-/// A tree editor over the real [`PieButton`] data: direction, label, mnemonic, enabled and kind
-/// of every button, recursive sub-pie children and cluster items, add/remove controls. Buttons
-/// involved in a [`PieMenu::check_buttons`] problem are drawn red and the problems are listed
-/// under their level. `auto_mnemonics` should be the menu's `input.auto_mnemonics`. Returns
-/// `true` if anything changed.
-pub fn buttons_editor(ui: &mut Ui, buttons: &mut Vec<PieButton>, auto_mnemonics: bool) -> bool {
-    let problems = problem_menu(auto_mnemonics).check_buttons(buttons);
-    let salt = ui.id().with("pie_buttons_editor");
-    level_editor(ui, buttons, auto_mnemonics, &problems, &PieDirection::ALL, None, salt)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1171,7 +911,6 @@ let menu = PieMenu::new()\n    .with_title(\"Edit\")\n    .configure(|s| {\n    
         buttons.push(PieButton::new(PieDirection::North));
         buttons.push(PieButton::new(PieDirection::NorthEast));
         assert_eq!(first_free_direction(&buttons), Some(PieDirection::East));
-        assert_eq!(first_free_direction_in(&buttons, &PieDirection::East.fan_out_slots()), Some(PieDirection::East));
         for d in PieDirection::ALL {
             if first_free_direction(&buttons).is_some() {
                 buttons.push(PieButton::new(d));
@@ -1179,24 +918,26 @@ let menu = PieMenu::new()\n    .with_title(\"Edit\")\n    .configure(|s| {\n    
         }
         assert_eq!(first_free_direction(&buttons), None);
 
-        // convert_kind
+        // convert_kind_in
+        let settings = PieMenuSettings::default();
+        let mut stash = legality::Stash::default();
         let mut b = PieButton::new(PieDirection::West).with_label("Thing").with_mnemonic('t').with_enabled(false);
-        convert_kind(&mut b, KindChoice::SubPie);
+        legality::convert_kind_in(&mut b, KindChoice::SubPie, &settings, &mut stash);
         assert_eq!(kind_choice(&b), KindChoice::SubPie);
-        assert_eq!(b.children().len(), 1);
+        assert_eq!(b.children().len(), 6, "five items and a back button");
         assert_eq!((b.direction, b.label.as_str(), b.mnemonic, b.enabled), (PieDirection::West, "Thing", Mnemonic::Key('t'), false));
-        convert_kind(&mut b, KindChoice::SubPie);
-        assert_eq!(b.children().len(), 1, "same kind: untouched");
-        convert_kind(&mut b, KindChoice::Cluster);
+        legality::convert_kind_in(&mut b, KindChoice::SubPie, &settings, &mut stash);
+        assert_eq!(b.children().len(), 6, "same kind: untouched");
+        legality::convert_kind_in(&mut b, KindChoice::Cluster, &settings, &mut stash);
         assert_eq!(kind_choice(&b), KindChoice::Cluster);
         assert_eq!(b.cluster_items().len(), 1);
         assert_eq!(b.cluster_items()[0].number, 0);
         assert_eq!(b.mnemonic, Mnemonic::None);
         assert_eq!((b.label.as_str(), b.enabled), ("Thing", false));
-        convert_kind(&mut b, KindChoice::Back);
+        legality::convert_kind_in(&mut b, KindChoice::Back, &settings, &mut stash);
         assert!(b.is_back());
         assert_eq!(b.label, "Thing");
-        convert_kind(&mut b, KindChoice::Action);
+        legality::convert_kind_in(&mut b, KindChoice::Action, &settings, &mut stash);
         assert!(matches!(b.kind, PieButtonKind::Action));
     }
 }
