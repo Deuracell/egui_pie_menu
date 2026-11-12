@@ -711,6 +711,23 @@ pub fn first_free_direction(buttons: &[PieButton]) -> Option<PieDirection> {
     first_free_direction_in(buttons, &PieDirection::ALL)
 }
 
+/// A ready-made sub-pie at `dir`: five children "Item 1".."Item 5" in the five fan-out slots
+/// (valid for both styles) and, for a replace-style sub-pie, a back button opposite `dir`.
+fn new_sub_pie(dir: PieDirection, fan: bool) -> PieButton {
+    let mut children: Vec<PieButton> = dir
+        .fan_out_slots()
+        .iter()
+        .enumerate()
+        .map(|(n, slot)| PieButton::new(*slot).with_label(format!("Item {}", n + 1)))
+        .collect();
+    if fan {
+        PieButton::new(dir).with_label("Fan-out").with_fan_out(children)
+    } else {
+        children.push(PieButton::back(dir.opposite()));
+        PieButton::new(dir).with_label("Sub-pie").with_children(children)
+    }
+}
+
 /// Mode combo (Auto / Key / None) plus a one-character field while it is a key.
 fn mnemonic_edit(ui: &mut Ui, m: &mut Mnemonic, salt: egui::Id) -> bool {
     let mut changed = false;
@@ -778,13 +795,32 @@ fn items_edit(ui: &mut Ui, items: &mut Vec<ClusterItem>, salt: egui::Id) -> bool
 }
 
 /// One button's controls. Returns `(changed, remove_requested)`.
-fn button_body(ui: &mut Ui, b: &mut PieButton, auto: bool, level_problems: &[ButtonProblem], index: usize, salt: egui::Id) -> (bool, bool) {
+///
+/// `fan_parent` is the direction of the fan-out this button is a child of, if any: the
+/// directions facing that parent are blocked.
+fn button_body(
+    ui: &mut Ui,
+    b: &mut PieButton,
+    auto: bool,
+    level_problems: &[ButtonProblem],
+    index: usize,
+    fan_parent: Option<PieDirection>,
+    salt: egui::Id,
+) -> (bool, bool) {
     let mut changed = false;
     let mut remove = false;
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt(salt.with("dir")).selected_text(format!("{:?}", b.direction)).show_ui(ui, |ui| {
             for d in PieDirection::ALL {
-                changed |= ui.selectable_value(&mut b.direction, d, format!("{d:?}")).changed();
+                let blocked = fan_parent.is_some_and(|p| p.blocks_fan_out(d));
+                if !blocked {
+                    changed |= ui.selectable_value(&mut b.direction, d, format!("{d:?}")).changed();
+                } else if b.direction == d {
+                    let text = RichText::new(format!("{d:?} (faces the parent)")).color(Color32::LIGHT_RED);
+                    let _ = ui.selectable_label(true, text);
+                } else {
+                    ui.add_enabled(false, egui::Button::selectable(false, format!("{d:?} (faces the parent)")));
+                }
             }
         });
         changed |= ui.add(egui::TextEdit::singleline(&mut b.label).hint_text("label").desired_width(120.0)).changed();
@@ -842,7 +878,8 @@ fn button_body(ui: &mut Ui, b: &mut PieButton, auto: bool, level_problems: &[But
             let candidates: &[PieDirection] = if is_fan { &slots } else { &PieDirection::ALL };
             ui.label("children");
             ui.indent(salt.with("children"), |ui| {
-                changed |= level_editor(ui, children, auto, &problems, candidates, salt.with("level"));
+                let fan_parent = is_fan.then_some(direction);
+                changed |= level_editor(ui, children, auto, &problems, candidates, fan_parent, salt.with("level"));
             });
         }
         PieButtonKind::Cluster(items) => {
@@ -863,6 +900,7 @@ fn level_editor(
     auto: bool,
     problems: &[ButtonProblem],
     candidates: &[PieDirection],
+    fan_parent: Option<PieDirection>,
     salt: egui::Id,
 ) -> bool {
     let mut changed = false;
@@ -876,7 +914,7 @@ fn level_editor(
         }
         let id = salt.with(i);
         let body = egui::CollapsingHeader::new(title).id_salt(id).default_open(false).show(ui, |ui| {
-            button_body(ui, button, auto, problems, i, id)
+            button_body(ui, button, auto, problems, i, fan_parent, id)
         });
         if let Some((c, r)) = body.body_returned {
             changed |= c;
@@ -895,9 +933,21 @@ fn level_editor(
                 buttons.push(PieButton::new(d).with_label("New"));
                 changed = true;
             }
+            if fan_parent.is_none() {
+                for (name, fan) in [("Add sub-pie", false), ("Add fan-out", true)] {
+                    if ui.button(name).clicked() {
+                        buttons.push(new_sub_pie(d, fan));
+                        changed = true;
+                    }
+                }
+            }
         }
         None => {
             ui.add_enabled(false, egui::Button::new("Add button"));
+            if fan_parent.is_none() {
+                ui.add_enabled(false, egui::Button::new("Add sub-pie"));
+                ui.add_enabled(false, egui::Button::new("Add fan-out"));
+            }
             ui.colored_label(Color32::ORANGE, "no free direction left");
         }
     });
@@ -915,7 +965,7 @@ fn level_editor(
 pub fn buttons_editor(ui: &mut Ui, buttons: &mut Vec<PieButton>, auto_mnemonics: bool) -> bool {
     let problems = problem_menu(auto_mnemonics).check_buttons(buttons);
     let salt = ui.id().with("pie_buttons_editor");
-    level_editor(ui, buttons, auto_mnemonics, &problems, &PieDirection::ALL, salt)
+    level_editor(ui, buttons, auto_mnemonics, &problems, &PieDirection::ALL, None, salt)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1333,6 +1383,74 @@ let menu = PieMenu::new()\n    .with_title(\"Edit\")\n    .configure(|s| {\n    
         // Problems (two buttons in one direction) do not panic either.
         let mut clash = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
         assert!(!run_editor(|ui| buttons_editor(ui, &mut clash, false)));
+    }
+
+    #[test]
+    fn new_sub_pie_is_valid_in_both_modes() {
+        let menu = PieMenu::new();
+        for dir in PieDirection::ALL {
+            for fan in [false, true] {
+                let b = new_sub_pie(dir, fan);
+                assert_eq!(b.direction, dir);
+                assert_eq!(b.label, if fan { "Fan-out" } else { "Sub-pie" });
+                let slots = dir.fan_out_slots();
+                let kids = b.children();
+                let dirs: Vec<_> = kids.iter().take(5).map(|c| c.direction).collect();
+                assert_eq!(dirs, slots);
+                for (n, c) in kids.iter().take(5).enumerate() {
+                    assert_eq!(c.label, format!("Item {}", n + 1));
+                }
+                match &b.kind {
+                    PieButtonKind::SubPie { style, .. } => {
+                        assert_eq!(*style, if fan { Some(SubPieStyle::FanOut) } else { None })
+                    }
+                    _ => panic!("not a sub-pie"),
+                }
+                if fan {
+                    assert_eq!(kids.len(), 5);
+                } else {
+                    assert_eq!(kids.len(), 6);
+                    assert!(kids[5].is_back());
+                    assert_eq!(kids[5].direction, dir.opposite());
+                }
+                assert_eq!(menu.check_buttons(&[b]), vec![], "{dir:?} fan={fan}");
+            }
+        }
+    }
+
+    #[test]
+    fn new_sub_pie_code_builds() {
+        let s = vec![new_sub_pie(PieDirection::East, false)];
+        assert_code_builds!(
+            s,
+            vec![PieButton::new(PieDirection::East).with_label("Sub-pie").with_children(vec![
+                PieButton::new(PieDirection::North).with_label("Item 1"),
+                PieButton::new(PieDirection::NorthEast).with_label("Item 2"),
+                PieButton::new(PieDirection::East).with_label("Item 3"),
+                PieButton::new(PieDirection::SouthEast).with_label("Item 4"),
+                PieButton::new(PieDirection::South).with_label("Item 5"),
+                PieButton::back(PieDirection::West),
+            ]),]
+        );
+        let f = vec![new_sub_pie(PieDirection::East, true)];
+        assert_code_builds!(
+            f,
+            vec![PieButton::new(PieDirection::East).with_label("Fan-out").with_fan_out(vec![
+                PieButton::new(PieDirection::North).with_label("Item 1"),
+                PieButton::new(PieDirection::NorthEast).with_label("Item 2"),
+                PieButton::new(PieDirection::East).with_label("Item 3"),
+                PieButton::new(PieDirection::SouthEast).with_label("Item 4"),
+                PieButton::new(PieDirection::South).with_label("Item 5"),
+            ]),]
+        );
+    }
+
+    #[test]
+    fn buttons_editor_runs_with_new_sub_pies() {
+        let mut tree = vec![new_sub_pie(PieDirection::North, false), new_sub_pie(PieDirection::East, true)];
+        // A bad child (blocked direction) must not panic either.
+        tree.push(PieButton::new(PieDirection::South).with_fan_out(vec![PieButton::new(PieDirection::North)]));
+        assert!(!run_editor(|ui| buttons_editor(ui, &mut tree, true)));
     }
 
     #[test]
