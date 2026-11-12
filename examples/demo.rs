@@ -1,8 +1,9 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu::dev_tool::{
-    Selection, SettingsField, SettingsGroup, TreeEdit, button_inspector, button_tree, button_tree_filtered, field_editor, field_label,
-    preview_target, relevant_fields, selection_kind, set_menu_sub_pie_style,
+    BindTarget, Bindings, Selection, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
+    button_tree, button_tree_filtered, field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
+    set_menu_sub_pie_style,
 };
 use egui_pie_menu::{
     ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
@@ -115,6 +116,9 @@ struct Demo {
     decor: DecorMap,
     /// The node selected in the button tree.
     selection: Selection,
+    /// Values bound to expressions of your app (the chain buttons): the menu code uses the
+    /// expression, the demo goes on showing the value.
+    bindings: Bindings,
     /// What the canvas shows.
     mode: Mode,
     /// The last tree without problems: what Configure mode previews.
@@ -183,6 +187,7 @@ impl Demo {
             buttons,
             decor,
             selection: Selection::root(),
+            bindings: Bindings::new(),
             mode: Mode::Demo,
             snapshot: Vec::new(),
             previews: HashMap::new(),
@@ -1479,7 +1484,9 @@ impl Demo {
                 ui.horizontal(|ui| {
                     name(ui, "Shown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.");
                     ui.add(egui::TextEdit::singleline(&mut self.title).desired_width(120.0));
+                    binding_toggle(ui, &mut self.bindings, &BindTarget::Title);
                 });
+                binding_details(ui, &mut self.bindings, &BindTarget::Title);
             }
             DemoRow::ShowHints => {
                 ui.horizontal(|ui| {
@@ -1606,7 +1613,7 @@ impl Demo {
                     for row in rows {
                         match row {
                             Row::Field(f) => {
-                                field_editor(ui, &mut self.menu.settings, f);
+                                field_editor_bound(ui, &mut self.menu.settings, f, &mut self.bindings);
                                 if self.mode == Mode::Configure && judged_in_demo_only(f) {
                                     ui.label(RichText::new("judged in Demo mode only").small().weak())
                                         .on_hover_text("The Configure preview has no pointer, clock or navigation: switch to Demo mode to see this setting at work.");
@@ -1666,7 +1673,8 @@ impl Demo {
             } else {
                 String::new()
             };
-            let out = button_inspector(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, |ui, path, button| {
+            let bindings = &mut self.bindings;
+            let out = button_inspector_bound(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, bindings, |ui, path, button| {
                 // Read first, write only on a change: the inspector may have reshaped the
                 // tree this frame, and the table follows only once it returns.
                 if !note.is_empty() {
@@ -1758,7 +1766,7 @@ impl eframe::App for Demo {
                 match self.code_tab {
                     CodeTab::Menu => {
                         let title = (!self.title.is_empty()).then_some(self.title.as_str());
-                        let code = egui_pie_menu::dev_tool::menu_to_code(title, &self.menu.settings, &self.buttons);
+                        let code = egui_pie_menu::dev_tool::menu_to_code_bound(title, &self.menu.settings, &self.buttons, &self.bindings);
                         egui_pie_menu::dev_tool::code_view(ui, &code);
                     }
                     CodeTab::Draw => {

@@ -10,6 +10,39 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId, Rect};
 use std::cell::RefCell;
 
+/// The button at `path` (indices from the root level through the sub-pies, its own index
+/// last, as in [`ButtonView::path`]), if there is one.
+pub fn button_at<'a>(buttons: &'a [PieButton], path: &[usize]) -> Option<&'a PieButton> {
+    let (last, parents) = path.split_last()?;
+    let mut level = buttons;
+    for &i in parents {
+        level = level.get(i)?.children();
+    }
+    level.get(*last)
+}
+
+/// The button at `path`, mutably: e.g. to change a label each frame.
+///
+/// ```
+/// use egui_pie_menu::*;
+/// let mut buttons = vec![PieButton::new(PieDirection::North).with_label("More").with_children(vec![
+///     PieButton::back(PieDirection::South),
+///     PieButton::new(PieDirection::North).with_label("Undo"),
+/// ])];
+/// if let Some(b) = button_at_mut(&mut buttons, &[0, 1]) {
+///     b.label = "Undo (3)".into();
+/// }
+/// assert_eq!(buttons[0].children()[1].label, "Undo (3)");
+/// ```
+pub fn button_at_mut<'a>(buttons: &'a mut [PieButton], path: &[usize]) -> Option<&'a mut PieButton> {
+    let (last, parents) = path.split_last()?;
+    let mut level = buttons;
+    for &i in parents {
+        level = level.get_mut(i)?.children_mut();
+    }
+    level.get_mut(*last)
+}
+
 /// What a button does when it is selected.
 #[derive(Clone, Debug, Default)]
 pub enum PieButtonKind {
@@ -155,11 +188,29 @@ impl PieButton {
         }
     }
 
+    /// The cluster item with this `number`, mutably (e.g. to change its label each frame);
+    /// `None` unless this is a cluster declaring that number.
+    pub fn cluster_item_mut(&mut self, number: usize) -> Option<&mut ClusterItem> {
+        match &mut self.kind {
+            PieButtonKind::Cluster(items) => items.iter_mut().find(|i| i.number == number),
+            _ => None,
+        }
+    }
+
     /// The buttons of this button's sub-pie; empty unless it is a [`PieButtonKind::SubPie`].
     pub fn children(&self) -> &[PieButton] {
         match &self.kind {
             PieButtonKind::SubPie { children, .. } => children,
             _ => &[],
+        }
+    }
+
+    /// The buttons of this button's sub-pie, mutably; empty unless it is a
+    /// [`PieButtonKind::SubPie`].
+    pub fn children_mut(&mut self) -> &mut [PieButton] {
+        match &mut self.kind {
+            PieButtonKind::SubPie { children, .. } => children,
+            _ => &mut [],
         }
     }
 

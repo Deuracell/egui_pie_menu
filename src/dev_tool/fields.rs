@@ -1,5 +1,8 @@
 //! One editor widget per settings field ([`field_editor`]), the fields grouped into
 //! sections ([`SettingsGroup`], [`group_editor`]) and the all-in-one [`settings_editor`].
+use super::bindings::{BindTarget, Bindings};
+#[allow(unused_imports)] // doc links
+use super::bindings::binding_details;
 use crate::settings::*;
 use egui::{Color32, FontFamily, FontId, Margin, Stroke, Ui};
 use std::ops::RangeInclusive;
@@ -10,6 +13,7 @@ use std::time::Duration;
 /// variant of this enum, listed in [`SettingsField::ALL`] and in exactly one
 /// [`SettingsGroup`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SettingsField {
     /// `show_behavior`
     ShowBehavior,
@@ -957,6 +961,26 @@ pub fn group_editor(ui: &mut Ui, s: &mut PieMenuSettings, group: SettingsGroup) 
     let mut changed = false;
     for field in group.relevant_fields(s) {
         changed |= field_editor(ui, s, field);
+    }
+    changed
+}
+
+/// [`field_editor`] with a bind toggle in front of a bindable field
+/// ([`SettingsField::is_bindable`]) and, while it is bound, the expression and Build / Live on a
+/// row below ([`binding_details`]). The value stays editable: it is the preview value. Other
+/// fields are drawn as by [`field_editor`]. Returns `true` if the field or its binding changed.
+pub fn field_editor_bound(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField, bindings: &mut Bindings) -> bool {
+    if !field.is_bindable() {
+        return field_editor(ui, s, field);
+    }
+    super::bindings::bound_row(ui, bindings, &BindTarget::Field(field), |ui| field_editor(ui, s, field))
+}
+
+/// [`group_editor`] drawing its fields with [`field_editor_bound`].
+pub fn group_editor_bound(ui: &mut Ui, s: &mut PieMenuSettings, group: SettingsGroup, bindings: &mut Bindings) -> bool {
+    let mut changed = false;
+    for field in group.relevant_fields(s) {
+        changed |= field_editor_bound(ui, s, field, bindings);
     }
     changed
 }

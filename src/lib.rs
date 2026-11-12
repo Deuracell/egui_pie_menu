@@ -49,7 +49,7 @@ mod mnemonic;
 #[cfg(test)]
 mod tests;
 
-pub use button::{ButtonProblem, ButtonView, ClusterItem, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
+pub use button::{ButtonProblem, ButtonView, ClusterItem, button_at, button_at_mut, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
 pub use mnemonic::{Mnemonic, mnemonic_text};
 
 use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};

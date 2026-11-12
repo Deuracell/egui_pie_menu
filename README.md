@@ -679,6 +679,50 @@ let menu = PieMenu::new()
 
 The generated code is verified by tests: the code for a rich button tree and for settings with a change in every group is compiled as real Rust (via macros) and has to rebuild exactly the edited buttons and settings. Code that needs `Duration` (durations in the settings) comes with `use std::time::Duration;`.
 
+#### Bindings: values from your app
+
+Colours, strokes, fonts, labels and the title often come from your app rather than a literal: a theme colour (`theme.accent`), a translated label (`tr("edit.copy")`), a live count (`format!("Undo ({n})")`). The ⛓ button at the end of such a row binds it to a Rust expression. The value stays editable and is what the editor and the preview show (the dev tool cannot run your code); the generated code uses the expression.
+
+Each binding reads its value either once or every frame:
+
+- **Build**: once, where the menu is built. The expression takes the literal's place: `s.title.text_color = theme.accent;`, `.with_label(tr("edit.copy"))`, `.with_title(tr("menu.edit"))`.
+- **Live**: every frame. The menu is built with the value, and a block to run before `show` assigns the expression: `menu.settings.title.text_color = theme.accent;`, `buttons[1].label = format!("Undo ({n})");` (a button inside a sub-pie through `button_at_mut(&mut buttons, &[1, 0])`, a cluster item through `cluster_item_mut(number)`). A live label is assigned, so it has to be a `String`, and it can change its automatic mnemonic key as the text changes.
+
+For an optional setting (`text_color`, the number hint colour) the expression is the inner value and the code wraps it in `Some(..)`. A `// needs in scope: theme, tr` line lists the names the expressions use. An empty expression is ignored (the code keeps the literal).
+
+| Piece | What it does |
+|---|---|
+| `Bindings` / `BindTarget` / `Binding` / `BindingMode` | the bindings of one menu, owned by you like the `Selection`; a target is a settings field (`SettingsField::is_bindable`: colours, strokes, fonts), the title, a button label (by path) or a cluster item label (by path and number). With the `serde` feature they serialize |
+| `field_editor_bound` / `group_editor_bound` | `field_editor` / `group_editor` with the ⛓ toggle on bindable fields and the expression and Build / Live below a bound one |
+| `button_inspector_bound` | `button_inspector` with the ⛓ toggle on labels; it keeps the bindings with their buttons as the tree changes (`Bindings::follow`, `prune`, `renumber_item` for doing that yourself) |
+| `binding_toggle` / `binding_details` | the two halves of a bound row, for your own rows (the demo's "Menu title") |
+| `menu_to_code_bound` | `menu_to_code` with the bindings; also `settings_to_code_bound`, `buttons_to_code_bound`, `live_bindings_code`, `free_identifiers` |
+
+```rust
+let out = button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, |_, _, _| {});
+// ...
+let code = menu_to_code_bound(Some("Edit"), &settings, &buttons, &bindings);
+```
+
+```rust
+use egui_pie_menu::*;
+// needs in scope: tr, history, theme
+
+let mut buttons = vec![
+    PieButton::new(PieDirection::North).with_label(tr("copy")),
+    PieButton::new(PieDirection::South).with_label("Undo"),
+];
+
+let mut menu = PieMenu::new()
+    .with_title(tr("edit"));
+
+// each frame, before show (live bindings):
+menu.settings.title.text_color = theme.accent;
+buttons[1].label = format!("Undo ({})", history.len());
+```
+
+The bound code is compiled in the tests too, with a stand-in `theme` and `tr`.
+
 ### Highlight shapes
 
 `HighlightShape` controls what is drawn at the center indicator when a direction is active. It has three independent components:
@@ -715,12 +759,12 @@ cargo run --example demo
   Right-click anywhere in the window (or hold Space) to open the menu. The demo is also the dev tool, in three panes:
 
 - Left, in two tabs, with one search box that filters both (the tab that is not showing carries the number of hits, for example "Buttons (3)"):
-  - **Menu**: one collapsing section per `SettingsGroup`, drawn with `group_editor`'s widgets (`field_editor`), plus a few rows of the demo's own, tagged "demo" where they only change how the demo draws its buttons (number hints, button height, sub-pie look, markers, sample icons) and not the menu code. Choosing a fan-out as the menu-wide sub-pie style pins the sub-pies that cannot fan out to replace style (`set_menu_sub_pie_style`) and says which.
-  - **Buttons**: `button_tree` above, `button_inspector` below with the demo's own "Appearance" group (icon, tooltip, colour, checkbox, cluster layout) among its controls and, at the end, the menu-wide settings that affect the selected node. The demo keeps that appearance data in a table keyed by button path and follows `InspectorOutput::edits`.
+  - **Menu**: one collapsing section per `SettingsGroup`, drawn with `group_editor`'s widgets (`field_editor_bound`: colours, strokes and fonts carry a ⛓ toggle to bind them to an expression of your app, see [Bindings](#bindings-values-from-your-app)), plus a few rows of the demo's own, tagged "demo" where they only change how the demo draws its buttons (number hints, button height, sub-pie look, markers, sample icons) and not the menu code. Choosing a fan-out as the menu-wide sub-pie style pins the sub-pies that cannot fan out to replace style (`set_menu_sub_pie_style`) and says which.
+  - **Buttons**: `button_tree` above, `button_inspector_bound` below (labels can be bound too) with the demo's own "Appearance" group (icon, tooltip, colour, checkbox, cluster layout) among its controls and, at the end, the menu-wide settings that affect the selected node. The demo keeps that appearance data in a table keyed by button path and follows `InspectorOutput::edits`.
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
   - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts.
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts.
 
 ## Upgrading from v0.36.0
 
@@ -816,6 +860,7 @@ Additive; nothing to change in existing code:
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
 - The `dev_tool` module: embeddable editors for the settings (`settings_editor`, `group_editor`, `field_editor`) and for a `PieButton` tree (`button_tree`, `button_tree_filtered`, `button_inspector`, `buttons_editor`), `preview_target` for a live preview, `set_menu_sub_pie_style`, and code generators ([Dev tool](#dev-tool)).
+- Dev tool bindings: bind colours, strokes, fonts, labels and the title to expressions of your app, read once or every frame ([Bindings](#bindings-values-from-your-app)). With them, `button_at` / `button_at_mut` (a button by path) and `PieButton::children_mut` / `cluster_item_mut`.
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
 
 ## License
