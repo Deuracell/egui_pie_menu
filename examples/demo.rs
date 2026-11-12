@@ -1677,6 +1677,10 @@ impl Demo {
                     decor.insert(path.to_vec(), d);
                 }
             });
+            // The menu-wide section of the inspector edits `menu.settings` itself (and calls
+            // `set_menu_sub_pie_style` for a fan-out style, showing its own notice), and nothing
+            // in the demo mirrors a setting, so `out.settings_changed` needs no re-sync. Only
+            // changes to the tree's shape need following.
             for edit in &out.edits {
                 rekey(&mut self.decor, edit);
             }
