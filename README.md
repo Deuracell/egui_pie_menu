@@ -619,6 +619,15 @@ menu.settings.animations.hover_duration = Duration::from_millis(100);    // easi
 
 `shift` is in pixels outward: the button's layer moves, in whole physical pixels. `scale` is the growth (`1.0` = none): it is applied to the content, never by scaling the layer (egui draws text as glyph images, so a layer scale blurs it). `b.label_text()` already uses it for the font size, which keeps the text crisp, and the button grows with its text. Anything else only grows if your closure scales it by `b.scale()` (icons, paddings, minimum sizes); custom fixed-size widgets stay as they are otherwise.
 
+### Dev tool
+
+A window that edits the settings live and prints the Rust code that reproduces them (first iteration: layout, show behaviour, input, sub-pies and fan-out, number hints, animations and hover emphasis, centre indicator, title). Tune the menu in your running app, then copy the generated `menu.settings.… = …;` lines into your project. The demo has an "Open dev tool" button.
+
+```rust
+// `open: bool` in your app state; the window's close button clears it.
+egui_pie_menu::dev_tool::show_dev_tool(ctx, &mut open, &mut menu.settings);
+```
+
 ### Highlight shapes
 
 `HighlightShape` controls what is drawn at the center indicator when a direction is active. It has three independent components:

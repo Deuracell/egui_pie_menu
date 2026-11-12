@@ -42,6 +42,7 @@ pub mod settings;
 pub use settings::*;
 
 mod button;
+pub mod dev_tool;
 mod highlight_shapes;
 mod layout;
 mod mnemonic;

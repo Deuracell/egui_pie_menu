@@ -80,6 +80,8 @@ struct Demo {
     pinned: bool,
     /// True while the open menu was opened by holding Space (not right-click).
     space_open: bool,
+    /// The settings dev tool window is open.
+    dev_tool_open: bool,
 
     // Mirrored f32 values for SmartFloat settings (drag values need plain f32)
     bg_radius: f32,
@@ -159,6 +161,7 @@ impl Demo {
             last_action: String::new(),
             pinned: false,
             space_open: false,
+            dev_tool_open: false,
             bg_radius,
             highlight_radius,
             highlight_angle_deg,
@@ -1561,6 +1564,8 @@ impl eframe::App for Demo {
                     ui.label(RichText::new("No matching settings.").italics().color(ui.visuals().weak_text_color()));
                 }
 
+                if ui.button("Open dev tool").clicked() { self.dev_tool_open = true; }
+                ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new(&self.last_action).size(13.0));
             });
@@ -1584,6 +1589,8 @@ impl eframe::App for Demo {
                     ui.label("The menu is disabled until this is fixed (see the Button list section).");
                 });
         }
+
+        egui_pie_menu::dev_tool::show_dev_tool(ctx, &mut self.dev_tool_open, &mut self.menu.settings);
 
         egui::CentralPanel::default().show(ui, |ui| {
             // The panel's own area (not its clip rect, which can be larger), so the
