@@ -1,7 +1,14 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
-use egui_pie_menu::dev_tool::{SettingsField, SettingsGroup, field_editor, field_label};
-use egui_pie_menu::{ButtonProblem, ClusterItem, HintDigits, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, SubPieStyle};
+use egui_pie_menu::dev_tool::{
+    Selection, SettingsField, SettingsGroup, TreeEdit, button_inspector, button_tree, button_tree_filtered, field_editor, field_label,
+    set_menu_sub_pie_style,
+};
+use egui_pie_menu::{
+    ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
+    SubPieStyle,
+};
+use std::collections::HashMap;
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -101,10 +108,13 @@ struct Demo {
     /// Which tab of the left panel is selected.
     left_tab: LeftTab,
 
-    // Button editor: the source of truth; `buttons` is rebuilt from it every frame.
-    button_configs: Vec<ButtonConfig>,
-    /// The root level, sub-pies included (see `build_buttons`).
+    /// The buttons: the library's tree (sub-pies, fan-outs and clusters inside), the source of
+    /// truth for the menu and for the generated code.
     buttons: Vec<PieButton>,
+    /// What the demo adds to each button for drawing it, by path (see [`Decor`]).
+    decor: DecorMap,
+    /// The node selected in the button tree.
+    selection: Selection,
 
     // Search query of the left panel (both tabs)
     search: String,
@@ -128,24 +138,26 @@ impl Demo {
     /// English restores the hand-picked keys; other languages use generated ones.
     fn apply_language(&mut self) {
         let l = &LANGS[self.lang];
-        let defaults = default_button_configs();
-        for (i, cfg) in self.button_configs.iter_mut().enumerate() {
-            cfg.label = l.labels[i].to_string();
-            if self.lang == 0 {
-                cfg.mnemonic = defaults[i].mnemonic;
-                cfg.key = defaults[i].key.clone();
-            } else {
-                cfg.mnemonic = MnemonicMode::Auto;
-                cfg.key.clear();
+        let (defaults, _) = default_tree();
+        for button in &mut self.buttons {
+            // The root buttons are labelled by direction (N clockwise to NW).
+            let d = dir_index(button.direction);
+            button.label = l.labels[d].to_string();
+            if button.is_cluster() {
+                continue;
             }
+            button.mnemonic = if self.lang == 0 {
+                defaults.iter().find(|b| b.direction == button.direction).map_or(Mnemonic::Auto, |b| b.mnemonic)
+            } else {
+                Mnemonic::Auto
+            };
         }
         self.menu.settings.mirror_horizontal = l.rtl;
         self.menu.settings.number_hints.digits = l.digits;
     }
 
     fn new(ctx: &egui::Context) -> Self {
-        let button_configs = default_button_configs();
-        let buttons = build_buttons(&button_configs, SubPieStyle::Replace, false);
+        let (buttons, decor) = default_tree();
 
         let mut menu = PieMenu::new().with_title("Edit");
         menu.settings.input.auto_mnemonics = true; // so "Auto" buttons get a letter
@@ -161,8 +173,9 @@ impl Demo {
             show_code: true,
             code_tab: CodeTab::Menu,
             left_tab: LeftTab::Menu,
-            button_configs,
             buttons,
+            decor,
+            selection: Selection::root(),
             search: String::new(),
             notice: None,
             button_height: DEFAULT_BUTTON_HEIGHT,
@@ -220,9 +233,9 @@ impl Default for MarkerIcons {
 }
 
 impl MarkerIcons {
-    /// The marker for `cfg`'s kind of button ("" if none).
-    fn marker(&self, cfg: &ButtonConfig) -> &str {
-        match (cfg.submenu, cfg.back) {
+    /// The marker for a button that opens a sub-pie (`opens_sub_pie`) or goes back ("" if none).
+    fn marker(&self, button: &PieButton, opens_sub_pie: bool) -> &str {
+        match (opens_sub_pie, button.is_back()) {
             (true, _) => &self.sub_pie,
             (_, true) => &self.back,
             _ => "",
@@ -230,28 +243,18 @@ impl MarkerIcons {
     }
 }
 
-// ── Button editor model ─────────────────────────────────────────────────────
+// ── Button model: the library's `PieButton` tree plus the demo's decorations ─────────────
 
-#[derive(Clone, Copy, PartialEq)]
+/// What the demo draws for a plain button: an ordinary button or a checkbox row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ButtonKind {
     Button,
     Checkbox,
 }
 
-/// Editor-side mnemonic choice; `Key` takes its letter from `ButtonConfig::key`.
-#[derive(Clone, Copy, PartialEq)]
-enum MnemonicMode {
-    /// Follow the menu's "Auto mnemonics" setting (`Mnemonic::Auto`).
-    Auto,
-    /// Explicit letter (`Mnemonic::Key`).
-    Key,
-    /// Never a mnemonic (`Mnemonic::None`).
-    None,
-}
-
 /// How a cluster button's items are laid out inside it (the demo's own choice: the library
 /// leaves the layout to the render closure).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClusterLayout {
     Row,
     Column,
@@ -259,32 +262,103 @@ enum ClusterLayout {
     Grid,
 }
 
-/// One item of a cluster: its label and an optional explicit mnemonic key (empty: Auto).
-#[derive(Clone)]
-struct ClusterItemConfig {
-    label: String,
-    key: String,
-}
-
-/// A cluster button (`PieButton::cluster`): several clickable items in one direction.
-/// An item's number is its index in `items`.
-#[derive(Clone)]
-struct ClusterConfig {
-    items: Vec<ClusterItemConfig>,
+/// How a cluster button is drawn: the layout of its items and the gap between them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct ClusterLook {
     layout: ClusterLayout,
     /// Gap between the items, in px.
     spacing: f32,
 }
 
-impl Default for ClusterConfig {
+impl Default for ClusterLook {
     fn default() -> Self {
-        let item = |label: &str| ClusterItemConfig { label: label.into(), key: String::new() };
-        Self { items: vec![item("Left"), item("Middle"), item("Right")], layout: ClusterLayout::Row, spacing: 4.0 }
+        Self { layout: ClusterLayout::Row, spacing: 4.0 }
+    }
+}
+
+const DEFAULT_COLOR: Color32 = Color32::from_rgb(70, 130, 180);
+
+/// What the demo adds to a button of the tree: how it is drawn, which the library leaves to
+/// the render closure (colour, icon, tooltip, checkbox, cluster layout) and the checkbox state.
+/// Kept in a [`DecorMap`] by the button's path.
+#[derive(Clone, PartialEq, Debug)]
+struct Decor {
+    /// The icon text (e.g. an emoji) shown before the label when `icon_kind` is `Text`.
+    icon: String,
+    /// Which kind of icon the button shows: the text above, a painted vector icon or an image.
+    icon_kind: IconKind,
+    tooltip: String,
+    /// Drawn as a button or as a checkbox (plain buttons only).
+    kind: ButtonKind,
+    /// The checkbox state when `kind` is `Checkbox` (toggled when the button is selected).
+    checked: bool,
+    color: Color32,
+    /// The layout of a cluster button's items.
+    cluster: ClusterLook,
+}
+
+impl Decor {
+    fn new(color: Color32) -> Self {
+        Self {
+            icon: String::new(),
+            icon_kind: IconKind::Text,
+            tooltip: String::new(),
+            kind: ButtonKind::Button,
+            checked: false,
+            color,
+            cluster: ClusterLook::default(),
+        }
+    }
+}
+
+/// The decorations of the tree by button path (indices from the root level down).
+type DecorMap = HashMap<Vec<usize>, Decor>;
+
+/// The decoration of the button at `path`. A button without an entry (a new one, or one the
+/// library brought back when converting a button's kind) gets plain defaults and its nearest
+/// decorated ancestor's colour.
+fn decor_at(map: &DecorMap, path: &[usize]) -> Decor {
+    if let Some(d) = map.get(path) {
+        return d.clone();
+    }
+    let color = (1..path.len()).rev().find_map(|n| map.get(&path[..n])).map_or(DEFAULT_COLOR, |d| d.color);
+    Decor::new(color)
+}
+
+/// Mutable access to the decoration at `path`, creating the default one first.
+fn decor_mut<'a>(map: &'a mut DecorMap, path: &[usize]) -> &'a mut Decor {
+    if !map.contains_key(path) {
+        let d = decor_at(map, path);
+        map.insert(path.to_vec(), d);
+    }
+    map.get_mut(path).expect("just inserted")
+}
+
+/// Follows a change to the tree's shape ([`TreeEdit`]) so every decoration stays with its button.
+/// A removed button takes its subtree's decorations with it and its later siblings move down;
+/// a button whose children were dropped loses theirs; a new button starts clean.
+fn rekey(map: &mut DecorMap, edit: &TreeEdit) {
+    match edit {
+        TreeEdit::Removed(path) => {
+            let Some((last, parent)) = path.split_last() else { return };
+            let depth = parent.len();
+            for (mut key, decor) in std::mem::take(map) {
+                if key.starts_with(path) {
+                    continue;
+                }
+                if key.len() > depth && key.starts_with(parent) && key[depth] > *last {
+                    key[depth] -= 1;
+                }
+                map.insert(key, decor);
+            }
+        }
+        TreeEdit::Dropped(path) => map.retain(|key, _| !(key.len() > path.len() && key.starts_with(path))),
+        TreeEdit::Added(path) => map.retain(|key, _| !key.starts_with(path)),
     }
 }
 
 /// The kind of icon a button shows before its label.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum IconKind {
     /// The button's `icon` text (empty: no icon).
     Text,
@@ -295,7 +369,7 @@ enum IconKind {
 }
 
 /// The built-in painted icons.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum VectorIcon { Copy, Paste, Cut, Undo, Redo, Save, Trash, Check }
 
 const ALL_VECTOR_ICONS: &[VectorIcon] = &[
@@ -413,229 +487,224 @@ fn add_icon(ui: &mut egui::Ui, kind: IconKind, images: &[egui::TextureHandle], s
     }
 }
 
-#[derive(Clone)]
-struct ButtonConfig {
-    label: String,
-    /// The icon text (e.g. an emoji) shown before the label when `icon_kind` is `Text`.
-    icon: String,
-    /// Which kind of icon the button shows: the text above, a painted vector icon or an image.
-    icon_kind: IconKind,
-    tooltip: String,
-    kind: ButtonKind,
-    mnemonic: MnemonicMode,
-    /// The explicit mnemonic letter when `mnemonic` is `Key`.
-    key: String,
-    color: Color32,
-    /// Checkbox state when `kind` is `Checkbox`.
-    checked: bool,
-    /// Disabled buttons cannot be selected (`PieButton::with_enabled`).
-    enabled: bool,
-    /// Absent buttons are left out of the menu entirely (their direction is empty).
-    present: bool,
-    /// Selecting the button opens `children` as a sub-pie instead of returning it.
-    submenu: bool,
-    /// The sub-pie's buttons, one per direction like the root list (N clockwise to NW).
-    /// Kept while `submenu` is off; filled in the first time it is turned on.
-    children: Vec<ButtonConfig>,
-    /// A back button (`PieButton::back`): inside a sub-pie it returns to the parent pie.
-    back: bool,
-    /// How this button's sub-pie is shown; `None` follows the menu's style.
-    style: Option<SubPieStyle>,
-    /// A cluster of items instead of a single action (excludes `submenu` and `back`).
-    cluster: Option<ClusterConfig>,
-}
-
-impl ButtonConfig {
-    /// A plain button with a generated mnemonic.
-    fn new(label: impl Into<String>, color: Color32) -> Self {
-        Self {
-            label: label.into(),
-            icon: String::new(),
-            icon_kind: IconKind::Text,
-            tooltip: String::new(),
-            kind: ButtonKind::Button,
-            mnemonic: MnemonicMode::Auto,
-            key: String::new(),
-            color,
-            checked: false,
-            enabled: true,
-            present: true,
-            submenu: false,
-            children: Vec::new(),
-            back: false,
-            style: None,
-            cluster: None,
-        }
-    }
-
-    /// Whether this button's sub-pie fans out, given the menu's style.
-    fn fans(&self, menu_style: SubPieStyle) -> bool {
-        self.submenu && self.style.unwrap_or(menu_style) == SubPieStyle::FanOut
-    }
-
-    /// Eight sub-pie buttons in this button's colour for a parent sitting in direction
-    /// `dir` (index into `DIR_NAMES`). Five are present, labelled from `labels`, in the
-    /// directions a fan-out may use (`PieDirection::fan_out_slots`), so the same sub-pie
-    /// works in both styles. Opposite the parent's direction sits a back button, pointing
-    /// back the way the sub-pie was entered; a fan-out leaves it out (see `shown`).
-    fn sub_pie(&self, dir: usize, labels: [&str; 5]) -> Vec<ButtonConfig> {
-        let slots = PieDirection::ALL[dir].fan_out_slots();
-        let back_dir = (dir + 4) % 8;
-        (0..8)
-            .map(|i| {
-                if i == back_dir {
-                    return ButtonConfig { back: true, ..ButtonConfig::new("Back", self.color) };
-                }
-                match slots.iter().position(|d| *d == PieDirection::ALL[i]) {
-                    Some(slot) => ButtonConfig::new(labels[slot], self.color),
-                    None => ButtonConfig { present: false, ..ButtonConfig::new(format!("{} {}", self.label, DIR_NAMES[i]), self.color) },
-                }
-            })
-            .collect()
-    }
-
-    /// Generic sub-pie buttons for a button (in direction `dir`) that had none yet.
-    fn default_sub_pie(&self, dir: usize) -> Vec<ButtonConfig> {
-        let l = |n: usize| format!("{} {n}", self.label);
-        self.sub_pie(dir, [&l(1), &l(2), &l(3), &l(4), &l(5)])
-    }
-}
-
-/// Which icon set the "Icons" section assigns to the default buttons.
-enum SampleIcons { Vector, Image, Reset }
-
-/// Assigns icons to the eight root buttons (N clockwise to NW: copy, paste, redo, save,
-/// delete, cut, undo, word wrap), or restores the defaults' icons.
-fn sample_icons(configs: &mut [ButtonConfig], set: SampleIcons) {
-    let defaults = default_button_configs();
-    let vector = [VectorIcon::Copy, VectorIcon::Paste, VectorIcon::Redo, VectorIcon::Save,
-                  VectorIcon::Trash, VectorIcon::Cut, VectorIcon::Undo, VectorIcon::Check];
-    for (i, cfg) in configs.iter_mut().enumerate().take(8) {
-        match set {
-            SampleIcons::Vector => cfg.icon_kind = IconKind::Vector(vector[i]),
-            SampleIcons::Image => cfg.icon_kind = IconKind::Image(i % IMAGE_ICONS.len()),
-            SampleIcons::Reset => {
-                cfg.icon_kind = defaults[i].icon_kind;
-                cfg.icon = defaults[i].icon.clone();
-            }
-        }
-    }
-}
-
 const DIR_NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
-/// The demo's standard buttons (one per direction, N clockwise to NW).
-fn default_button_configs() -> Vec<ButtonConfig> {
-    let b = |label: &str, icon: &str, tooltip: &str, key: Option<char>, (r, g, bl): (u8, u8, u8)| ButtonConfig {
-        icon: icon.into(),
-        tooltip: tooltip.into(),
-        mnemonic: if key.is_some() { MnemonicMode::Key } else { MnemonicMode::Auto },
-        key: key.map(String::from).unwrap_or_default(),
-        ..ButtonConfig::new(label, Color32::from_rgb(r, g, bl))
-    };
-    // "Paste Special" (NE) opens a sub-pie, with a back button in the opposite direction (SW).
-    let mut paste = b("Paste Special", "", "Ctrl+Shift+V", Some('p'), (70, 130, 180));
-    paste.submenu = true;
-    paste.children = paste.sub_pie(1, ["As Text", "Values Only", "Formatting", "As Link", "As Image"]);
-    vec![
-        b("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
-        paste,
-        b("Redo",               "",   "Ctrl+Y",       Some('r'), (100, 160, 100)),
-        b("Save As…",           "",   "Ctrl+Shift+S", Some('s'), (180, 140,  60)),
-        b("Delete Permanently", "🗑", "Del",          Some('d'), (180,  70,  70)),
-        b("Cut",                "",   "Ctrl+X",       Some('t'), (180, 100,  60)),
-        b("Undo Last Change",   "",   "Ctrl+Z",       Some('u'), (100, 160, 100)),
-        ButtonConfig { kind: ButtonKind::Checkbox, ..b("Word wrap", "", "", None, (130, 90, 180)) },
-    ]
+/// The index of `d` in `PieDirection::ALL` (N clockwise to NW).
+fn dir_index(d: PieDirection) -> usize {
+    PieDirection::ALL.iter().position(|x| *x == d).unwrap_or(0)
 }
 
-/// Config indices of a level's buttons, in button order: the present configs. A fan-out
-/// (`in_fan`) also leaves out back buttons: it has no room for one (the direction back to
-/// the parent is blocked) and closes by moving the pointer back instead.
-fn shown(configs: &[ButtonConfig], in_fan: bool) -> impl Iterator<Item = usize> + '_ {
-    (0..configs.len()).filter(move |&i| configs[i].present && !(in_fan && configs[i].back))
-}
+/// (label, icon, tooltip, mnemonic key, colour) of a default button.
+type ButtonSpec = (&'static str, &'static str, &'static str, Option<char>, (u8, u8, u8));
 
-/// Builds one level's buttons from its shown configs (see [`shown`]), sub-pies included.
-/// `menu_style` is the menu's sub-pie style and `in_fan` whether this level is a fan-out.
-/// The menu resolves the mnemonics itself.
-fn build_buttons(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool) -> Vec<PieButton> {
-    shown(configs, in_fan)
-        .map(|i| {
-            let c = &configs[i];
-            let mut b = PieButton::new(PieDirection::ALL[i]).with_label(c.label.clone()).with_enabled(c.enabled);
-            if let Some(cl) = &c.cluster {
-                // A cluster has no mnemonic or number key of its own; its items declare theirs.
-                let items = cl.items.iter().enumerate().map(|(n, it)| {
-                    let item = ClusterItem::new(n, it.label.clone());
-                    match it.key.chars().next() {
-                        Some(k) => item.with_mnemonic(k),
-                        None => item,
+/// The demo's standard buttons (one per direction, N clockwise to NW) and their decorations.
+/// "Paste Special" (NE) opens a sub-pie with a back button in the opposite direction (SW).
+fn default_tree() -> (Vec<PieButton>, DecorMap) {
+    let mut decor = DecorMap::new();
+    let mut buttons = Vec::new();
+    // (label, icon, tooltip, mnemonic key, colour), N clockwise to NW.
+    #[rustfmt::skip]
+    let rows: [ButtonSpec; 8] = [
+        ("Copy",               "",   "Ctrl+C",       Some('c'), ( 70, 130, 180)),
+        ("Paste Special",      "",   "Ctrl+Shift+V", Some('p'), ( 70, 130, 180)),
+        ("Redo",               "",   "Ctrl+Y",       Some('r'), (100, 160, 100)),
+        ("Save As…",           "",   "Ctrl+Shift+S", Some('s'), (180, 140,  60)),
+        ("Delete Permanently", "🗑", "Del",          Some('d'), (180,  70,  70)),
+        ("Cut",                "",   "Ctrl+X",       Some('t'), (180, 100,  60)),
+        ("Undo Last Change",   "",   "Ctrl+Z",       Some('u'), (100, 160, 100)),
+        ("Word wrap",          "",   "",             None,      (130,  90, 180)),
+    ];
+    for (i, (label, icon, tooltip, key, (r, g, b))) in rows.into_iter().enumerate() {
+        let color = Color32::from_rgb(r, g, b);
+        let mut button = PieButton::new(PieDirection::ALL[i]).with_label(label);
+        if let Some(k) = key {
+            button = button.with_mnemonic(k);
+        }
+        let mut d = Decor::new(color);
+        d.icon = icon.into();
+        d.tooltip = tooltip.into();
+        if i == 7 {
+            d.kind = ButtonKind::Checkbox;
+        }
+        decor.insert(vec![i], d);
+        if i == 1 {
+            // Five children in the directions a fan-out may use, so the sub-pie works in both
+            // styles, and a back button opposite the opening direction.
+            let dir = PieDirection::ALL[i];
+            let labels = ["As Text", "Values Only", "Formatting", "As Link", "As Image"];
+            let slots = dir.fan_out_slots();
+            let children: Vec<PieButton> = (0..8)
+                .filter_map(|k| {
+                    let at = PieDirection::ALL[k];
+                    if at == dir.opposite() {
+                        Some(PieButton::back(at))
+                    } else {
+                        slots.iter().position(|s| *s == at).map(|n| PieButton::new(at).with_label(labels[n]))
                     }
-                });
-                return PieButton::cluster(b.direction).with_label(b.label).with_enabled(b.enabled).with_items(items.collect());
+                })
+                .collect();
+            for k in 0..children.len() {
+                decor.insert(vec![i, k], Decor::new(color));
             }
-            if c.back {
-                b = PieButton { label: b.label, enabled: b.enabled, ..PieButton::back(b.direction) };
+            button = button.with_children(children);
+        }
+        buttons.push(button);
+    }
+    (buttons, decor)
+}
+
+/// Which icon set the "Sample icons" row assigns to the root buttons.
+enum SampleIcons {
+    Vector,
+    Image,
+    Reset,
+}
+
+/// Assigns icons to the root buttons by direction (N clockwise to NW: copy, paste, redo,
+/// save, delete, cut, undo, word wrap), or restores the defaults' icons.
+fn sample_icons(buttons: &[PieButton], decor: &mut DecorMap, set: SampleIcons) {
+    let (_, defaults) = default_tree();
+    let vector = [
+        VectorIcon::Copy, VectorIcon::Paste, VectorIcon::Redo, VectorIcon::Save,
+        VectorIcon::Trash, VectorIcon::Cut, VectorIcon::Undo, VectorIcon::Check,
+    ];
+    for (i, button) in buttons.iter().enumerate() {
+        let d = dir_index(button.direction);
+        let entry = decor_mut(decor, &[i]);
+        match set {
+            SampleIcons::Vector => entry.icon_kind = IconKind::Vector(vector[d]),
+            SampleIcons::Image => entry.icon_kind = IconKind::Image(d % IMAGE_ICONS.len()),
+            SampleIcons::Reset => {
+                let original = defaults.get(&vec![d]);
+                entry.icon_kind = original.map_or(IconKind::Text, |o| o.icon_kind);
+                entry.icon = original.map(|o| o.icon.clone()).unwrap_or_default();
             }
-            if c.submenu {
-                b = b
-                    .with_children(build_buttons(&c.children, menu_style, c.fans(menu_style)))
-                    .with_sub_pie_style(c.style);
-            }
-            match (c.mnemonic, c.key.chars().next()) {
-                (MnemonicMode::Auto, _)       => b,
-                (MnemonicMode::Key, Some(k))  => b.with_mnemonic(k),
-                // Key mode with no letter typed yet behaves like None.
-                (MnemonicMode::Key, None) | (MnemonicMode::None, _) => b.without_mnemonic(),
-            }
-        })
-        .collect()
+        }
+    }
+}
+
+/// The button at `path` (indices from the root level), if there is one.
+fn button_at<'a>(buttons: &'a [PieButton], path: &[usize]) -> Option<&'a PieButton> {
+    let (last, parents) = path.split_last()?;
+    let mut level = buttons;
+    for &i in parents {
+        level = level.get(i)?.children();
+    }
+    level.get(*last)
+}
+
+/// "Paste Special › As Text": the labels along `route` (a path from the root).
+fn names_along(buttons: &[PieButton], route: &[usize]) -> String {
+    (1..=route.len())
+        .map_while(|n| button_at(buttons, &route[..n]).map(|b| b.label.as_str()))
+        .collect::<Vec<_>>()
+        .join(" › ")
+}
+
+/// Whether the demo draws `button` as a checkbox: only plain buttons can be.
+fn is_checkbox(button: &PieButton, decor: &Decor) -> bool {
+    decor.kind == ButtonKind::Checkbox && matches!(button.kind, PieButtonKind::Action)
+}
+
+/// Problems (shared key / direction, bad fan-out children) of every level of the tree, each
+/// prefixed with its sub-pie's name. Empty: the library will accept the tree (debug builds
+/// assert on problems when a level opens).
+fn tree_problems(settings: &PieMenuSettings, buttons: &[PieButton]) -> Vec<String> {
+    fn walk(menu: &PieMenu, level: &[PieButton], name: &str, out: &mut Vec<String>) {
+        for p in menu.check_buttons(level) {
+            out.push(if name.is_empty() { p.to_string() } else { format!("{name}: {p}") });
+        }
+        for b in level.iter().filter(|b| !b.children().is_empty()) {
+            let name = if name.is_empty() { b.label.clone() } else { format!("{name} › {}", b.label) };
+            walk(menu, b.children(), &name, out);
+        }
+    }
+    let menu = PieMenu::new().with_settings(settings.clone());
+    let mut out = Vec::new();
+    walk(&menu, buttons, "", &mut out);
+    out
+}
+
+/// The words a search of the Buttons tab matches a button against: its direction (short and
+/// long), label, kind and, for a cluster, its items' labels.
+fn button_search_text(b: &PieButton, settings: &PieMenuSettings) -> String {
+    let kind = match &b.kind {
+        PieButtonKind::Action => "action button",
+        PieButtonKind::Back => "back button",
+        PieButtonKind::Cluster(_) => "cluster",
+        PieButtonKind::SubPie { style, .. } => match style.unwrap_or(settings.sub_pies.style) {
+            SubPieStyle::FanOut => "fan-out fanout sub-pie",
+            SubPieStyle::Replace => "sub-pie subpie",
+        },
+    };
+    let mut text = format!("{} {:?} {} {kind}", DIR_NAMES[dir_index(b.direction)], b.direction, b.label);
+    for item in b.cluster_items() {
+        text.push(' ');
+        text += &item.label;
+    }
+    text.to_lowercase()
+}
+
+/// Whether a button matches the (lower-case, non-empty) search `query`.
+fn button_matches(b: &PieButton, settings: &PieMenuSettings, query: &str) -> bool {
+    button_search_text(b, settings).contains(query)
+}
+
+/// How many buttons of the tree (sub-pies included) match a search (0 for an empty query):
+/// the number in the badge of the Buttons tab while the Menu tab is showing.
+fn buttons_hit_count(buttons: &[PieButton], settings: &PieMenuSettings, query: &str) -> usize {
+    if query.is_empty() {
+        return 0;
+    }
+    buttons
+        .iter()
+        .map(|b| usize::from(button_matches(b, settings, query)) + buttons_hit_count(b.children(), settings, query))
+        .sum()
 }
 
 /// A sketch of the render closure that draws the demo's buttons, for the "Draw code" tab:
-/// one `match` arm per shown button (`b.path` indexes the shown buttons of each level, see
-/// [`shown`]). It covers what the library cannot know: colours, tooltips, icons, the checkbox
-/// kind and cluster layouts. Hover colours, scale and number hints are left out.
-fn draw_code(configs: &[ButtonConfig], menu_style: SubPieStyle) -> String {
+/// one `match` arm per button of the tree (`b.path` is the button's route from the root, whichever
+/// ring it is in). It covers what the library cannot know: colours, tooltips, icons, the
+/// checkbox kind and cluster layouts. Hover colours, scale and number hints are left out.
+fn draw_code(buttons: &[PieButton], decor: &DecorMap) -> String {
     let mut out = String::from(
         "// Sketch of how the demo draws its buttons: colours, tooltips, icons and cluster\n\
          // layouts are the demo's own choices, not library settings.\n\
          |ui, b| match b.path {\n",
     );
-    draw_arms(configs, menu_style, false, &mut Vec::new(), &mut out);
+    draw_arms(buttons, decor, &mut Vec::new(), &mut out);
     out += "    _ => {}\n}\n";
     out
 }
 
 /// Appends the arms of one level (and, recursively, of its sub-pies) to `out`.
-fn draw_arms(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool, path: &mut Vec<usize>, out: &mut String) {
-    for (n, i) in shown(configs, in_fan).enumerate() {
-        let c = &configs[i];
+fn draw_arms(level: &[PieButton], decor: &DecorMap, path: &mut Vec<usize>, out: &mut String) {
+    for (n, button) in level.iter().enumerate() {
         path.push(n);
+        let d = decor_at(decor, path);
         let route: Vec<String> = path.iter().map(|p| p.to_string()).collect();
-        let label = c.label.replace('\n', " ");
+        let label = button.label.replace('\n', " ");
         out.push_str(&format!("    [{}] => {{ // {label}\n", route.join(", ")));
         let mut body: Vec<String> = Vec::new();
-        let fill = format!("egui::Color32::from_rgb({}, {}, {})", c.color.r(), c.color.g(), c.color.b());
-        let tooltip = if c.tooltip.is_empty() { String::new() } else { format!("\n    .on_hover_text({:?})", c.tooltip) };
-        if let Some(cl) = &c.cluster {
-            let v = format!("egui::vec2({:?}, {:?})", cl.spacing, cl.spacing);
+        let fill = format!("egui::Color32::from_rgb({}, {}, {})", d.color.r(), d.color.g(), d.color.b());
+        let tooltip = if d.tooltip.is_empty() { String::new() } else { format!("\n    .on_hover_text({:?})", d.tooltip) };
+        if button.is_cluster() {
+            let v = format!("egui::vec2({:?}, {:?})", d.cluster.spacing, d.cluster.spacing);
             body.push(format!("// a frame filled with {fill} around the items"));
             body.push(format!("ui.spacing_mut().item_spacing = {v};"));
-            let item = |n: usize| format!("b.item({n}, ui.button(b.item_label({n})));");
-            let count = cl.items.len();
-            match cl.layout {
+            let item = |number: usize| format!("b.item({number}, ui.button(b.item_label({number})));");
+            let numbers: Vec<usize> = button.cluster_items().iter().map(|i| i.number).collect();
+            match d.cluster.layout {
                 ClusterLayout::Row | ClusterLayout::Column => {
-                    body.push(format!("ui.{}(|ui| {{", if cl.layout == ClusterLayout::Row { "horizontal" } else { "vertical" }));
-                    body.extend((0..count).map(|n| format!("    {}", item(n))));
+                    body.push(format!("ui.{}(|ui| {{", if d.cluster.layout == ClusterLayout::Row { "horizontal" } else { "vertical" }));
+                    body.extend(numbers.iter().map(|&n| format!("    {}", item(n))));
                     body.push("});".to_string());
                 }
                 ClusterLayout::Grid => {
                     body.push(format!("egui::Grid::new(\"cluster\").num_columns(2).spacing({v}).show(ui, |ui| {{"));
-                    for n in 0..count {
-                        body.push(format!("    {}", item(n)));
-                        if n % 2 == 1 {
+                    for (k, &number) in numbers.iter().enumerate() {
+                        body.push(format!("    {}", item(number)));
+                        if k % 2 == 1 {
                             body.push("    ui.end_row();".to_string());
                         }
                     }
@@ -643,19 +712,19 @@ fn draw_arms(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool, pa
                 }
             }
         } else {
-            match c.icon_kind {
+            match d.icon_kind {
                 IconKind::Vector(v) => body.push(format!("// icon: {} (painted vector icon, see VectorIcon::paint in the demo)", v.name())),
                 IconKind::Image(k) => body.push(format!("// icon: {} (embedded image, tinted with the text colour)", IMAGE_ICONS[k % IMAGE_ICONS.len()].0)),
                 IconKind::Text => {}
             }
             let mut text = "b.label_text()".to_string();
-            if c.icon_kind == IconKind::Text && !c.icon.is_empty() {
-                text += &format!(".prefix({:?})", format!("{}  ", c.icon));
+            if d.icon_kind == IconKind::Text && !d.icon.is_empty() {
+                text += &format!(".prefix({:?})", format!("{}  ", d.icon));
             }
-            if c.submenu {
+            if !button.children().is_empty() {
                 body.push("// opens a sub-pie (the demo adds a marker at the far end)".to_string());
             }
-            if c.kind == ButtonKind::Checkbox {
+            if is_checkbox(button, &d) {
                 body.push("// the demo toggles `checked` when the button is selected".to_string());
                 body.push(format!("ui.checkbox(&mut checked, {text}){tooltip};"));
             } else {
@@ -666,63 +735,8 @@ fn draw_arms(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool, pa
             out.push_str(&format!("        {line}\n"));
         }
         out.push_str("    }\n");
-        if c.submenu {
-            draw_arms(&c.children, menu_style, c.fans(menu_style), path, out);
-        }
+        draw_arms(button.children(), decor, path, out);
         path.pop();
-    }
-}
-
-/// The configs along `route` (button indices from the root, as in `ButtonView::path` and
-/// `PieMenu::selected_path`), or `None` if the route no longer matches the editor.
-fn route_configs<'a>(
-    mut configs: &'a [ButtonConfig],
-    route: &[usize],
-    menu_style: SubPieStyle,
-) -> Option<Vec<&'a ButtonConfig>> {
-    let mut out = Vec::new();
-    let mut in_fan = false;
-    for (step, &n) in route.iter().enumerate() {
-        let cfg = &configs[shown(configs, in_fan).nth(n)?];
-        out.push(cfg);
-        if step + 1 < route.len() {
-            if !cfg.submenu {
-                return None;
-            }
-            in_fan = cfg.fans(menu_style);
-            configs = &cfg.children;
-        }
-    }
-    Some(out)
-}
-
-/// The config of the button at the end of `route`, for changing it.
-fn config_at_mut<'a>(
-    mut configs: &'a mut [ButtonConfig],
-    route: &[usize],
-    menu_style: SubPieStyle,
-) -> Option<&'a mut ButtonConfig> {
-    let (&last, parents) = route.split_last()?;
-    let mut in_fan = false;
-    for &n in parents {
-        let i = shown(configs, in_fan).nth(n)?;
-        in_fan = configs[i].fans(menu_style);
-        configs = &mut configs[i].children;
-    }
-    let i = shown(configs, in_fan).nth(last)?;
-    Some(&mut configs[i])
-}
-
-/// Problems (shared key / direction, bad fan-out children) of every level, each prefixed
-/// with its sub-pie's name. A fan-out's children are checked as part of their parent's level.
-fn collect_problems(menu: &PieMenu, configs: &[ButtonConfig], level: &str, out: &mut Vec<String>) {
-    let style = menu.settings.sub_pies.style;
-    for p in menu.check_buttons(&build_buttons(configs, style, false)) {
-        out.push(if level.is_empty() { p.to_string() } else { format!("{level}: {p}") });
-    }
-    for c in configs.iter().filter(|c| c.present && c.submenu && !c.fans(style)) {
-        let name = if level.is_empty() { c.label.clone() } else { format!("{level} › {}", c.label) };
-        collect_problems(menu, &c.children, &name, out);
     }
 }
 
@@ -888,332 +902,404 @@ fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)
     }
 }
 
-/// Turns the first absent direction slot of a level into a sub-pie (`fan`: a fan-out) with
-/// the default five children plus back button, and returns its index; `None` when all
-/// slots are present. The style is stored only when it differs from `menu_style`.
-fn add_sub_pie(configs: &mut [ButtonConfig], fan: bool, menu_style: SubPieStyle) -> Option<usize> {
-    let i = configs.iter().position(|c| !c.present)?;
-    let color = configs.iter().find(|c| c.present).map_or(Color32::from_rgb(70, 130, 180), |c| c.color);
-    let wanted = if fan { SubPieStyle::FanOut } else { SubPieStyle::Replace };
-    let label = if fan { "Fan-out" } else { "Sub-pie" };
-    configs[i] = ButtonConfig {
-        submenu: true,
-        style: (wanted != menu_style).then_some(wanted),
-        ..ButtonConfig::new(label, color)
+// ── Drawing the buttons ─────────────────────────────────────────────────────
+
+/// What `draw_button` needs besides the button itself.
+struct Look<'a> {
+    decor: &'a DecorMap,
+    images: &'a [egui::TextureHandle],
+    icons: &'a MarkerIcons,
+    sub_pie_look: SubPieLook,
+    /// The minimum height of a button, in px.
+    button_h: f32,
+    /// The gap between a number hint and the label (`number_hints.spacing`).
+    hint_gap: f32,
+    show_hints: bool,
+}
+
+/// The outline colour of the selected button in Configure mode.
+const SELECTED_OUTLINE: Color32 = Color32::from_rgb(255, 190, 60);
+
+fn outline(ui: &egui::Ui, rect: Rect) {
+    ui.painter().rect_stroke(rect.expand(2.0), 7.0, egui::Stroke::new(2.0, SELECTED_OUTLINE), egui::StrokeKind::Outside);
+}
+
+/// The render closure's body: draws one button the way the demo does. `path` is the button's
+/// route from the root of the whole tree. With `select` (Configure mode: the current
+/// selection) the button also gets an outline when it is the selected one, and a click on it
+/// (or on a cluster's item) is returned as the new selection.
+fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, select: Option<&Selection>) -> Option<Selection> {
+    let d = decor_at(look.decor, path);
+    let hovered = b.hovered;
+    let mut clicked = None;
+    // Hover emphasis enlarges the content, not the layer (which would blur the
+    // text): scale the minimum height and the padding along with the label.
+    let button_h = look.button_h * b.scale();
+    let pad_x = 10.0 * b.scale();
+    let is_cluster = b.button.is_cluster();
+    // The pie's own highlight is the only hover feedback: egui's per-widget
+    // hover/press outlines would add a second, inconsistent one on top.
+    // (An app drawing plain widgets can call `b.use_pie_hover(ui)` instead.)
+    // Not in a cluster: it is never highlighted, and its items are plain
+    // widgets with egui's native hover and press look.
+    if !is_cluster {
+        let w = &mut ui.visuals_mut().widgets;
+        let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);
+        w.hovered.bg_stroke = stroke;
+        w.active.bg_stroke = stroke;
+        w.hovered.expansion = expansion;
+        w.active.expansion = expansion;
+    }
+    let bg = if !b.enabled {
+        d.color.gamma_multiply(0.25)
+    } else if hovered {
+        d.color
+    } else {
+        d.color.gamma_multiply(0.6)
     };
-    configs[i].children = configs[i].default_sub_pie(i);
-    Some(i)
-}
-
-/// What the editor of a fan-out's children needs from the parent level.
-struct FanInfo {
-    /// Direction index of the button that opens the fan.
-    dir: usize,
-    /// The problems among the fan's children (from the parent's `ButtonProblem::InFanOut`).
-    problems: Vec<ButtonProblem>,
-}
-
-/// The button editor for one level: a collapsible entry per direction. Buttons with a
-/// sub-pie nest the same editor for their children; `fan` is set when this level is a
-/// fan-out.
-fn button_list_editor(
-    ui: &mut egui::Ui,
-    menu: &PieMenu,
-    icons: &MarkerIcons,
-    configs: &mut [ButtonConfig],
-    fan: Option<FanInfo>,
-) {
-    let style = menu.settings.sub_pies.style;
-    if fan.is_none() {
-        ui.horizontal(|ui| {
-            let free = configs.iter().any(|c| !c.present);
-            ui.label("Add:");
-            for (name, is_fan) in [("sub-pie", false), ("fan-out", true)] {
-                if ui.add_enabled(free, egui::Button::new(name)).clicked() {
-                    add_sub_pie(configs, is_fan, style);
+    // Buttons that open a sub-pie can look different from actions.
+    let (bg, stroke) = if b.opens_sub_pie() && !b.button.is_back() {
+        match look.sub_pie_look {
+            SubPieLook::Same => (bg, egui::Stroke::NONE),
+            SubPieLook::Outlined => (bg.gamma_multiply(0.3), egui::Stroke::new(1.5, bg)),
+            SubPieLook::Dimmer => (bg.gamma_multiply(0.55), egui::Stroke::NONE),
+        }
+    } else {
+        (bg, egui::Stroke::NONE)
+    };
+    // A cluster: its items in the chosen layout, inside the usual coloured frame.
+    // Each is an `egui::Button` registered with `b.item(number, ..)`; the label underlines
+    // the item's mnemonic.
+    if is_cluster {
+        let items = b.button.cluster_items();
+        let selected_item = select.filter(|s| s.path == path).map(|s| s.item);
+        let mut item_clicked = None;
+        let mut item = |ui: &mut egui::Ui, k: usize| {
+            let it = &items[k];
+            let button = egui::Button::new(b.item_label(it.number)).min_size(Vec2::new(0.0, button_h));
+            let resp = b.item(it.number, ui.add_enabled(it.enabled, button));
+            if select.is_some() {
+                if resp.clicked() {
+                    item_clicked = Some(k);
+                }
+                if selected_item == Some(Some(k)) {
+                    outline(ui, resp.rect);
                 }
             }
-            if !free {
-                ui.label(RichText::new("all 8 directions are used: untick one first").weak().small());
+        };
+        let spacing = d.cluster.spacing;
+        let count = items.len();
+        let frame = egui::Frame::new()
+            .fill(bg)
+            .corner_radius(6.0)
+            .inner_margin(Vec2::new(pad_x, 3.0 * b.scale()))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(spacing);
+                ui.spacing_mut().button_padding = Vec2::new(pad_x * 0.6, 0.0);
+                match d.cluster.layout {
+                    ClusterLayout::Row => {
+                        ui.horizontal(|ui| (0..count).for_each(|k| item(ui, k)));
+                    }
+                    ClusterLayout::Column => {
+                        ui.vertical(|ui| (0..count).for_each(|k| item(ui, k)));
+                    }
+                    ClusterLayout::Grid => {
+                        egui::Grid::new(("cluster_grid", b.idx)).spacing(Vec2::splat(spacing)).show(ui, |ui| {
+                            for k in 0..count {
+                                item(ui, k);
+                                if k % 2 == 1 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        if select.is_some() {
+            let rect = frame.response.rect;
+            if let Some(k) = item_clicked {
+                clicked = Some(Selection::item(path, k));
+            } else if ui.input(|i| i.pointer.primary_clicked()) && ui.rect_contains_pointer(rect) {
+                // The frame around the items: selects the cluster button itself.
+                clicked = Some(Selection::button(path));
             }
-        });
+            if select.is_some_and(|s| s.path == path && s.item.is_none()) {
+                outline(ui, rect);
+            }
+        }
+        return clicked;
     }
-    // This level's buttons as the menu will see them: the mnemonic in effect per config
-    // (configs without a button have none) and the configs with a problem, shown in red.
-    let buttons = build_buttons(configs, style, fan.is_some());
-    let cluster_keys = menu.cluster_mnemonics(&buttons);
-    let config_of: Vec<usize> = shown(configs, fan.is_some()).collect();
-    let mut button_of: Vec<Option<usize>> = vec![None; configs.len()];
-    let mut mnemonics: Vec<Option<char>> = vec![None; configs.len()];
-    for (bi, m) in menu.mnemonics(&buttons).into_iter().enumerate() {
-        mnemonics[config_of[bi]] = m;
-        button_of[config_of[bi]] = Some(bi);
+    // Label and digit colours come from the library: egui's widget colours for the hover
+    // state, or the forced colour; disabled is greyed out.
+    let hint = b.number_hint.as_ref().filter(|_| look.show_hints).map(|h| (RichText::new(&h.text).color(h.color), h.on_right));
+
+    // Icon + label, with the mnemonic underlined.
+    let mut label = b.label_text();
+    // Sub-pie and back buttons carry a marker (from the "Sub-pies" section) in a slot of its
+    // own: at the far end, or before the icon. The icon is the button's own and never
+    // replaces it.
+    let marker = look.icons.marker(b.button, b.opens_sub_pie());
+    let far_end = look.icons.placement == MarkerPlacement::FarEnd;
+    let mut prefix = String::new();
+    if !marker.is_empty() && !far_end {
+        prefix += &format!("{marker}  ");
     }
-    let problems = match &fan {
-        Some(fan) => fan.problems.clone(),
-        None => menu.check_buttons(&buttons),
+    if d.icon_kind == IconKind::Text && !d.icon.is_empty() {
+        prefix += &format!("{}  ", d.icon);
+    }
+    if !prefix.is_empty() {
+        label = label.prefix(prefix);
+    }
+    // Far end: in the label's colour, set apart from the text by a little space.
+    let far_marker = (!marker.is_empty() && far_end).then(|| {
+        let text = if b.rtl { format!("{marker}  ") } else { format!("  {marker}") };
+        RichText::new(text).color(b.text_color())
+    });
+    let text: egui::WidgetText = label.into();
+    // A painted or image icon, about the text height; `b.scale()` keeps it crisp under hover
+    // emphasis.
+    let icon_size = ui.text_style_height(&egui::TextStyle::Body) * b.scale();
+    let graphic = d.icon_kind != IconKind::Text;
+    let icon_color = b.text_color();
+    let hint_gap = look.hint_gap;
+    let images = look.images;
+
+    let resp = if is_checkbox(b.button, &d) {
+        // Display only: the toggle happens on Selected. Both kinds get the same fixed height
+        // ("Button height"): no vertical padding, content centred in a row of exactly that height.
+        egui::Frame::new()
+            .fill(bg)
+            .stroke(stroke)
+            .corner_radius(6.0)
+            .inner_margin(Vec2::new(pad_x, 0.0))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = hint_gap;
+                ui.allocate_ui_with_layout(Vec2::new(0.0, button_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_height(button_h);
+                    // Mirrored: the far end is the left.
+                    if b.rtl && let Some(m) = &far_marker {
+                        ui.label(m.clone());
+                    }
+                    if let Some((h, false)) = &hint {
+                        ui.label(h.clone());
+                    }
+                    let mut display = d.checked;
+                    if b.rtl {
+                        // Right-to-left: the box goes right of its text.
+                        ui.label(text);
+                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                        ui.add(egui::Checkbox::without_text(&mut display));
+                    } else {
+                        ui.add(egui::Checkbox::without_text(&mut display));
+                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                        ui.label(text);
+                    }
+                    if let Some((h, true)) = &hint {
+                        ui.label(h.clone());
+                    }
+                    if !b.rtl && let Some(m) = &far_marker {
+                        ui.label(m.clone());
+                    }
+                });
+            })
+            .response
+    } else if graphic {
+        // A painted or image icon: same look and height as a button, laid out by hand (the
+        // icon before the label, after it when mirrored).
+        egui::Frame::new()
+            .fill(bg)
+            .stroke(stroke)
+            .corner_radius(6.0)
+            .inner_margin(Vec2::new(pad_x, 0.0))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = hint_gap.max(4.0 * b.scale());
+                ui.allocate_ui_with_layout(Vec2::new(0.0, button_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_height(button_h);
+                    if b.rtl && let Some(m) = &far_marker {
+                        ui.label(m.clone());
+                    }
+                    if let Some((h, false)) = &hint {
+                        ui.label(h.clone());
+                    }
+                    if b.rtl {
+                        ui.label(text);
+                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                    } else {
+                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                        ui.label(text);
+                    }
+                    if let Some((h, true)) = &hint {
+                        ui.label(h.clone());
+                    }
+                    if !b.rtl && let Some(m) = &far_marker {
+                        ui.label(m.clone());
+                    }
+                });
+            })
+            .response
+    } else {
+        ui.spacing_mut().button_padding = Vec2::new(pad_x, 0.0);
+        let mut button = hint_button(text, hint, hint_gap)
+            .fill(bg)
+            .stroke(stroke)
+            .corner_radius(6.0)
+            .min_size(Vec2::new(0.0, button_h));
+        if let Some(m) = far_marker {
+            // egui lays text out left to right, so a mirrored layout's far end is the left edge.
+            button = if b.rtl { button.left_text(m) } else { button.right_text(m) };
+        }
+        ui.add(button)
     };
-    let mut bad = vec![false; configs.len()];
-    for p in &problems {
-        for i in p.buttons() {
-            bad[config_of[i]] = true;
+    let rect = resp.rect;
+    match select {
+        Some(selection) => {
+            // Configure mode: an overlay added last, so it is the topmost widget of this button
+            // and takes the click (and the tooltip) from the widgets underneath.
+            let overlay = ui.interact(rect, ui.id().with(("select", path)), egui::Sense::click());
+            if overlay.clicked() {
+                clicked = Some(Selection::button(path));
+            }
+            if selection.path == path && selection.item.is_none() {
+                outline(ui, rect);
+            }
+            if !d.tooltip.is_empty() {
+                overlay.on_hover_text(&d.tooltip);
+            }
+        }
+        None => {
+            if !d.tooltip.is_empty() {
+                resp.on_hover_text(&d.tooltip);
+            }
         }
     }
-    for (i, cfg) in configs.iter_mut().enumerate() {
-        let assigned = mnemonics[i];
-        // In a fan-out: the three directions facing the parent cannot be used, and a back
-        // button is left out.
-        let note = match &fan {
-            Some(f) if PieDirection::ALL[f.dir].blocks_fan_out(PieDirection::ALL[i]) => "  (faces the parent)",
-            Some(_) if cfg.back => "  (not in a fan-out)",
-            _ => "",
-        };
-        let marker = match (cfg.submenu, cfg.back) {
-            (true, _) if !icons.sub_pie.is_empty() => format!("  {}", icons.sub_pie),
-            (_, true) if !icons.back.is_empty() => format!("  {}", icons.back),
-            _ => String::new(),
-        };
-        let title = format!("{} · {}{marker}{note}", DIR_NAMES[i], cfg.label);
-        let title: egui::WidgetText = if bad[i] {
-            RichText::new(format!("⚠ {title}")).color(Color32::RED).into()
-        } else {
-            title.into()
-        };
-        // Checkbox left of the header: include the button, or leave its
-        // direction empty. Clicking it doesn't expand/collapse the header.
-        egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(), ui.make_persistent_id(("button_cfg", i)), false)
-            .show_header(ui, |ui| {
-                let blocked = matches!(&fan, Some(f) if PieDirection::ALL[f.dir].blocks_fan_out(PieDirection::ALL[i]));
-                ui.add_enabled(!blocked || cfg.present, egui::Checkbox::new(&mut cfg.present, ""))
-                    .on_hover_text("Include this button in the menu (untick to leave the direction empty)");
-                ui.add_enabled(cfg.present, egui::Label::new(title));
-            })
-            .body(|ui| ui.add_enabled_ui(cfg.present, |ui| {
-                egui::Grid::new(("button_grid", i)).num_columns(2).show(ui, |ui| {
-                    ui.label("Label");
-                    ui.add(egui::TextEdit::singleline(&mut cfg.label).desired_width(130.0));
-                    ui.end_row();
+    clicked
+}
 
-                    ui.label("Icon");
-                    ui.horizontal(|ui| {
-                        let kind_name = match cfg.icon_kind {
-                            IconKind::Text if cfg.icon.is_empty() => "None",
-                            IconKind::Text => "Text",
-                            IconKind::Vector(_) => "Vector",
-                            IconKind::Image(_) => "Image",
-                        };
-                        egui::ComboBox::from_id_salt(("icon_kind", i)).selected_text(kind_name).width(70.0).show_ui(ui, |ui| {
-                            if ui.selectable_label(kind_name == "None", "None").clicked() {
-                                cfg.icon_kind = IconKind::Text;
-                                cfg.icon.clear();
+// ── The Appearance group of the inspector ───────────────────────────────────
+
+/// The demo's own controls for the selected button, drawn by the inspector's `extras`: icon,
+/// tooltip, colour, button or checkbox, and a cluster's layout. Returns true if `d` changed.
+fn appearance_editor(ui: &mut egui::Ui, button: &PieButton, d: &mut Decor) -> bool {
+    let mut changed = false;
+    egui::CollapsingHeader::new(RichText::new("Appearance").strong()).id_salt("pie_demo_appearance").default_open(true).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("demo").small().weak()).on_hover_text(
+                "How the demo draws this button: used by its Draw code, not part of the menu code.",
+            );
+        });
+        egui::Grid::new("pie_demo_appearance_grid").num_columns(2).show(ui, |ui| {
+            if !button.is_cluster() {
+                ui.label("Icon");
+                ui.horizontal(|ui| {
+                    let kind_name = match d.icon_kind {
+                        IconKind::Text if d.icon.is_empty() => "None",
+                        IconKind::Text => "Text",
+                        IconKind::Vector(_) => "Vector",
+                        IconKind::Image(_) => "Image",
+                    };
+                    egui::ComboBox::from_id_salt("pie_demo_icon_kind").selected_text(kind_name).width(70.0).show_ui(ui, |ui| {
+                        if ui.selectable_label(kind_name == "None", "None").clicked() {
+                            d.icon_kind = IconKind::Text;
+                            d.icon.clear();
+                            changed = true;
+                        }
+                        if ui.selectable_label(kind_name == "Text", "Text").clicked() {
+                            d.icon_kind = IconKind::Text;
+                            if d.icon.is_empty() {
+                                d.icon = "★".into();
                             }
-                            if ui.selectable_label(kind_name == "Text", "Text").clicked() {
-                                cfg.icon_kind = IconKind::Text;
-                                if cfg.icon.is_empty() { cfg.icon = "★".into(); }
-                            }
-                            if ui.selectable_label(kind_name == "Vector", "Vector").clicked()
-                                && !matches!(cfg.icon_kind, IconKind::Vector(_)) {
-                                cfg.icon_kind = IconKind::Vector(VectorIcon::Copy);
-                            }
-                            if ui.selectable_label(kind_name == "Image", "Image").clicked()
-                                && !matches!(cfg.icon_kind, IconKind::Image(_)) {
-                                cfg.icon_kind = IconKind::Image(0);
-                            }
-                        });
-                        match &mut cfg.icon_kind {
-                            IconKind::Text => {
-                                ui.add(egui::TextEdit::singleline(&mut cfg.icon).desired_width(40.0))
-                                    .on_hover_text("Shown before the label, e.g. an emoji");
-                            }
-                            IconKind::Vector(v) => {
-                                let col = ui.visuals().text_color();
-                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
-                                v.paint(ui.painter(), rect, col, 1.3);
-                                egui::ComboBox::from_id_salt(("icon_vector", i)).selected_text(v.name()).show_ui(ui, |ui| {
-                                    for &o in ALL_VECTOR_ICONS {
-                                        ui.horizontal(|ui| {
-                                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
-                                            o.paint(ui.painter(), rect, col, 1.2);
-                                            ui.selectable_value(v, o, o.name());
-                                        });
-                                    }
-                                });
-                            }
-                            IconKind::Image(n) => {
-                                egui::ComboBox::from_id_salt(("icon_image", i)).selected_text(IMAGE_ICONS[*n % IMAGE_ICONS.len()].0).show_ui(ui, |ui| {
-                                    for (k, (name, _)) in IMAGE_ICONS.iter().enumerate() {
-                                        ui.selectable_value(n, k, *name);
-                                    }
-                                });
-                            }
+                            changed = true;
+                        }
+                        if ui.selectable_label(kind_name == "Vector", "Vector").clicked() && !matches!(d.icon_kind, IconKind::Vector(_)) {
+                            d.icon_kind = IconKind::Vector(VectorIcon::Copy);
+                            changed = true;
+                        }
+                        if ui.selectable_label(kind_name == "Image", "Image").clicked() && !matches!(d.icon_kind, IconKind::Image(_)) {
+                            d.icon_kind = IconKind::Image(0);
+                            changed = true;
                         }
                     });
-                    ui.end_row();
-
-                    ui.label("Tooltip");
-                    ui.add(egui::TextEdit::singleline(&mut cfg.tooltip).desired_width(130.0));
-                    ui.end_row();
-
-                    ui.label("Enabled");
-                    ui.checkbox(&mut cfg.enabled, "")
-                        .on_hover_text("Disabled buttons are skipped by mouse, number keys and mnemonics");
-                    ui.end_row();
-
-                    ui.label("Kind");
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut cfg.kind, ButtonKind::Button, "Button");
-                        ui.radio_value(&mut cfg.kind, ButtonKind::Checkbox, "Checkbox");
-                    });
-                    ui.end_row();
-
-                    ui.label("Mnemonic");
-                    ui.horizontal(|ui| {
-                        egui::ComboBox::from_id_salt(("mnemonic_mode", i))
-                            .width(60.0)
-                            .selected_text(match cfg.mnemonic {
-                                MnemonicMode::Auto => "Auto",
-                                MnemonicMode::Key  => "Key",
-                                MnemonicMode::None => "None",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::Auto, "Auto")
-                                    .on_hover_text("Follow the menu's Auto mnemonics setting");
-                                ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::Key, "Key");
-                                ui.selectable_value(&mut cfg.mnemonic, MnemonicMode::None, "None");
-                            });
-                        if cfg.mnemonic == MnemonicMode::Key {
-                            let resp = ui.add(egui::TextEdit::singleline(&mut cfg.key).char_limit(1).desired_width(16.0));
-                            if bad[i] {
-                                ui.painter().rect_stroke(
-                                    resp.rect.expand(2.0), 3.0,
-                                    egui::Stroke::new(2.0, Color32::RED),
-                                    egui::StrokeKind::Outside,
-                                );
-                                resp.on_hover_text("⚠ This key is also used by another button");
-                            }
+                    match &mut d.icon_kind {
+                        IconKind::Text => {
+                            changed |= ui
+                                .add(egui::TextEdit::singleline(&mut d.icon).desired_width(40.0))
+                                .on_hover_text("Shown before the label, e.g. an emoji")
+                                .changed();
                         }
-                        let got = assigned.map_or("none".to_string(), |c| c.to_string());
-                        ui.label(RichText::new(format!("→ {got}")).weak())
-                            .on_hover_text("The mnemonic this button actually has");
-                    });
-                    ui.end_row();
-
-                    ui.label("Colour");
-                    ui.color_edit_button_srgba(&mut cfg.color);
-                    ui.end_row();
-
-                    ui.label("Cluster");
-                    ui.vertical(|ui| {
-                        let mut on = cfg.cluster.is_some();
-                        if ui.checkbox(&mut on, "")
-                            .on_hover_text("Several clickable items in this one direction. The direction itself highlights nothing and has no number key; a click, or releasing the key over an item, selects it. Try it: tick this, then open the menu. Excludes a sub-pie and a back button.")
-                            .changed()
-                        {
-                            cfg.cluster = on.then(ClusterConfig::default);
-                            if on {
-                                cfg.back = false;
-                                cfg.submenu = false;
-                            }
-                        }
-                        let keys = button_of[i].and_then(|bi| cluster_keys.get(bi));
-                        let Some(cl) = &mut cfg.cluster else { return };
-                        egui::ComboBox::from_id_salt(("cluster_layout", i))
-                            .width(80.0)
-                            .selected_text(match cl.layout {
-                                ClusterLayout::Row => "Row",
-                                ClusterLayout::Column => "Column",
-                                ClusterLayout::Grid => "Grid (2 columns)",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut cl.layout, ClusterLayout::Row, "Row");
-                                ui.selectable_value(&mut cl.layout, ClusterLayout::Column, "Column");
-                                ui.selectable_value(&mut cl.layout, ClusterLayout::Grid, "Grid (2 columns)");
-                            });
-                        ui.horizontal(|ui| {
-                            ui.label("Spacing");
-                            demo_px(ui, &mut cl.spacing, 4.0, 0.0..=60.0);
-                        });
-                        let mut remove = None;
-                        for (n, item) in cl.items.iter_mut().enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut item.label).desired_width(80.0));
-                                ui.add(egui::TextEdit::singleline(&mut item.key).char_limit(1).desired_width(16.0))
-                                    .on_hover_text("Mnemonic key for this item; empty: Auto");
-                                let got = keys.and_then(|k| k.get(n)).copied().flatten();
-                                ui.label(RichText::new(format!("→ {}", got.map_or("none".to_string(), |c| c.to_string()))).weak())
-                                    .on_hover_text("The mnemonic this item actually has");
-                                if ui.small_button("✖").on_hover_text("Remove this item").clicked() {
-                                    remove = Some(n);
+                        IconKind::Vector(v) => {
+                            let col = ui.visuals().text_color();
+                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+                            v.paint(ui.painter(), rect, col, 1.3);
+                            egui::ComboBox::from_id_salt("pie_demo_icon_vector").selected_text(v.name()).show_ui(ui, |ui| {
+                                for &o in ALL_VECTOR_ICONS {
+                                    ui.horizontal(|ui| {
+                                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
+                                        o.paint(ui.painter(), rect, col, 1.2);
+                                        changed |= ui.selectable_value(v, o, o.name()).changed();
+                                    });
                                 }
                             });
                         }
-                        if let Some(n) = remove {
-                            cl.items.remove(n);
-                        }
-                        if ui.button("+ Add item").clicked() {
-                            let label = format!("Item {}", cl.items.len() + 1);
-                            cl.items.push(ClusterItemConfig { label, key: String::new() });
-                        }
-                    });
-                    ui.end_row();
-
-                    ui.label("Back button");
-                    ui.add_enabled(cfg.cluster.is_none(), egui::Checkbox::without_text(&mut cfg.back))
-                        .on_hover_text("Inside a sub-pie, selecting this button returns to the parent pie instead of selecting anything");
-                    ui.end_row();
-
-                    ui.label("Sub-pie");
-                    ui.add_enabled_ui(cfg.cluster.is_none(), |ui| ui.horizontal(|ui| {
-                        if ui.checkbox(&mut cfg.submenu, "")
-                            .on_hover_text("Selecting this button opens its own pie of buttons")
-                            .changed()
-                            && cfg.submenu
-                            && cfg.children.is_empty()
-                        {
-                            cfg.children = cfg.default_sub_pie(i);
-                        }
-                        // How it is shown: the menu's style (Sub-pies section) or its own.
-                        let label = |s: Option<SubPieStyle>| match s {
-                            None => "Menu style",
-                            Some(SubPieStyle::Replace) => "Replace",
-                            Some(SubPieStyle::FanOut) => "Fan-out",
-                        };
-                        ui.add_enabled_ui(cfg.submenu, |ui| {
-                            egui::ComboBox::from_id_salt(("sub_pie_style", i))
-                                .width(80.0)
-                                .selected_text(label(cfg.style))
+                        IconKind::Image(n) => {
+                            egui::ComboBox::from_id_salt("pie_demo_icon_image")
+                                .selected_text(IMAGE_ICONS[*n % IMAGE_ICONS.len()].0)
                                 .show_ui(ui, |ui| {
-                                    for s in [None, Some(SubPieStyle::Replace), Some(SubPieStyle::FanOut)] {
-                                        ui.selectable_value(&mut cfg.style, s, label(s));
+                                    for (k, (name, _)) in IMAGE_ICONS.iter().enumerate() {
+                                        changed |= ui.selectable_value(n, k, *name).changed();
                                     }
                                 });
-                        });
-                    }));
-                    ui.end_row();
+                        }
+                    }
                 });
-                if cfg.submenu {
-                    // The same editor again, for this button's sub-pie (to any depth). A
-                    // fan-out's children get their problems from this level's check.
-                    let child_fan = cfg.fans(style).then(|| FanInfo {
-                        dir: i,
-                        problems: problems
-                            .iter()
-                            .filter_map(|p| match p {
-                                ButtonProblem::InFanOut { parent, problem } if Some(*parent) == button_of[i] => {
-                                    Some((**problem).clone())
-                                }
-                                _ => None,
-                            })
-                            .collect(),
+                ui.end_row();
+
+                ui.label("Tooltip");
+                changed |= ui.add(egui::TextEdit::singleline(&mut d.tooltip).desired_width(130.0)).changed();
+                ui.end_row();
+            }
+
+            ui.label("Colour");
+            changed |= ui.color_edit_button_srgba(&mut d.color).changed();
+            ui.end_row();
+
+            if matches!(button.kind, PieButtonKind::Action) {
+                ui.label("Drawn as");
+                ui.horizontal(|ui| {
+                    changed |= ui.radio_value(&mut d.kind, ButtonKind::Button, "Button").changed();
+                    changed |= ui.radio_value(&mut d.kind, ButtonKind::Checkbox, "Checkbox").changed();
+                });
+                ui.end_row();
+            }
+
+            if button.is_cluster() {
+                ui.label("Layout");
+                egui::ComboBox::from_id_salt("pie_demo_cluster_layout")
+                    .width(110.0)
+                    .selected_text(match d.cluster.layout {
+                        ClusterLayout::Row => "Row",
+                        ClusterLayout::Column => "Column",
+                        ClusterLayout::Grid => "Grid (2 columns)",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (layout, name) in [
+                            (ClusterLayout::Row, "Row"),
+                            (ClusterLayout::Column, "Column"),
+                            (ClusterLayout::Grid, "Grid (2 columns)"),
+                        ] {
+                            changed |= ui.selectable_value(&mut d.cluster.layout, layout, name).changed();
+                        }
                     });
-                    let heading = if child_fan.is_some() { "Fan-out buttons" } else { "Sub-pie buttons" };
-                    egui::CollapsingHeader::new(heading)
-                        .id_salt(("sub_pie", i))
-                        .show(ui, |ui| button_list_editor(ui, menu, icons, &mut cfg.children, child_fan));
-                }
-            }));
-    }
+                ui.end_row();
+
+                ui.label("Spacing");
+                ui.horizontal(|ui| {
+                    changed |= demo_px(ui, &mut d.cluster.spacing, ClusterLook::default().spacing, 0.0..=60.0);
+                });
+                ui.end_row();
+            }
+        });
+    });
+    changed
 }
 
 impl Demo {
@@ -1266,13 +1352,13 @@ impl Demo {
                 ui.horizontal_wrapped(|ui| {
                     name(ui, "Assign painted or image icons to the eight root buttons, or restore the defaults.");
                     if ui.button("Vector").clicked() {
-                        sample_icons(&mut self.button_configs, SampleIcons::Vector);
+                        sample_icons(&self.buttons, &mut self.decor, SampleIcons::Vector);
                     }
                     if ui.button("Image").clicked() {
-                        sample_icons(&mut self.button_configs, SampleIcons::Image);
+                        sample_icons(&self.buttons, &mut self.decor, SampleIcons::Image);
                     }
                     if ui.button("Reset").clicked() {
-                        sample_icons(&mut self.button_configs, SampleIcons::Reset);
+                        sample_icons(&self.buttons, &mut self.decor, SampleIcons::Reset);
                     }
                 });
             }
@@ -1339,6 +1425,7 @@ impl Demo {
                 }
             });
         }
+        let style_before = self.menu.settings.sub_pies.style;
         let mut shown = 0;
         for group in SettingsGroup::ALL {
             let rows = visible_rows(group, &self.menu.settings, query);
@@ -1366,14 +1453,59 @@ impl Demo {
         if shown == 0 {
             ui.label(RichText::new("No matching settings.").italics().color(ui.visuals().weak_text_color()));
         }
+        self.follow_menu_style(style_before);
     }
 
-    /// The Buttons tab (the button list of the old demo until the tree takes over).
-    fn buttons_tab(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Reset buttons").clicked() {
-            self.button_configs = default_button_configs();
+    /// The editors only set `sub_pies.style`; keeping the buttons legal under a fan-out style is
+    /// the caller's job: sub-pies that cannot fan out are pinned to replace style, and the
+    /// notice says which. `before` is the style at the start of the frame.
+    fn follow_menu_style(&mut self, before: SubPieStyle) {
+        let style = self.menu.settings.sub_pies.style;
+        if style != before && style == SubPieStyle::FanOut {
+            self.notice = set_menu_sub_pie_style(&mut self.menu.settings, &mut self.buttons, style);
         }
-        button_list_editor(ui, &self.menu, &self.icons, &mut self.button_configs, None);
+    }
+
+    /// The Buttons tab: the library's tree above (a search shows only the buttons that match),
+    /// the inspector of the selected node below, with the demo's Appearance group among its
+    /// own controls.
+    fn buttons_tab(&mut self, ui: &mut egui::Ui, query: &str) {
+        ui.horizontal(|ui| {
+            if ui.button("Reset buttons").clicked() {
+                (self.buttons, self.decor) = default_tree();
+                self.selection = Selection::root();
+            }
+            ui.label(RichText::new(format!("{} root buttons", self.buttons.len())).weak().small());
+        });
+        let tree_height = (ui.available_height() * 0.4).max(100.0);
+        egui::Panel::top("buttons_tree_panel")
+            .resizable(true)
+            .default_size(tree_height)
+            .min_size(60.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("buttons_tree_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                    let settings = &self.menu.settings;
+                    if query.is_empty() {
+                        button_tree(ui, settings, &self.buttons, &mut self.selection);
+                    } else {
+                        button_tree_filtered(ui, settings, &self.buttons, &mut self.selection, &|b| button_matches(b, settings, query));
+                    }
+                });
+            });
+        egui::ScrollArea::vertical().id_salt("buttons_inspector_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            let decor = &mut self.decor;
+            let out = button_inspector(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, |ui, path, button| {
+                // Read first, write only on a change: the inspector may have reshaped the
+                // tree this frame, and the table follows only once it returns.
+                let mut d = decor_at(decor, path);
+                if appearance_editor(ui, button, &mut d) {
+                    decor.insert(path.to_vec(), d);
+                }
+            });
+            for edit in &out.edits {
+                rekey(&mut self.decor, edit);
+            }
+        });
     }
 }
 
@@ -1385,24 +1517,17 @@ impl eframe::App for Demo {
         // (e.g. a colour picker) is open, Esc belongs to it and must not also reach the
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
-        self.buttons = build_buttons(&self.button_configs, self.menu.settings.sub_pies.style, false);
-        // Problems (shared key / direction) in any level are shown in red in the editor;
-        // the menu stays closed until they are fixed, because debug builds assert on them
-        // when the level opens.
-        let mut problems = Vec::new();
-        collect_problems(&self.menu, &self.button_configs, "", &mut problems);
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             ui.add_space(4.0);
             let query = self.search.trim().to_lowercase();
             // Two tabs; the one that is not showing carries the number of search hits.
-            let menu_hits = menu_hit_count(&self.menu.settings, &query);
+            let hits = [
+                (LeftTab::Menu, "Menu", menu_hit_count(&self.menu.settings, &query)),
+                (LeftTab::Buttons, "Buttons", buttons_hit_count(&self.buttons, &self.menu.settings, &query)),
+            ];
             ui.horizontal(|ui| {
-                for (tab, name, hits) in [(LeftTab::Menu, "Menu", menu_hits), (LeftTab::Buttons, "Buttons", 0)] {
-                    let label = if !query.is_empty() && self.left_tab != tab && tab == LeftTab::Menu {
-                        format!("{name} ({hits})")
-                    } else {
-                        name.to_string()
-                    };
+                for (tab, name, hits) in hits {
+                    let label = if !query.is_empty() && self.left_tab != tab { format!("{name} ({hits})") } else { name.to_string() };
                     ui.selectable_value(&mut self.left_tab, tab, label);
                 }
             });
@@ -1434,10 +1559,12 @@ impl eframe::App for Demo {
             // Solid (non-floating) scrollbar, so it takes its own space instead of covering
             // the reset buttons at the right edge of each row.
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-            egui::ScrollArea::vertical().show(ui, |ui| match self.left_tab {
-                LeftTab::Menu => self.menu_tab(ui, &query),
-                LeftTab::Buttons => self.buttons_tab(ui),
-            });
+            match self.left_tab {
+                LeftTab::Menu => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.menu_tab(ui, &query));
+                }
+                LeftTab::Buttons => self.buttons_tab(ui, &query),
+            }
         });
 
         // The generated code, live. Declared before the central panel, so the central panel
@@ -1456,14 +1583,17 @@ impl eframe::App for Demo {
                         egui_pie_menu::dev_tool::code_view(ui, &code);
                     }
                     CodeTab::Draw => {
-                        let code = draw_code(&self.button_configs, self.menu.settings.sub_pies.style);
+                        let code = draw_code(&self.buttons, &self.decor);
                         egui_pie_menu::dev_tool::code_view(ui, &code);
                     }
                 }
             });
         }
 
-        // The menu needs at least one button and no configuration problems.
+        // Problems (shared key / direction) in any level are listed in a window and marked in
+        // the tree; the menu stays closed until they are fixed, because debug builds assert on
+        // them when the level opens. The menu needs at least one button.
+        let problems = tree_problems(&self.menu.settings, &self.buttons);
         let menu_ok = problems.is_empty() && !self.buttons.is_empty();
         if !menu_ok {
             self.menu.close();
@@ -1478,7 +1608,7 @@ impl eframe::App for Demo {
                     for p in &problems {
                         ui.colored_label(Color32::LIGHT_RED, format!("• {p}"));
                     }
-                    ui.label("The menu is disabled until this is fixed (see the Button list section).");
+                    ui.label("The menu is disabled until this is fixed (see the Buttons tab).");
                 });
         }
 
@@ -1560,221 +1690,28 @@ impl eframe::App for Demo {
             } else {
                 ctx.input(|i| i.pointer.secondary_down())
             };
-            let hint_gap = self.menu.settings.number_hints.spacing;
-            let button_h = self.button_height;
 
             // The title is the open (replace-style) sub-pie's parent, or the "Menu title" at the root.
-            let style = self.menu.settings.sub_pies.style;
-            let parent = route_configs(&self.button_configs, self.menu.path(), style).and_then(|r| r.last().copied());
-            self.menu.title = match parent {
-                Some(c) => Some(c.label.clone()),
+            self.menu.title = match button_at(&self.buttons, self.menu.path()) {
+                Some(parent) => Some(parent.label.clone()),
                 None => (!self.title.is_empty()).then(|| self.title.clone()),
             };
-            let configs = &self.button_configs;
-            let icons = &self.icons;
-            let images = &self.images;
-            let sub_pie_look = self.sub_pie_look;
+            let look = Look {
+                decor: &self.decor,
+                images: &self.images,
+                icons: &self.icons,
+                sub_pie_look: self.sub_pie_look,
+                button_h: self.button_height,
+                hint_gap: self.menu.settings.number_hints.spacing,
+                show_hints: self.show_hints,
+            };
 
             // Does nothing while the menu is closed; closes itself on any response but
-            // `None` (a pinned menu stays open after a selection).
+            // `None` (a pinned menu stays open after a selection). `b.path` is the button's
+            // route from the root, whichever ring it is in (the level shown, or a fan-out
+            // open beside it): it indexes the tree directly.
             let response = self.menu.show(ctx, &self.buttons, key_down, |ui, b| {
-                // `b.path` is the button's route from the root, whichever ring it is in
-                // (the level shown, or a fan-out open beside it).
-                let Some(cfg) = route_configs(configs, b.path, style).and_then(|r| r.last().copied()) else {
-                    return;
-                };
-                let hovered = b.hovered;
-                // Hover emphasis enlarges the content, not the layer (which would blur the
-                // text): scale the minimum height and the padding along with the label.
-                let button_h = button_h * b.scale();
-                let pad_x = 10.0 * b.scale();
-                // The pie's own highlight is the only hover feedback: egui's per-widget
-                // hover/press outlines would add a second, inconsistent one on top.
-                // (An app drawing plain widgets can call `b.use_pie_hover(ui)` instead.)
-                // Not in a cluster: it is never highlighted, and its items are plain
-                // widgets with egui's native hover and press look.
-                if cfg.cluster.is_none() {
-                    let w = &mut ui.visuals_mut().widgets;
-                    let (stroke, expansion) = (w.inactive.bg_stroke, w.inactive.expansion);
-                    w.hovered.bg_stroke = stroke;
-                    w.active.bg_stroke = stroke;
-                    w.hovered.expansion = expansion;
-                    w.active.expansion = expansion;
-                }
-                let bg = if !b.enabled {
-                    cfg.color.gamma_multiply(0.25)
-                } else if hovered {
-                    cfg.color
-                } else {
-                    cfg.color.gamma_multiply(0.6)
-                };
-                // Buttons that open a sub-pie can look different from actions.
-                let (bg, stroke) = if b.opens_sub_pie() && !cfg.back {
-                    match sub_pie_look {
-                        SubPieLook::Same => (bg, egui::Stroke::NONE),
-                        SubPieLook::Outlined => (bg.gamma_multiply(0.3), egui::Stroke::new(1.5, bg)),
-                        SubPieLook::Dimmer => (bg.gamma_multiply(0.55), egui::Stroke::NONE),
-                    }
-                } else {
-                    (bg, egui::Stroke::NONE)
-                };
-                // A cluster: its items in the chosen layout, inside the usual coloured frame.
-                // Each is an `egui::Button` registered with `b.item(n, ..)` (n = its index in
-                // the config list); the label underlines the item's mnemonic.
-                if let Some(cl) = &cfg.cluster {
-                    let item = |ui: &mut egui::Ui, n: usize| {
-                        let button = egui::Button::new(b.item_label(n)).min_size(Vec2::new(0.0, button_h));
-                        b.item(n, ui.add(button));
-                    };
-                    egui::Frame::new()
-                        .fill(bg)
-                        .corner_radius(6.0)
-                        .inner_margin(Vec2::new(pad_x, 3.0 * b.scale()))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing = Vec2::splat(cl.spacing);
-                            ui.spacing_mut().button_padding = Vec2::new(pad_x * 0.6, 0.0);
-                            let count = cl.items.len();
-                            match cl.layout {
-                                ClusterLayout::Row => {
-                                    ui.horizontal(|ui| (0..count).for_each(|n| item(ui, n)));
-                                }
-                                ClusterLayout::Column => {
-                                    ui.vertical(|ui| (0..count).for_each(|n| item(ui, n)));
-                                }
-                                ClusterLayout::Grid => {
-                                    egui::Grid::new(("cluster_grid", b.idx))
-                                        .spacing(Vec2::splat(cl.spacing))
-                                        .show(ui, |ui| {
-                                            for n in 0..count {
-                                                item(ui, n);
-                                                if n % 2 == 1 {
-                                                    ui.end_row();
-                                                }
-                                            }
-                                        });
-                                }
-                            }
-                        });
-                    return;
-                }
-                // Label and digit colours come from the library: egui's widget colours
-                // for the hover state, or the forced colour; disabled is greyed out.
-                let hint = b.number_hint.as_ref().filter(|_| self.show_hints).map(|h| {
-                    (RichText::new(&h.text).color(h.color), h.on_right)
-                });
-
-                // Icon + label, with the mnemonic underlined.
-                let mut label = b.label_text();
-                // Sub-pie and back buttons carry a marker (from the "Sub-pies" section) in a
-                // slot of its own: at the far end, or before the icon. The icon is the
-                // button's own and never replaces it.
-                let marker = icons.marker(cfg);
-                let far_end = icons.placement == MarkerPlacement::FarEnd;
-                let mut prefix = String::new();
-                if !marker.is_empty() && !far_end {
-                    prefix += &format!("{marker}  ");
-                }
-                if cfg.icon_kind == IconKind::Text && !cfg.icon.is_empty() {
-                    prefix += &format!("{}  ", cfg.icon);
-                }
-                if !prefix.is_empty() {
-                    label = label.prefix(prefix);
-                }
-                // Far end: in the label's colour, set apart from the text by a little space.
-                let far_marker = (!marker.is_empty() && far_end).then(|| {
-                    let text = if b.rtl { format!("{marker}  ") } else { format!("  {marker}") };
-                    RichText::new(text).color(b.text_color())
-                });
-                let text: egui::WidgetText = label.into();
-                // A painted or image icon, about the text height; `b.scale()` keeps it crisp
-                // under hover emphasis.
-                let icon_size = ui.text_style_height(&egui::TextStyle::Body) * b.scale();
-                let graphic = cfg.icon_kind != IconKind::Text;
-                let icon_color = b.text_color();
-
-                let resp = match cfg.kind {
-                    // Display only: the toggle happens on Selected.
-                    // Both kinds get the same fixed height ("Button height"): no vertical
-                    // padding, content centred in a row of exactly that height.
-                    ButtonKind::Checkbox => egui::Frame::new()
-                        .fill(bg)
-                        .stroke(stroke)
-                        .corner_radius(6.0)
-                        .inner_margin(Vec2::new(pad_x, 0.0))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.x = hint_gap;
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(0.0, button_h),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.set_min_height(button_h);
-                                    // Mirrored: the far end is the left.
-                                    if b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
-                                    if let Some((h, false)) = &hint { ui.label(h.clone()); }
-                                    let mut display = cfg.checked;
-                                    if b.rtl {
-                                        // Right-to-left: the box goes right of its text.
-                                        ui.label(text);
-                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
-                                        ui.add(egui::Checkbox::without_text(&mut display));
-                                    } else {
-                                        ui.add(egui::Checkbox::without_text(&mut display));
-                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
-                                        ui.label(text);
-                                    }
-                                    if let Some((h, true)) = &hint { ui.label(h.clone()); }
-                                    if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
-                                },
-                            );
-                        })
-                        .response,
-                    // A painted or image icon: same look and height as a button, laid out by
-                    // hand (the icon before the label, after it when mirrored).
-                    ButtonKind::Button if graphic => egui::Frame::new()
-                        .fill(bg)
-                        .stroke(stroke)
-                        .corner_radius(6.0)
-                        .inner_margin(Vec2::new(pad_x, 0.0))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.x = hint_gap.max(4.0 * b.scale());
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(0.0, button_h),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.set_min_height(button_h);
-                                    if b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
-                                    if let Some((h, false)) = &hint { ui.label(h.clone()); }
-                                    if b.rtl {
-                                        ui.label(text);
-                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
-                                    } else {
-                                        add_icon(ui, cfg.icon_kind, images, icon_size, icon_color);
-                                        ui.label(text);
-                                    }
-                                    if let Some((h, true)) = &hint { ui.label(h.clone()); }
-                                    if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
-                                },
-                            );
-                        })
-                        .response,
-                    ButtonKind::Button => {
-                        ui.spacing_mut().button_padding = Vec2::new(pad_x, 0.0);
-                        let mut button = hint_button(text, hint, hint_gap)
-                            .fill(bg)
-                            .stroke(stroke)
-                            .corner_radius(6.0)
-                            .min_size(Vec2::new(0.0, button_h));
-                        if let Some(m) = far_marker {
-                            // egui lays text out left to right, so a mirrored layout's far
-                            // end is the left edge.
-                            button = if b.rtl { button.left_text(m) } else { button.right_text(m) };
-                        }
-                        ui.add(button)
-                    }
-                };
-                if !cfg.tooltip.is_empty() {
-                    resp.on_hover_text(&cfg.tooltip);
-                }
+                draw_button(ui, b, b.path, &look, None);
             });
             match response {
                 PieMenuResponse::Selected(_) => {
@@ -1782,27 +1719,23 @@ impl eframe::App for Demo {
                     let route = self.menu.selected_path().to_vec();
                     // A cluster's item: the last element is its number, not a button index.
                     let item = route.split_last().and_then(|(&n, up)| {
-                        let cfg = route_configs(&self.button_configs, up, style)?.last().copied()?;
-                        Some((up.to_vec(), cfg.cluster.as_ref()?.items.get(n)?.label.clone()))
+                        let cluster = button_at(&self.buttons, up).filter(|b| b.is_cluster())?;
+                        let label = cluster.cluster_items().iter().find(|i| i.number == n)?.label.clone();
+                        Some((up.to_vec(), label))
                     });
                     if let Some((up, label)) = item {
-                        let name = route_configs(&self.button_configs, &up, style)
-                            .map(|r| r.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(" › "))
-                            .unwrap_or_default();
-                        self.last_action = format!("Selected: {name} › {label}");
+                        self.last_action = format!("Selected: {} › {label}", names_along(&self.buttons, &up));
                         return;
                     }
-                    let name = route_configs(&self.button_configs, &route, style)
-                        .map(|r| r.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(" › "))
-                        .unwrap_or_default();
-                    if let Some(cfg) = config_at_mut(&mut self.button_configs, &route, style) {
-                        self.last_action = if cfg.kind == ButtonKind::Checkbox {
-                            cfg.checked = !cfg.checked;
-                            format!("Selected: {name} ({})", if cfg.checked { "on" } else { "off" })
-                        } else {
-                            format!("Selected: {name}")
-                        };
-                    }
+                    let name = names_along(&self.buttons, &route);
+                    let checkbox = button_at(&self.buttons, &route).is_some_and(|b| is_checkbox(b, &decor_at(&self.decor, &route)));
+                    self.last_action = if checkbox {
+                        let d = decor_mut(&mut self.decor, &route);
+                        d.checked = !d.checked;
+                        format!("Selected: {name} ({})", if d.checked { "on" } else { "off" })
+                    } else {
+                        format!("Selected: {name}")
+                    };
                 }
                 PieMenuResponse::Dismissed => {
                     // While pinned only Esc gets here, and it unpins.
@@ -1820,52 +1753,233 @@ impl eframe::App for Demo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_pie_menu::ClusterItem;
 
-    #[test]
-    fn add_sub_pie_uses_the_first_absent_slot() {
-        let mut cfgs = default_button_configs();
-        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::Replace), None);
-        cfgs[3].present = false;
-        cfgs[5].present = false;
-        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::Replace), Some(3));
-        let c = &cfgs[3];
-        assert!(c.present && c.submenu && c.style.is_none());
-        assert_eq!(c.label, "Sub-pie");
-        let slots = PieDirection::SouthEast.fan_out_slots();
-        for (k, ch) in c.children.iter().enumerate() {
-            let allowed = slots.contains(&PieDirection::ALL[k]);
-            assert_eq!(ch.present, allowed || ch.back, "child {k}");
-        }
-        assert_eq!(c.children.iter().filter(|c| c.present && !c.back).count(), 5);
-        let backs: Vec<usize> = (0..8).filter(|&k| c.children[k].back).collect();
-        assert_eq!(backs, vec![7]);
-        // Next absent slot; style overrides.
-        assert_eq!(add_sub_pie(&mut cfgs, true, SubPieStyle::Replace), Some(5));
-        assert_eq!(cfgs[5].style, Some(SubPieStyle::FanOut));
-        assert_eq!(cfgs[5].label, "Fan-out");
-        cfgs[0].present = false;
-        assert_eq!(add_sub_pie(&mut cfgs, true, SubPieStyle::FanOut), Some(0));
-        assert_eq!(cfgs[0].style, None);
-        cfgs[1].present = false;
-        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::FanOut), Some(1));
-        assert_eq!(cfgs[1].style, Some(SubPieStyle::Replace));
-        cfgs[2].present = false;
-        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::Replace), Some(2));
-        assert_eq!(cfgs[2].style, None);
+    fn labels(map: &DecorMap, paths: &[&[usize]]) -> Vec<Option<String>> {
+        paths.iter().map(|p| map.get(*p).map(|d| d.tooltip.clone())).collect()
+    }
+
+    /// A table with a recognisable tooltip at every path given.
+    fn table(paths: &[&[usize]]) -> DecorMap {
+        paths
+            .iter()
+            .map(|p| {
+                let mut d = Decor::new(DEFAULT_COLOR);
+                d.tooltip = format!("{p:?}");
+                (p.to_vec(), d)
+            })
+            .collect()
     }
 
     #[test]
-    fn draw_code_covers_shown_buttons_and_sub_pies() {
-        let code = draw_code(&default_button_configs(), SubPieStyle::Replace);
+    fn default_tree_is_clean_in_both_styles() {
+        let (buttons, decor) = default_tree();
+        let mut s = PieMenuSettings::default();
+        s.input.auto_mnemonics = true;
+        assert!(tree_problems(&s, &buttons).is_empty(), "{:?}", tree_problems(&s, &buttons));
+        assert_eq!(buttons.len(), 8);
+        // Fan-out as the menu-wide style: the library pins what cannot fan out.
+        let mut fan = buttons.clone();
+        let mut s = s;
+        let notice = egui_pie_menu::dev_tool::set_menu_sub_pie_style(&mut s, &mut fan, SubPieStyle::FanOut);
+        assert!(notice.is_some_and(|n| n.contains("Paste Special")), "the back button faces the parent");
+        assert!(tree_problems(&s, &fan).is_empty());
+        // Every button of the tree has a decoration.
+        fn walk(level: &[PieButton], decor: &DecorMap, path: &mut Vec<usize>) {
+            for (i, b) in level.iter().enumerate() {
+                path.push(i);
+                assert!(decor.contains_key(path.as_slice()), "no decor for {path:?}");
+                walk(b.children(), decor, path);
+                path.pop();
+            }
+        }
+        walk(&buttons, &decor, &mut Vec::new());
+        assert_eq!(decor.len(), 8 + 6);
+        assert_eq!(buttons[1].children().len(), 6, "five children and the back button");
+        assert!(buttons[1].children().iter().any(|c| c.is_back()));
+        assert_eq!(decor[&vec![7]].kind, ButtonKind::Checkbox);
+    }
+
+    #[test]
+    fn removing_a_button_shifts_its_siblings_and_drops_its_subtree() {
+        let mut m = table(&[&[0], &[1], &[1, 0], &[1, 1], &[2], &[2, 0], &[3]]);
+        rekey(&mut m, &TreeEdit::Removed(vec![1]));
+        assert_eq!(labels(&m, &[&[0], &[1], &[2]]), vec![Some("[0]".into()), Some("[2]".into()), Some("[3]".into())]);
+        assert_eq!(labels(&m, &[&[1, 0]]), vec![Some("[2, 0]".into())], "a sibling's subtree moves with it");
+        assert_eq!(m.len(), 4, "[0], [2], [2,0] and [3] remain");
+        // One level down: removing [1, 0] shifts [1, 1] only.
+        let mut m = table(&[&[1], &[1, 0], &[1, 1], &[1, 2], &[2, 1]]);
+        rekey(&mut m, &TreeEdit::Removed(vec![1, 0]));
+        assert_eq!(labels(&m, &[&[1, 0], &[1, 1], &[2, 1]]), vec![Some("[1, 1]".into()), Some("[1, 2]".into()), Some("[2, 1]".into())]);
+        assert_eq!(m.len(), 4);
+        // Removing the last sibling shifts nothing.
+        let mut m = table(&[&[0], &[1], &[1, 0]]);
+        rekey(&mut m, &TreeEdit::Removed(vec![1]));
+        assert_eq!(labels(&m, &[&[0], &[1]]), vec![Some("[0]".into()), None]);
+    }
+
+    #[test]
+    fn dropping_children_keeps_the_button_and_forgets_below() {
+        let mut m = table(&[&[1], &[1, 0], &[1, 1, 0], &[2], &[2, 0]]);
+        rekey(&mut m, &TreeEdit::Dropped(vec![1]));
+        assert_eq!(labels(&m, &[&[1], &[1, 0], &[1, 1, 0], &[2], &[2, 0]]), vec![
+            Some("[1]".into()), None, None, Some("[2]".into()), Some("[2, 0]".into())
+        ]);
+    }
+
+    #[test]
+    fn a_new_button_starts_clean_and_inherits_its_ancestors_colour() {
+        let mut m = table(&[&[0], &[0, 0]]);
+        m.get_mut(&vec![0]).expect("present").color = Color32::from_rgb(1, 2, 3);
+        // A stale entry at the new path is cleared.
+        rekey(&mut m, &TreeEdit::Added(vec![0, 0]));
+        assert!(!m.contains_key(&vec![0, 0]));
+        // A path nobody decorated (a restored child, a new button) falls back to defaults.
+        let d = decor_at(&m, &[0, 5]);
+        assert_eq!(d.color, Color32::from_rgb(1, 2, 3));
+        assert_eq!(d.kind, ButtonKind::Button);
+        assert!(d.tooltip.is_empty());
+        assert_eq!(decor_at(&DecorMap::new(), &[4]).color, DEFAULT_COLOR);
+        // decor_mut stores the derived default.
+        assert_eq!(decor_mut(&mut m, &[0, 5]).color, Color32::from_rgb(1, 2, 3));
+        assert!(m.contains_key(&vec![0, 5]));
+    }
+
+    #[test]
+    fn rekey_follows_a_real_edit_sequence() {
+        // The same bookkeeping the library's inspector reports: remove, then add.
+        let (mut buttons, mut decor) = default_tree();
+        let s = PieMenuSettings::default();
+        assert!(s.input.use_number_keys);
+        decor.get_mut(&vec![2]).expect("redo").tooltip = "redo!".into();
+        buttons.remove(0);
+        rekey(&mut decor, &TreeEdit::Removed(vec![0]));
+        assert_eq!(button_at(&buttons, &[1]).map(|b| b.label.as_str()), Some("Redo"));
+        assert_eq!(decor[&vec![1]].tooltip, "redo!", "Redo moved from index 2 to 1");
+        assert_eq!(decor[&vec![0, 0]].color, decor[&vec![0]].color, "Paste Special's children moved to [0, k]");
+        assert_eq!(decor.len(), 7 + 6);
+    }
+
+    #[test]
+    fn buttons_search_counts_labels_directions_and_kinds() {
+        let (buttons, _) = default_tree();
+        let s = PieMenuSettings::default();
+        assert_eq!(buttons_hit_count(&buttons, &s, ""), 0);
+        assert_eq!(buttons_hit_count(&buttons, &s, "copy"), 1);
+        assert_eq!(buttons_hit_count(&buttons, &s, "as text"), 1, "a sub-pie child counts");
+        // "back" is the kind of one button; "sub-pie" the kind of Paste Special.
+        assert_eq!(buttons_hit_count(&buttons, &s, "back"), 1);
+        assert_eq!(buttons_hit_count(&buttons, &s, "sub-pie"), 1);
+        assert_eq!(buttons_hit_count(&buttons, &s, "fan-out"), 0);
+        let mut fan = s.clone();
+        fan.sub_pies.style = SubPieStyle::FanOut;
+        assert_eq!(buttons_hit_count(&buttons, &fan, "fan-out"), 1, "the menu's style decides");
+        // A direction name matches a root button and the children in that direction.
+        assert!(buttons_hit_count(&buttons, &s, "northeast") >= 1);
+        assert_eq!(buttons_hit_count(&buttons, &s, "zzz"), 0);
+        assert!(!button_matches(&buttons[0], &s, "ctrl"), "tooltips are not searched");
+    }
+
+    /// Runs `f` for a few frames in a headless egui context (layout and id clashes that panic
+    /// show up here; how it looks does not).
+    fn frames(demo: &mut Demo, mut f: impl FnMut(&mut Demo, &mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(Default::default(), |ui| f(demo, ui));
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_tabs_draw_without_panicking() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        frames(&mut demo, |d, ui| d.menu_tab(ui, ""));
+        frames(&mut demo, |d, ui| d.menu_tab(ui, "radius"));
+        frames(&mut demo, |d, ui| d.buttons_tab(ui, ""));
+        // Every node of the tree selected in turn, with the inspector and the Appearance group.
+        for sel in [Selection::root(), Selection::button([1]), Selection::button([1, 0]), Selection::button([7])] {
+            demo.selection = sel;
+            frames(&mut demo, |d, ui| d.buttons_tab(ui, ""));
+        }
+        frames(&mut demo, |d, ui| d.buttons_tab(ui, "paste"));
+        assert!(tree_problems(&demo.menu.settings, &demo.buttons).is_empty());
+    }
+
+    #[test]
+    fn a_fan_out_style_pins_what_cannot_fan_and_shows_the_notice() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        // No change of style: nothing happens.
+        demo.follow_menu_style(SubPieStyle::Replace);
+        assert!(demo.notice.is_none());
+        // The combo box sets the field; the demo then follows.
+        demo.menu.settings.sub_pies.style = SubPieStyle::FanOut;
+        demo.follow_menu_style(SubPieStyle::Replace);
+        let notice = demo.notice.clone().expect("Paste Special cannot fan out: its back button faces the parent");
+        assert!(notice.contains("Paste Special"), "{notice}");
+        assert!(matches!(&demo.buttons[1].kind, PieButtonKind::SubPie { style: Some(SubPieStyle::Replace), .. }));
+        assert!(tree_problems(&demo.menu.settings, &demo.buttons).is_empty());
+        // Back to replace: the pins stay, no new notice.
+        demo.notice = None;
+        demo.menu.settings.sub_pies.style = SubPieStyle::Replace;
+        demo.follow_menu_style(SubPieStyle::FanOut);
+        assert!(demo.notice.is_none());
+    }
+
+    #[test]
+    fn names_and_lookup_follow_the_tree() {
+        let (buttons, _) = default_tree();
+        assert_eq!(names_along(&buttons, &[1, 0]), "Paste Special › ".to_string() + &button_at(&buttons, &[1, 0]).expect("child").label);
+        assert_eq!(names_along(&buttons, &[0]), "Copy");
+        assert!(button_at(&buttons, &[]).is_none());
+        assert!(button_at(&buttons, &[9]).is_none());
+        assert!(button_at(&buttons, &[0, 0]).is_none(), "Copy has no children");
+    }
+
+    #[test]
+    fn sample_icons_follow_directions_and_reset_restores() {
+        let (buttons, mut decor) = default_tree();
+        sample_icons(&buttons, &mut decor, SampleIcons::Vector);
+        assert_eq!(decor[&vec![0]].icon_kind, IconKind::Vector(VectorIcon::Copy));
+        assert_eq!(decor[&vec![4]].icon_kind, IconKind::Vector(VectorIcon::Trash));
+        sample_icons(&buttons, &mut decor, SampleIcons::Image);
+        assert!(matches!(decor[&vec![3]].icon_kind, IconKind::Image(3)));
+        sample_icons(&buttons, &mut decor, SampleIcons::Reset);
+        assert_eq!(decor[&vec![0]].icon_kind, IconKind::Text);
+        assert_eq!(decor[&vec![4]].icon, "🗑");
+    }
+
+    #[test]
+    fn draw_code_covers_the_tree() {
+        let (buttons, decor) = default_tree();
+        let code = draw_code(&buttons, &decor);
         assert!(code.contains("[0] => { // Copy"));
         assert!(code.contains(".on_hover_text(\"Ctrl+C\")"));
         assert!(code.contains("from_rgb(70, 130, 180)"));
         assert!(code.contains("[1, 0] => {"), "sub-pie children get nested paths");
         assert!(code.contains("prefix(\"🗑  \")"));
         assert!(code.contains("ui.checkbox(&mut checked"));
-        assert!(code.contains("// Back"), "a replace sub-pie keeps its back button");
-        let fan = draw_code(&default_button_configs(), SubPieStyle::FanOut);
-        assert!(!fan.contains("// Back"), "a fan-out omits back buttons");
+        assert!(code.contains("// Back"), "the sub-pie's back button is drawn");
+        // A cluster: its items by number, in the chosen layout.
+        let cluster = PieButton::cluster(PieDirection::North)
+            .with_label("Format")
+            .with_items(vec![ClusterItem::new(7, "Bold"), ClusterItem::new(9, "Italic"), ClusterItem::new(12, "Underline")]);
+        let mut decor = DecorMap::new();
+        decor_mut(&mut decor, &[0]).cluster = ClusterLook { layout: ClusterLayout::Grid, spacing: 6.0 };
+        let code = draw_code(&[cluster], &decor);
+        assert!(code.contains("b.item(9, ui.button(b.item_label(9)));"));
+        assert!(code.contains("egui::Grid::new(\"cluster\")"));
+        assert!(code.contains("ui.end_row();"));
+    }
+
+    #[test]
+    fn a_checkbox_is_only_a_plain_button() {
+        let mut d = Decor::new(DEFAULT_COLOR);
+        d.kind = ButtonKind::Checkbox;
+        assert!(is_checkbox(&PieButton::new(PieDirection::North), &d));
+        assert!(!is_checkbox(&PieButton::back(PieDirection::North), &d));
+        assert!(!is_checkbox(&PieButton::new(PieDirection::North).with_children(vec![PieButton::new(PieDirection::South)]), &d));
     }
 
     #[test]
