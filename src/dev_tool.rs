@@ -345,6 +345,8 @@ pub fn code_view(ui: &mut Ui, code: &str) {
 
 mod fields;
 pub use fields::*;
+#[allow(dead_code)] // used by the inspector (next step)
+mod legality;
 
 // ---------------------------------------------------------------------------------------
 // Buttons editor
