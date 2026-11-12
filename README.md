@@ -803,6 +803,7 @@ Additive; nothing to change in existing code:
 - `PieMenu::configure`: change the settings in a closure.
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
+- `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
 
 ## License
 
