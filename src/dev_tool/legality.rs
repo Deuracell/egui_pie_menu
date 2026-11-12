@@ -154,7 +154,9 @@ pub(crate) fn problem_button_paths(problems: &[(Vec<usize>, ButtonProblem)]) -> 
 // ---------------------------------------------------------------------------------------
 
 /// The directions the button at `path` may take: the ones no sibling uses, plus its own; in a
-/// fan-out only the five [`PieDirection::fan_out_slots`].
+/// fan-out only the five [`PieDirection::fan_out_slots`]. (The inspector asks per direction
+/// through [`direction_block_reason`].)
+#[cfg(test)]
 pub(crate) fn allowed_directions(buttons: &[PieButton], settings: &PieMenuSettings, path: &[usize]) -> Vec<PieDirection> {
     let Some((own, parent)) = path.split_last() else { return Vec::new() };
     let Some(level) = level_at(buttons, parent) else { return Vec::new() };
@@ -690,11 +692,11 @@ pub(crate) fn set_sub_pie_style(
     Ok(remove)
 }
 
-/// Sets the menu-wide [`PieMenuSubPieSettings::style`]. Going to a fan-out, every sub-pie that
+/// Sets the menu-wide [`PieMenuSubPieSettings::style`] and keeps `buttons` legal. Going to a fan-out, every sub-pie that
 /// follows the menu but cannot be a fan-out (children facing the parent, nested sub-pies) is
 /// pinned to [`SubPieStyle::Replace`] so the tree stays legal; the notice says which. `None`
 /// when nothing was pinned.
-pub(crate) fn set_menu_sub_pie_style(
+pub fn set_menu_sub_pie_style(
     settings: &mut PieMenuSettings,
     buttons: &mut [PieButton],
     style: SubPieStyle,

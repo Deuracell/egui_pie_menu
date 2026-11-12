@@ -623,12 +623,17 @@ menu.settings.animations.hover_duration = Duration::from_millis(100);    // easi
 
 The `dev_tool` module is a set of embeddable pieces, with no window of its own. Put them in your own side panels, tune the menu live, and copy the generated code into your project.
 
-The buttons editor adds a ready-made sub-pie or fan-out with one click ("Add sub-pie" / "Add fan-out"), and a fan-out's blocked directions (the three facing the parent) cannot be picked.
+The buttons editor is a tree plus an inspector. Everything it offers is legal: a direction that is taken (or, in a fan-out, faces the parent) is greyed out with the reason, a fan-out holds only plain and back buttons, "Remove" is hidden where it would leave an empty menu, sub-pie or cluster, and a mnemonic key or cluster item number that another button holds is refused. Turning a button into another kind keeps what it dropped aside, and converting back restores it; turning a replace-style sub-pie into a fan-out drops its back buttons that face the parent.
 
 | Piece | What it does |
 |---|---|
-| `settings_editor(ui, &mut settings) -> bool` | controls for every settings field, grouped in collapsing headers |
-| `buttons_editor(ui, &mut buttons, auto_mnemonics) -> bool` | tree editor over the real `PieButton` data (sub-pies, fan-outs, clusters); buttons with a `check_buttons` problem turn red |
+| `settings_editor(ui, &mut settings) -> bool` | controls for every settings field, one collapsing header per `SettingsGroup` |
+| `field_editor(ui, &mut settings, SettingsField) -> bool` / `group_editor(ui, &mut settings, SettingsGroup) -> bool` | one field (drag values with units, reset to default, optional fields as a checkbox that remembers its last value), or one section (fields that do not apply, such as the slide settings without `SlideOut`, are left out); `SettingsField::ALL`, `SettingsGroup::fields()`, `field_label()` for building your own panels or a search |
+| `button_tree(ui, &settings, &buttons, &mut Selection)` | collapsible tree of the buttons (`NE · Paste Special ▸`); a red warning sign marks a button whose subtree has a `check_buttons` problem |
+| `button_inspector(ui, &mut settings, &mut buttons, &mut Selection, extras) -> InspectorOutput` | identity, keys and contents of the selected node, your own controls (`extras`), and the menu-wide settings that affect it (`relevant_fields`); `InspectorOutput::edits` (`TreeEdit::Removed`/`Dropped`/`Added`) lets you keep per-button data of your own in step |
+| `preview_target(&buttons, &settings, &Selection) -> PreviewTarget` | which level to show, which fan to open (`PieMenu::set_open_fan_out`) and what to highlight for a selection |
+| `buttons_editor(ui, &mut buttons, auto_mnemonics) -> bool` | tree and inspector stacked, with the selection kept in egui memory |
+| `set_menu_sub_pie_style(&mut settings, &mut buttons, style) -> Option<String>` | sets the menu-wide sub-pie style; going to a fan-out pins the sub-pies that cannot fan out to replace style and says which |
 | `code_view(ui, &code)` | read-only monospace code area with a "Copy" button |
 | `menu_to_code(title, &settings, &buttons) -> String` | a complete snippet: `use` lines, `let buttons = vec![..];`, `PieMenu::new()` with the `.configure(..)` closure, and a commented `show` skeleton |
 | `buttons_to_code(&buttons)` / `settings_to_code(&settings)` | the two halves on their own; `settings_to_code` lists only what differs from the default |
