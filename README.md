@@ -630,6 +630,7 @@ The buttons editor is a tree plus an inspector. Everything it offers is legal: a
 | `settings_editor(ui, &mut settings) -> bool` | controls for every settings field, one collapsing header per `SettingsGroup` |
 | `field_editor(ui, &mut settings, SettingsField) -> bool` / `group_editor(ui, &mut settings, SettingsGroup) -> bool` | one field (drag values with units, reset to default, optional fields as a checkbox that remembers its last value), or one section (fields that do not apply, such as the slide settings without `SlideOut`, are left out); `SettingsField::ALL`, `SettingsGroup::fields()`, `field_label()` for building your own panels or a search |
 | `button_tree(ui, &settings, &buttons, &mut Selection)` | collapsible tree of the buttons (`NE · Paste Special ▸`); a red warning sign marks a button whose subtree has a `check_buttons` problem |
+| `button_tree_filtered(ui, &settings, &buttons, &mut Selection, &filter)` | the tree showing only the buttons a predicate accepts and the ones above them (a search); the way to every match stays open |
 | `button_inspector(ui, &mut settings, &mut buttons, &mut Selection, extras) -> InspectorOutput` | identity, keys and contents of the selected node, your own controls (`extras`), and the menu-wide settings that affect it (`relevant_fields`); `InspectorOutput::edits` (`TreeEdit::Removed`/`Dropped`/`Added`) lets you keep per-button data of your own in step |
 | `preview_target(&buttons, &settings, &Selection) -> PreviewTarget` | which level to show, which fan to open (`PieMenu::set_open_fan_out`) and what to highlight for a selection |
 | `buttons_editor(ui, &mut buttons, auto_mnemonics) -> bool` | tree and inspector stacked, with the selection kept in egui memory |
@@ -652,6 +653,8 @@ egui::Panel::right("code").show(ui, |ui| {
     code_view(ui, &code);
 });
 ```
+
+For a live preview of the selected node (what the demo's Configure mode does), compute `preview_target(&buttons, &settings, &selection)` each frame, keep one `PieMenu` per `level_path` (pinned at the centre of your canvas), call `set_open_fan_out(target.fan_trigger)` on it, and draw `show_with_pointer(ctx, level_buttons, None, true, ..)` with `target.highlight` and `target.item` outlined by your render closure. Pass the preview a clone of the settings with `sub_pies.hover_delay = None`, `input.use_mnemonic_keys = false` and no `pinned_dismiss_inputs`, and a tree that has no `check_buttons` problems (debug builds assert on them when a level opens).
 
 Generated output (a small menu with a changed radius and mnemonics on):
 
@@ -711,8 +714,12 @@ cargo run --example demo
 
   Right-click anywhere in the window (or hold Space) to open the menu. The demo is also the dev tool, in three panes:
 
-- Left: the editors. Live drag fields and colour pickers for the settings, the button list editor (labels, icons, sub-pies, fan-outs, clusters), the "Menu title" field, and an "All settings (generic editor)" section with one control for every field of `PieMenuSettings`.
-- Centre: the menu itself, so every change can be tried at once ("Pin pie-menu" keeps it open).
+- Left, in two tabs, with one search box that filters both (the tab that is not showing carries the number of hits, for example "Buttons (3)"):
+  - **Menu**: one collapsing section per `SettingsGroup`, drawn with `group_editor`'s widgets (`field_editor`), plus a few rows of the demo's own, tagged "demo" where they only change how the demo draws its buttons (number hints, button height, sub-pie look, markers, sample icons) and not the menu code. Choosing a fan-out as the menu-wide sub-pie style pins the sub-pies that cannot fan out to replace style (`set_menu_sub_pie_style`) and says which.
+  - **Buttons**: `button_tree` above, `button_inspector` below with the demo's own "Appearance" group (icon, tooltip, colour, checkbox, cluster layout) among its controls and, at the end, the menu-wide settings that affect the selected node. The demo keeps that appearance data in a table keyed by button path and follows `InspectorOutput::edits`.
+- Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
+  - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
+  - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
 - Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts.
 
 ## Upgrading from v0.36.0
@@ -808,6 +815,7 @@ Additive; nothing to change in existing code:
 - `PieMenu::configure`: change the settings in a closure.
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
+- The `dev_tool` module: embeddable editors for the settings (`settings_editor`, `group_editor`, `field_editor`) and for a `PieButton` tree (`button_tree`, `button_tree_filtered`, `button_inspector`, `buttons_editor`), `preview_target` for a live preview, `set_menu_sub_pie_style`, and code generators ([Dev tool](#dev-tool)).
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
 
 ## License
