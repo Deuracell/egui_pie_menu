@@ -273,6 +273,8 @@ fn node_title(text: String, bad: bool) -> RichText {
 
 struct TreeCtx<'a> {
     settings: &'a PieMenuSettings,
+    /// Only the buttons this accepts, and the ones above them, are shown (`None`: all).
+    filter: Option<&'a dyn Fn(&PieButton) -> bool>,
     bad: Vec<Vec<usize>>,
     /// The selection changed since the last frame: open the way to it.
     reveal: bool,
@@ -286,7 +288,17 @@ impl TreeCtx<'_> {
     }
 }
 
+/// Whether `button` or something below it passes `filter`.
+fn subtree_matches(filter: &dyn Fn(&PieButton) -> bool, button: &PieButton) -> bool {
+    filter(button) || button.children().iter().any(|c| subtree_matches(filter, c))
+}
+
 fn tree_node(ui: &mut Ui, ctx: &TreeCtx, button: &PieButton, path: &[usize], selection: &mut Selection) {
+    if let Some(filter) = ctx.filter
+        && !subtree_matches(filter, button)
+    {
+        return;
+    }
     let title = node_title(node_text(button, ctx.settings), ctx.has_problem(path));
     let selected = selection.path == path && selection.item.is_none();
     let items = button.cluster_items();
@@ -303,6 +315,12 @@ fn tree_node(ui: &mut Ui, ctx: &TreeCtx, button: &PieButton, path: &[usize], sel
     let id = ctx.id.with(("node", path));
     let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
     if ctx.reveal && selection.path.len() > path.len() && selection.path.starts_with(path) {
+        state.set_open(true);
+    }
+    // A search opens the way to every match below.
+    if let Some(filter) = ctx.filter
+        && children.iter().any(|c| subtree_matches(filter, c))
+    {
         state.set_open(true);
     }
     state
@@ -335,13 +353,35 @@ fn tree_node(ui: &mut Ui, ctx: &TreeCtx, button: &PieButton, path: &[usize], sel
 /// `settings` decides what a sub-pie without a style of its own is (the menu-wide style) and
 /// supplies `input.auto_mnemonics` for the problem check.
 pub fn button_tree(ui: &mut Ui, settings: &PieMenuSettings, buttons: &[PieButton], selection: &mut Selection) {
+    tree(ui, settings, buttons, selection, None);
+}
+
+/// [`button_tree`] showing only the buttons `filter` accepts and the buttons above them (a
+/// search); the way to every match is kept open. The menu node and the selection are unaffected.
+pub fn button_tree_filtered(
+    ui: &mut Ui,
+    settings: &PieMenuSettings,
+    buttons: &[PieButton],
+    selection: &mut Selection,
+    filter: &dyn Fn(&PieButton) -> bool,
+) {
+    tree(ui, settings, buttons, selection, Some(filter));
+}
+
+fn tree(
+    ui: &mut Ui,
+    settings: &PieMenuSettings,
+    buttons: &[PieButton],
+    selection: &mut Selection,
+    filter: Option<&dyn Fn(&PieButton) -> bool>,
+) {
     *selection = selection.clamped(buttons);
     let id = ui.id().with("pie_button_tree");
     let last_id = id.with("last_selection");
     let last: Option<Selection> = ui.data(|d| d.get_temp(last_id));
     let reveal = last.as_ref() != Some(&*selection);
     let problems = tree_problems(settings, buttons);
-    let ctx = TreeCtx { settings, bad: problem_button_paths(&problems), reveal, id };
+    let ctx = TreeCtx { settings, filter, bad: problem_button_paths(&problems), reveal, id };
     let root_title = node_title("Menu".to_string(), !problems.is_empty());
     if ui.selectable_label(*selection == Selection::root(), root_title).clicked() {
         *selection = Selection::root();
@@ -1023,6 +1063,30 @@ mod tests {
             }
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn subtree_filter_keeps_the_way_to_a_match() {
+        let t = tree();
+        let named = |label: &'static str| move |b: &PieButton| b.label == label;
+        // "Deep" is below "More" (index 2): that branch matches, the others do not.
+        assert!(subtree_matches(&named("Deep"), &t[2]));
+        assert!(!subtree_matches(&named("Deep"), &t[0]));
+        assert!(!subtree_matches(&named("Deep"), &t[1]));
+        // A button matches itself.
+        assert!(subtree_matches(&named("Copy"), &t[0]));
+        assert!(!subtree_matches(&|_: &PieButton| false, &t[2]));
+    }
+
+    #[test]
+    fn filtered_tree_draws() {
+        let t = tree();
+        let s = PieMenuSettings::default();
+        run(|ui| {
+            let mut sel = Selection::root();
+            button_tree_filtered(ui, &s, &t, &mut sel, &|b| b.label == "Deep");
+            assert_eq!(sel, Selection::root());
+        });
     }
 
     #[test]
