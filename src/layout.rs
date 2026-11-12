@@ -145,7 +145,7 @@ impl PieMenu {
             .filter(|&idx| !buttons[idx].is_cluster())
     }
 
-    pub(crate) fn direction_numpad(dir: &PieDirection) -> Key {
+    pub(crate) fn direction_number_key(dir: &PieDirection) -> Key {
         match dir {
             PieDirection::North => Key::Num8,
             PieDirection::NorthEast => Key::Num9,
