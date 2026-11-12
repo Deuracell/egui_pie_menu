@@ -176,13 +176,29 @@ fn settings_entries(s: &PieMenuSettings) -> Vec<(String, String)> {
 /// The statements (`s.layout.radius = 120.0;`, without the closure wrapper) for every setting
 /// whose generated value differs from [`PieMenuSettings::default`].
 pub fn settings_changes(s: &PieMenuSettings) -> Vec<String> {
+    settings_changes_bound(s, &Bindings::default())
+}
+
+/// [`settings_changes`] with the build-time [`Bindings`] of fields: a field bound in
+/// [`BindingMode::Build`] is always listed, with its expression (`s.title.text_color = theme.accent;`).
+pub fn settings_changes_bound(s: &PieMenuSettings, bindings: &Bindings) -> Vec<String> {
     let default = settings_entries(&PieMenuSettings::default());
     settings_entries(s)
         .into_iter()
         .zip(default)
-        .filter(|(now, was)| now.1 != was.1)
-        .map(|((path, value), _)| format!("s.{path} = {value};"))
+        .filter_map(|((path, value), (_, was))| {
+            let field = SettingsField::ALL.into_iter().find(|f| f.path() == path);
+            match field.and_then(|f| bindings.expr(&BindTarget::Field(f), BindingMode::Build).map(|e| (f, e))) {
+                Some((f, expr)) => Some(format!("s.{path} = {};", field_value_code(f, expr))),
+                None => (value != was).then(|| format!("s.{path} = {value};")),
+            }
+        })
         .collect()
+}
+
+/// A bound field's value: the expression, in `Some(..)` for an optional field.
+fn field_value_code(field: SettingsField, expr: &str) -> String {
+    if field.is_optional_value() { format!("Some({expr})") } else { expr.to_string() }
 }
 
 /// The `.configure(|s| { ... })` closure that turns the default settings into `s`, listing only
@@ -196,7 +212,12 @@ pub fn settings_changes(s: &PieMenuSettings) -> Vec<String> {
 /// assert_eq!(settings_to_code(&s), ".configure(|s| {\n    s.layout.radius = 120.0;\n})");
 /// ```
 pub fn settings_to_code(s: &PieMenuSettings) -> String {
-    let lines = settings_changes(s);
+    settings_to_code_bound(s, &Bindings::default())
+}
+
+/// [`settings_to_code`] with the build-time [`Bindings`] of fields (see [`settings_changes_bound`]).
+pub fn settings_to_code_bound(s: &PieMenuSettings, bindings: &Bindings) -> String {
+    let lines = settings_changes_bound(s, bindings);
     if lines.is_empty() {
         return String::new();
     }
@@ -229,8 +250,12 @@ fn mnemonic_code(m: Mnemonic) -> String {
     }
 }
 
-fn item_code(item: &ClusterItem) -> String {
-    let mut s = format!("ClusterItem::new({}, {:?})", item.number, item.label);
+fn item_code(item: &ClusterItem, path: &[usize], bindings: &Bindings) -> String {
+    let label = match bindings.expr(&BindTarget::ItemLabel(path.to_vec(), item.number), BindingMode::Build) {
+        Some(expr) => expr.to_string(),
+        None => format!("{:?}", item.label),
+    };
+    let mut s = format!("ClusterItem::new({}, {label})", item.number);
     s += &mnemonic_code(item.mnemonic);
     if !item.enabled {
         s += ".with_enabled(false)";
@@ -238,8 +263,8 @@ fn item_code(item: &ClusterItem) -> String {
     s
 }
 
-/// The expression for one button; `ind` is the indentation of the line it starts on.
-fn button_expr(b: &PieButton, ind: usize) -> String {
+/// The expression for one button at `path`; `ind` is the indentation of the line it starts on.
+fn button_expr(b: &PieButton, ind: usize, path: &mut Vec<usize>, bindings: &Bindings) -> String {
     let dir = format!("PieDirection::{:?}", b.direction);
     let mut s = match &b.kind {
         PieButtonKind::Back => format!("PieButton::back({dir})"),
@@ -247,7 +272,9 @@ fn button_expr(b: &PieButton, ind: usize) -> String {
         _ => format!("PieButton::new({dir})"),
     };
     let default_label = if b.is_back() { "Back" } else { "" };
-    if b.label != default_label {
+    if let Some(expr) = bindings.expr(&BindTarget::Label(path.clone()), BindingMode::Build) {
+        s += &format!(".with_label({expr})");
+    } else if b.label != default_label {
         s += &format!(".with_label({:?})", b.label);
     }
     // A cluster has no mnemonic of its own (`with_items` resets it).
@@ -259,7 +286,16 @@ fn button_expr(b: &PieButton, ind: usize) -> String {
     }
     match &b.kind {
         PieButtonKind::SubPie { children, style } => {
-            let kids: Vec<String> = children.iter().map(|c| button_expr(c, ind + 4)).collect();
+            let kids: Vec<String> = children
+                .iter()
+                .enumerate()
+                .map(|(n, c)| {
+                    path.push(n);
+                    let code = button_expr(c, ind + 4, path, bindings);
+                    path.pop();
+                    code
+                })
+                .collect();
             let block = vec_block(&kids, ind);
             match style {
                 None => s += &format!(".with_children({block})"),
@@ -270,7 +306,7 @@ fn button_expr(b: &PieButton, ind: usize) -> String {
             }
         }
         PieButtonKind::Cluster(items) => {
-            let lines: Vec<String> = items.iter().map(item_code).collect();
+            let lines: Vec<String> = items.iter().map(|i| item_code(i, path, bindings)).collect();
             s += &format!(".with_items({})", vec_block(&lines, ind));
         }
         PieButtonKind::Action | PieButtonKind::Back => {}
@@ -289,32 +325,128 @@ fn button_expr(b: &PieButton, ind: usize) -> String {
 /// );
 /// ```
 pub fn buttons_to_code(buttons: &[PieButton]) -> String {
-    let items: Vec<String> = buttons.iter().map(|b| button_expr(b, 4)).collect();
+    buttons_to_code_bound(buttons, &Bindings::default())
+}
+
+/// [`buttons_to_code`] with the build-time [`Bindings`] of labels: `.with_label(tr("edit.copy"))`.
+pub fn buttons_to_code_bound(buttons: &[PieButton], bindings: &Bindings) -> String {
+    let items: Vec<String> = buttons.iter().enumerate().map(|(n, b)| button_expr(b, 4, &mut vec![n], bindings)).collect();
     vec_block(&items, 0)
+}
+
+/// The statements that assign the [`BindingMode::Live`] bindings, to run every frame before
+/// `show` (`menu` and `buttons` are the names of the snippet from [`menu_to_code_bound`]): the
+/// title, then the settings fields in [`SettingsField::ALL`] order, then the labels in tree order.
+///
+/// ```
+/// use egui_pie_menu::*;
+/// use egui_pie_menu::dev_tool::*;
+/// let buttons = vec![PieButton::new(PieDirection::North).with_label("Undo")];
+/// let mut bindings = Bindings::new();
+/// bindings.set(BindTarget::Label(vec![0]), Binding::new("format!(\"Undo ({n})\")", BindingMode::Live));
+/// assert_eq!(live_bindings_code(&buttons, &bindings), ["buttons[0].label = format!(\"Undo ({n})\");"]);
+/// ```
+pub fn live_bindings_code(buttons: &[PieButton], bindings: &Bindings) -> Vec<String> {
+    let mut out = Vec::new();
+    let live = |t: &BindTarget| bindings.expr(t, BindingMode::Live).map(str::to_string);
+    if let Some(expr) = live(&BindTarget::Title) {
+        out.push(format!("menu.title = Some({expr});"));
+    }
+    for field in SettingsField::ALL {
+        if let Some(expr) = live(&BindTarget::Field(field)) {
+            out.push(format!("menu.settings.{} = {};", field.path(), field_value_code(field, &expr)));
+        }
+    }
+    fn walk(level: &[PieButton], path: &mut Vec<usize>, live: &dyn Fn(&BindTarget) -> Option<String>, out: &mut Vec<String>) {
+        for (n, b) in level.iter().enumerate() {
+            path.push(n);
+            let at = if path.len() == 1 {
+                format!("buttons[{n}]")
+            } else {
+                let route: Vec<String> = path.iter().map(|p| p.to_string()).collect();
+                format!("button_at_mut(&mut buttons, &[{}])", route.join(", "))
+            };
+            if let Some(expr) = live(&BindTarget::Label(path.clone())) {
+                out.push(if path.len() == 1 {
+                    format!("{at}.label = {expr};")
+                } else {
+                    format!("if let Some(b) = {at} {{ b.label = {expr}; }}")
+                });
+            }
+            for item in b.cluster_items() {
+                if let Some(expr) = live(&BindTarget::ItemLabel(path.clone(), item.number)) {
+                    let item_at = if path.len() == 1 {
+                        format!("{at}.cluster_item_mut({})", item.number)
+                    } else {
+                        format!("{at}.and_then(|b| b.cluster_item_mut({}))", item.number)
+                    };
+                    out.push(format!("if let Some(item) = {item_at} {{ item.label = {expr}; }}"));
+                }
+            }
+            walk(b.children(), path, live, out);
+            path.pop();
+        }
+    }
+    walk(buttons, &mut Vec::new(), &live, &mut out);
+    out
 }
 
 /// A complete snippet: the `use` lines, `let buttons = ..;`, `let menu = PieMenu::new()` with
 /// the title and the [`settings_to_code`] closure, and a commented `show` skeleton.
 pub fn menu_to_code(title: Option<&str>, settings: &PieMenuSettings, buttons: &[PieButton]) -> String {
-    let config = settings_to_code(settings);
+    menu_to_code_bound(title, settings, buttons, &Bindings::default())
+}
+
+/// [`menu_to_code`] with [`Bindings`]: build-time expressions take the place of the literals,
+/// live ones get an "each frame, before `show`" block ([`live_bindings_code`]), and a
+/// `// needs in scope:` line lists the names the expressions use ([`free_identifiers`]).
+pub fn menu_to_code_bound(title: Option<&str>, settings: &PieMenuSettings, buttons: &[PieButton], bindings: &Bindings) -> String {
+    let config = settings_to_code_bound(settings, bindings);
+    let live = live_bindings_code(buttons, bindings);
     let mut out = String::from("use egui_pie_menu::*;\n");
     if config.contains("Duration::") {
         out += "use std::time::Duration;\n";
     }
-    out += "\n";
-    if buttons.is_empty() {
-        out += "let buttons: Vec<PieButton> = vec![];\n\n";
-    } else {
-        out += &format!("let buttons = {};\n\n", buttons_to_code(buttons));
+    let mut names: Vec<String> = Vec::new();
+    for (target, binding) in bindings.iter() {
+        let used = target.path().is_none_or(|p| crate::button_at(buttons, p).is_some());
+        if let Some(expr) = binding.active_expr().filter(|_| used) {
+            for name in free_identifiers(expr) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
     }
-    out += "let menu = PieMenu::new()";
-    if let Some(t) = title {
+    if !names.is_empty() {
+        out += &format!("// needs in scope: {}\n", names.join(", "));
+    }
+    out += "\n";
+    let mut_buttons = if live.iter().any(|l| l.contains("buttons")) { "mut " } else { "" };
+    if buttons.is_empty() {
+        out += &format!("let {mut_buttons}buttons: Vec<PieButton> = vec![];\n\n");
+    } else {
+        out += &format!("let {mut_buttons}buttons = {};\n\n", buttons_to_code_bound(buttons, bindings));
+    }
+    let mut_menu = if live.iter().any(|l| l.starts_with("menu.")) { "mut " } else { "" };
+    out += &format!("let {mut_menu}menu = PieMenu::new()");
+    if let Some(expr) = bindings.expr(&BindTarget::Title, BindingMode::Build) {
+        out += &format!("\n    .with_title({expr})");
+    } else if let Some(t) = title {
         out += &format!("\n    .with_title({t:?})");
     }
     if !config.is_empty() {
         out += &format!("\n    {}", config.replace('\n', "\n    "));
     }
     out += ";\n\n";
+    if !live.is_empty() {
+        out += "// each frame, before show (live bindings):\n";
+        for line in &live {
+            out += line;
+            out += "\n";
+        }
+        out += "\n";
+    }
     out += "// each frame (key_down: whether your trigger key is held):\n";
     out += "// match menu.show(ctx, &buttons, key_down, |ui, b| {\n";
     out += "//     ui.label(b.label_text());\n";
@@ -347,6 +479,13 @@ pub fn code_view(ui: &mut Ui, code: &str) {
 
 mod fields;
 pub use fields::*;
+
+// ---------------------------------------------------------------------------------------
+// Bindings
+// ---------------------------------------------------------------------------------------
+
+mod bindings;
+pub use bindings::*;
 
 // ---------------------------------------------------------------------------------------
 // Buttons: tree, inspector, legality
@@ -759,6 +898,179 @@ mod tests {
             buttons_to_code(&b),
             "vec![\n    PieButton::new(PieDirection::East).with_label(\"Go\").with_children(vec![\n        PieButton::new(PieDirection::North),\n    ]),\n]"
         );
+    }
+
+    /// What bound expressions in the tests below refer to.
+    struct Theme {
+        accent: Color32,
+        font: FontId,
+    }
+
+    fn theme() -> Theme {
+        Theme { accent: Color32::from_rgb(10, 20, 30), font: FontId::monospace(20.0) }
+    }
+
+    fn tr(key: &str) -> String {
+        format!("<{key}>")
+    }
+
+    fn strip(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    fn bind(b: &mut Bindings, target: BindTarget, expr: &str, mode: BindingMode) {
+        b.set(target, Binding::new(expr, mode));
+    }
+
+    /// A tree with a label at the root, in a sub-pie and on a cluster item.
+    fn bound_tree() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::North).with_label("Copy"),
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::North).with_label("Deep"),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "Bold"), ClusterItem::new(2, "Italic")]),
+        ]
+    }
+
+    fn tree_bindings(mode: BindingMode) -> Bindings {
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Label(vec![0]), "tr(\"copy\")", mode);
+        bind(&mut b, BindTarget::Label(vec![1, 1]), "tr(\"deep\")", mode);
+        bind(&mut b, BindTarget::ItemLabel(vec![2], 1), "tr(\"bold\")", mode);
+        b
+    }
+
+    #[test]
+    fn build_bound_labels_compile() {
+        let buttons = bound_tree();
+        let bindings = tree_bindings(BindingMode::Build);
+        let built: Vec<PieButton> = vec![
+            PieButton::new(PieDirection::North).with_label(tr("copy")),
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::North).with_label(tr("deep")),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, tr("bold")), ClusterItem::new(2, "Italic")]),
+        ];
+        let tokens = stringify!(vec![
+            PieButton::new(PieDirection::North).with_label(tr("copy")),
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::North).with_label(tr("deep")),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, tr("bold")), ClusterItem::new(2, "Italic"),]),
+        ]);
+        let generated = buttons_to_code_bound(&buttons, &bindings);
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(built[0].label, "<copy>");
+        assert_eq!(built[2].cluster_items()[0].label, "<bold>");
+        // Unbound, the same tree gives the literals.
+        assert_eq!(buttons_to_code_bound(&buttons, &Bindings::new()), buttons_to_code(&buttons));
+        // Live bindings leave the literals in the tree.
+        assert_eq!(buttons_to_code_bound(&buttons, &tree_bindings(BindingMode::Live)), buttons_to_code(&buttons));
+    }
+
+    #[test]
+    fn build_bound_fields_compile_even_at_their_default() {
+        let theme = theme();
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Field(SettingsField::CenterHighlightFillColor), "theme.accent", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextFont), "theme.font.clone()", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::TextColor), "theme.accent", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextColor), " ", BindingMode::Build); // empty: unused
+        bind(&mut b, BindTarget::Field(SettingsField::HintColor), "theme.accent", BindingMode::Live); // not in configure
+        let built = PieMenu::new()
+            .configure(|s| {
+                s.center_indicator.highlight_fill_color = theme.accent;
+                s.title.text_font = theme.font.clone();
+                s.text_color = Some(theme.accent);
+            })
+            .settings;
+        let tokens = stringify!(.configure(|s| {
+            s.center_indicator.highlight_fill_color = theme.accent;
+            s.title.text_font = theme.font.clone();
+            s.text_color = Some(theme.accent);
+        }));
+        let generated = settings_to_code_bound(&PieMenuSettings::default(), &b);
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(built.text_color, Some(theme.accent));
+    }
+
+    #[test]
+    fn live_bindings_compile() {
+        let theme = theme();
+        let n = 3;
+        let mut bindings = tree_bindings(BindingMode::Live);
+        bind(&mut bindings, BindTarget::Label(vec![0]), "format!(\"Undo ({n})\")", BindingMode::Live);
+        bind(&mut bindings, BindTarget::Title, "tr(\"menu\")", BindingMode::Live);
+        bind(&mut bindings, BindTarget::Field(SettingsField::TitleTextColor), "theme.accent", BindingMode::Live);
+        bind(&mut bindings, BindTarget::Field(SettingsField::HintColor), "theme.accent", BindingMode::Live);
+        let mut buttons = bound_tree();
+        let mut menu = PieMenu::new();
+        // The same statements as the tokens below (fields in SettingsField::ALL order).
+        menu.title = Some(tr("menu"));
+        menu.settings.number_hints.color = Some(theme.accent);
+        menu.settings.title.text_color = theme.accent;
+        buttons[0].label = format!("Undo ({n})");
+        if let Some(b) = button_at_mut(&mut buttons, &[1, 1]) {
+            b.label = tr("deep");
+        }
+        if let Some(item) = buttons[2].cluster_item_mut(1) {
+            item.label = tr("bold");
+        }
+        let tokens = stringify!(
+            menu.title = Some(tr("menu"));
+            menu.settings.number_hints.color = Some(theme.accent);
+            menu.settings.title.text_color = theme.accent;
+            buttons[0].label = format!("Undo ({n})");
+            if let Some(b) = button_at_mut(&mut buttons, &[1, 1]) { b.label = tr("deep"); }
+            if let Some(item) = buttons[2].cluster_item_mut(1) { item.label = tr("bold"); }
+        );
+        let generated = live_bindings_code(&bound_tree(), &bindings).join("\n");
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(buttons[1].children()[1].label, "<deep>");
+        assert_eq!(buttons[2].cluster_items()[0].label, "<bold>");
+        assert_eq!(menu.title.as_deref(), Some("<menu>"));
+        // A nested cluster item goes through button_at_mut.
+        let nested = vec![PieButton::new(PieDirection::North).with_label("M").with_children(vec![
+            PieButton::back(PieDirection::South),
+            PieButton::cluster(PieDirection::North).with_items(vec![ClusterItem::new(1, "a")]),
+        ])];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::ItemLabel(vec![0, 1], 1), "tr(\"a\")", BindingMode::Live);
+        assert_eq!(
+            live_bindings_code(&nested, &b),
+            ["if let Some(item) = button_at_mut(&mut buttons, &[0, 1]).and_then(|b| b.cluster_item_mut(1)) { item.label = tr(\"a\"); }"]
+        );
+    }
+
+    #[test]
+    fn bound_menu_snippet() {
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy"), PieButton::new(PieDirection::South).with_label("Undo")];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Title, "tr(\"edit\")", BindingMode::Build);
+        bind(&mut b, BindTarget::Label(vec![0]), "tr(\"copy\")", BindingMode::Build);
+        bind(&mut b, BindTarget::Label(vec![1]), "format!(\"Undo ({})\", history.len())", BindingMode::Live);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextColor), "theme.accent", BindingMode::Live);
+        bind(&mut b, BindTarget::Label(vec![7]), "stale", BindingMode::Build); // no such button
+        let code = menu_to_code_bound(Some("Edit"), &PieMenuSettings::default(), &buttons, &b);
+        let expected = "use egui_pie_menu::*;\n\
+// needs in scope: tr, history, theme\n\
+\n\
+let mut buttons = vec![\n    PieButton::new(PieDirection::North).with_label(tr(\"copy\")),\n    PieButton::new(PieDirection::South).with_label(\"Undo\"),\n];\n\
+\n\
+let mut menu = PieMenu::new()\n    .with_title(tr(\"edit\"));\n\
+\n\
+// each frame, before show (live bindings):\n\
+menu.settings.title.text_color = theme.accent;\n\
+buttons[1].label = format!(\"Undo ({})\", history.len());\n\
+\n";
+        assert!(code.starts_with(expected), "got:\n{code}");
+        // Without bindings it is the plain snippet.
+        let plain = menu_to_code(Some("Edit"), &PieMenuSettings::default(), &buttons);
+        assert_eq!(menu_to_code_bound(Some("Edit"), &PieMenuSettings::default(), &buttons, &Bindings::new()), plain);
     }
 
     #[test]
