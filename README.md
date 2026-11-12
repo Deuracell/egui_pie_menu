@@ -28,6 +28,8 @@ Release tags mirror the egui version they target: the minor version tracks egui 
 
 > **Until 1.0, patch releases may contain breaking changes** — the minor version is reserved for the egui version. Read the commit log or release notes before moving to a newer tag. Since the crate is pinned by git tag, nothing updates without you changing the tag.
 
+> **Coming from v0.36.0?** v0.36.1 changes the API a lot (the `show` call, button and settings types, many renames). [Upgrading from v0.36.0](#upgrading-from-v0360) lists every breaking change with before and after.
+
 | Tag | egui / eframe |
 |---|---|
 | `v0.36.1` | 0.36 |
@@ -84,6 +86,7 @@ What you get with no configuration:
 - [Settings](#settings): every setting group, reveal animation, hover emphasis, highlight shapes
 - [Right-to-left and non-Latin scripts](#right-to-left-and-non-latin-scripts): mirroring, digits, mnemonics
 - [Running the demo](#running-the-demo)
+- [Upgrading from v0.36.0](#upgrading-from-v0360): every breaking change with before and after
 
 ## Buttons
 
@@ -585,6 +588,92 @@ cargo run --example demo
 ```
 
   Right-click anywhere in the window to open the menu. The left panel exposes all settings as live drag fields and colour pickers.
+
+## Upgrading from v0.36.0
+
+v0.36.1 changes the API a lot. Pre-1.0 patch releases may break (see [Installation](#installation)); the compiler points at every item below and each has a short fix. Everything not listed here keeps working as before.
+
+### The `show` loop
+
+Before (v0.36.0):
+
+```rust
+// app state: menu: PieMenu, menu_open: bool
+if self.menu_open {
+    let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
+    let key_down = ctx.input(|i| i.pointer.secondary_down());
+    match self.menu.show(ctx, &buttons, mouse_pos, key_down, Some("Edit"), |ui, idx, hovered| {
+        ui.label(LABELS[idx]);
+    }) {
+        PieMenuResponse::Selected(idx) => { /* … */ self.menu_open = false; }
+        PieMenuResponse::Dismissed | PieMenuResponse::QuickTap | PieMenuResponse::DoubleTap => self.menu_open = false,
+        PieMenuResponse::None => {}
+    }
+}
+```
+
+After:
+
+```rust
+// app state: menu: PieMenu::new().with_title("Edit")   (no menu_open flag)
+let key_down = ctx.input(|i| i.pointer.secondary_down());
+match self.menu.show(ctx, &buttons, key_down, |ui, b| {
+    ui.label(b.label_text());
+}) {
+    PieMenuResponse::Selected(idx) => { /* … */ }
+    _ => {}
+}
+```
+
+- **The menu owns its open state.** `open(pos)` opens it; `show` does nothing while it is closed and closes it on any response other than `None` (a pinned menu stays open after a selection). Drop your `menu_open` flag.
+- **The pointer comes from egui**; `show_with_pointer` takes one you supply. The title moved from the `show` argument to `menu.title` (or `with_title`).
+- **The render closure receives a `&ButtonView`** (`b.idx`, `b.hovered`, `b.label_text()`, ...) instead of `(ui, idx, hovered)`.
+
+### Buttons
+
+- `PieButton` was `{ direction, mnemonic: Option<char> }`. It now also has a label, an enabled flag and a kind, and `mnemonic` is a `Mnemonic` (`Auto`, `Key(c)`, `None`). `with_mnemonic(c)` works as before; `b.mnemonic` in the closure is the key in effect (an `Option<char>`).
+- Labels live on the buttons: `PieButton::new(dir).with_label("Copy")`. `b.label_text()` draws the label with its mnemonic underlined in the theme's colours, replacing hand-made `mnemonic_text` calls (which still exist).
+
+### Settings
+
+| v0.36.0 | v0.36.1 |
+|---|---|
+| `settings.layout_radius` | `settings.layout.radius` |
+| `settings.shape_factor` | `settings.layout.shape_factor` |
+| `settings.screen_margin` | `settings.layout.screen_margin` |
+| `settings.mouse_trigger_threshold` | `settings.layout.dead_zone_radius` |
+| `settings.input.use_numpad_keys` | `settings.input.use_number_keys` (numpad and number row both work) |
+| `settings.label` (`PieMenuLabelSettings`) | `settings.title` (`PieMenuTitleSettings`) |
+| `label.display`, `label.padding: Padding` | `title.show`, `title.padding: egui::Margin` |
+| `label.background_stroke` (width `NAN` = off) | `title.background_stroke` (width `0` = off, the default) |
+| `animations.center_highlight_snapping` | `center_indicator.highlight_snapping` |
+| `animations.center_highlight_show` | removed: set `highlight_shape = HighlightShape::NONE` |
+
+### Types
+
+- `SmartFloat<f32>` (`background_radius`, `highlight_radius`; `NAN` = off) is now `Option<f32>` (`None` = off). `SmartFloat` and the `num-traits` dependency are gone.
+- `PieMenuHighlightShape` (eight variants) is now `HighlightShape { arc, slice, circle }` with the constants `NONE`, `ARC`, `SLICE` and `CIRCLE`; for example `ArcSlice` becomes `HighlightShape { arc: true, slice: true, circle: false }`.
+- `Padding` is replaced by `egui::Margin`.
+- `PieDirection` is `Copy` now (drop the `.clone()` calls).
+
+### Behaviour changes
+
+- Dismiss keys (Escape, `5`) are consumed by the menu, and number keys, mnemonics and dismiss keys are ignored while Ctrl or Cmd is held (Ctrl+C is not the mnemonic `c`).
+- The menu no longer changes your app's `selectable_labels` setting (v0.36.0 switched it globally while the menu was open); the labels inside the pie's buttons are simply not selectable.
+- Timing uses egui's clock instead of `std::time::Instant`, so the crate works on wasm.
+- Debug builds assert (panic) when two buttons of one level share a direction or an enabled mnemonic (v0.36.0 printed a warning for duplicate mnemonics); `check_buttons` returns the same problems in any build.
+- A click in the centre of the main pie dismisses the menu (releasing there always did), and so does releasing with nothing selectable.
+
+### New in v0.36.1
+
+Nothing below needs changes in existing code:
+
+- [Sub-pies](#sub-pies) (replace style and fan-out, back buttons, centre modes, hover navigation) and [clusters](#clusters).
+- [Pinned menus](#pinned--persistent-menus), disabled buttons, auto-generated and Unicode mnemonics, `check_buttons`.
+- Number hints, right-to-left mirroring and Arabic-Indic or Persian digits.
+- Reveal animations (fade, slide out) and [hover emphasis](#hover-emphasis).
+- `ButtonView` helpers: `path`, `text_color()`, `scale()`, `use_pie_hover()`, `opens_sub_pie()`.
+- The `layout` and `sub_pies` setting groups, and demo icons ([Icons and images](#icons-and-images)).
 
 ## License
 
