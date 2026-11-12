@@ -1,11 +1,10 @@
-use crate::utils::common_utils::SmartFloat;
-use egui::{Color32, FontId, Key, PointerButton, Stroke};
+use egui::{Color32, FontId, Key, Margin, PointerButton, Stroke};
 
 use std::f32::consts::TAU;
 use std::time::Duration;
 
 /// The eight directions a button can occupy in the pie menu.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PieDirection {
     North,
     NorthEast,
@@ -18,6 +17,56 @@ pub enum PieDirection {
 }
 
 impl PieDirection {
+    /// All eight directions, clockwise from North.
+    pub const ALL: [PieDirection; 8] = [
+        PieDirection::North,
+        PieDirection::NorthEast,
+        PieDirection::East,
+        PieDirection::SouthEast,
+        PieDirection::South,
+        PieDirection::SouthWest,
+        PieDirection::West,
+        PieDirection::NorthWest,
+    ];
+
+    /// The direction straight across the centre (North↔South, NE↔SW, …).
+    pub fn opposite(&self) -> PieDirection {
+        match self {
+            PieDirection::North => PieDirection::South,
+            PieDirection::NorthEast => PieDirection::SouthWest,
+            PieDirection::East => PieDirection::West,
+            PieDirection::SouthEast => PieDirection::NorthWest,
+            PieDirection::South => PieDirection::North,
+            PieDirection::SouthWest => PieDirection::NorthEast,
+            PieDirection::West => PieDirection::East,
+            PieDirection::NorthWest => PieDirection::SouthEast,
+        }
+    }
+
+    /// Position in [`PieDirection::ALL`] (clockwise from North).
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|d| *d == self).unwrap_or(0)
+    }
+
+    /// The five directions a fan-out sub-pie opened by a button in this direction may
+    /// use, counter-clockwise to clockwise around "straight ahead" (this direction): the
+    /// other three face back at the parent pie and are blocked.
+    ///
+    /// ```
+    /// use egui_pie_menu::PieDirection::*;
+    /// assert_eq!(East.fan_out_slots(), [North, NorthEast, East, SouthEast, South]);
+    /// ```
+    pub fn fan_out_slots(self) -> [PieDirection; 5] {
+        [6, 7, 0, 1, 2].map(|step| Self::ALL[(self.index() + step) % 8])
+    }
+
+    /// Whether `child` is one of the three directions a fan-out sub-pie opened by a
+    /// button in this direction cannot use: straight back at the parent
+    /// ([`Self::opposite`]) and its two neighbours.
+    pub fn blocks_fan_out(self, child: PieDirection) -> bool {
+        !self.fan_out_slots().contains(&child)
+    }
+
     /// The direction reflected across the vertical axis (East↔West, NE↔NW, SE↔SW).
     pub fn mirrored(&self) -> PieDirection {
         match self {
@@ -33,113 +82,113 @@ impl PieDirection {
     }
 }
 
-/// Shape of the directional highlight drawn at the center indicator.
+/// Which components of the directional highlight are drawn at the center indicator.
+/// Any combination works; none at all draws no highlight.
 ///
-/// Variants can be combined: `ArcSlice` draws both an arc and a filled wedge,
-/// `ArcSliceCircle` draws all three, etc.
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum PieMenuHighlightShape {
+/// ```
+/// use egui_pie_menu::HighlightShape;
+/// let shape = HighlightShape { arc: true, ..HighlightShape::SLICE }; // arc + wedge
+/// assert!(!shape.is_none());
+/// ```
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+pub struct HighlightShape {
     /// An arc drawn along the indicator radius.
-    Arc,
+    pub arc: bool,
     /// A filled wedge pointing in the hovered direction.
-    Slice,
+    pub slice: bool,
     /// A dot offset from the center in the hovered direction.
-    Circle,
-    /// Arc + filled wedge.
-    ArcSlice,
-    /// Arc + dot.
-    ArcCircle,
-    /// Arc + filled wedge + dot.
-    ArcSliceCircle,
-    /// Filled wedge + dot.
-    SliceCircle,
+    pub circle: bool,
+}
+
+impl HighlightShape {
     /// No highlight drawn.
-    None,
+    pub const NONE: Self = Self { arc: false, slice: false, circle: false };
+    /// Only the arc.
+    pub const ARC: Self = Self { arc: true, ..Self::NONE };
+    /// Only the filled wedge (the default).
+    pub const SLICE: Self = Self { slice: true, ..Self::NONE };
+    /// Only the dot.
+    pub const CIRCLE: Self = Self { circle: true, ..Self::NONE };
+
+    /// Whether nothing is drawn.
+    pub fn is_none(self) -> bool {
+        self == Self::NONE
+    }
 }
 
 /// Appearance of the center indicator (background circle + directional highlight).
 #[derive(Clone, Debug)]
 pub struct PieMenuCenterIndicatorSettings {
-    /// Radius of the static background circle. Set to [`f32::NAN`] to disable.
-    pub background_radius: SmartFloat<f32>,
+    /// Radius of the static background circle. `None` draws no circle.
+    pub background_radius: Option<f32>,
     /// Stroke of the background circle border.
     pub background_stroke: Stroke,
     /// Fill color of the background circle.
     pub background_fill_color: Color32,
 
-    /// Radius of the highlight arc/slice/circle. Set to [`f32::NAN`] to disable.
-    pub highlight_radius: SmartFloat<f32>,
-    /// Which highlight shape(s) to draw. See [`PieMenuHighlightShape`].
-    pub highlight_shape: PieMenuHighlightShape,
+    /// Radius of the highlight arc/slice/circle. `None` draws no highlight.
+    pub highlight_radius: Option<f32>,
+    /// Which highlight component(s) to draw. See [`HighlightShape`].
+    pub highlight_shape: HighlightShape,
     /// Stroke applied to arc and circle components of the highlight.
     pub highlight_stroke: Stroke,
     /// Fill color applied to slice and circle components of the highlight.
     pub highlight_fill_color: Color32,
     /// Angular width of the arc/slice highlight in radians.
     pub highlight_angle: f32,
-    /// Radius of the dot when the highlight shape includes a [`PieMenuHighlightShape::Circle`] component.
+    /// Radius of the dot when the highlight shape includes [`HighlightShape::circle`].
     pub highlight_circle_radius: f32,
+    /// Snap the highlight to the hovered button's direction instead of following the mouse.
+    pub highlight_snapping: bool,
 }
 
 impl Default for PieMenuCenterIndicatorSettings {
     fn default() -> Self {
         Self {
-            background_radius: SmartFloat::new(15.0),
+            background_radius: Some(15.0),
             background_stroke: Stroke::new(5.0, Color32::GRAY),
             background_fill_color: Color32::DARK_GRAY,
 
-            highlight_radius: SmartFloat::new(15.0),
-            highlight_shape: PieMenuHighlightShape::Slice,
+            highlight_radius: Some(15.0),
+            highlight_shape: HighlightShape::SLICE,
             highlight_stroke: Stroke::new(5.0, Color32::WHITE),
             highlight_fill_color: Color32::PURPLE,
             highlight_angle: TAU / 8.0,
             highlight_circle_radius: 5.0,
+            highlight_snapping: false,
         }
     }
 }
 
-/// Appearance of the optional title label shown above the center indicator.
+/// Appearance of the optional title shown above the center indicator.
+/// The text itself is [`crate::PieMenu::title`].
 #[derive(Clone, Debug)]
-pub struct PieMenuLabelSettings {
-    /// Whether to show the title. The title string is passed to [`crate::PieMenu::show`].
-    pub display: bool,
-    /// Background fill of the label box. Use [`Color32::TRANSPARENT`] for no background.
+pub struct PieMenuTitleSettings {
+    /// Whether to show the title.
+    pub show: bool,
+    /// Background fill of the title box. Use [`Color32::TRANSPARENT`] for no background.
     pub background_color: Color32,
-    /// Border of the label box. Set `width` to `0` or `NAN` to disable.
+    /// Border of the title box. Set `width` to `0` to disable (the default).
     pub background_stroke: Stroke,
-    /// Inner padding around the label text.
-    pub padding: Padding,
+    /// Inner padding around the title text.
+    pub padding: Margin,
     /// Text color.
     pub text_color: Color32,
     /// Font used to render the title.
     pub text_font: FontId,
 }
 
-impl Default for PieMenuLabelSettings {
+impl Default for PieMenuTitleSettings {
     fn default() -> Self {
         Self {
-            display: true,
+            show: true,
             background_color: Color32::TRANSPARENT,
-            background_stroke: Stroke::new(f32::NAN, Color32::GRAY),
-            padding: Padding {
-                top: 5.0,
-                right: 5.0,
-                bottom: 5.0,
-                left: 5.0,
-            },
+            background_stroke: Stroke::new(0.0, Color32::GRAY),
+            padding: Margin::same(5),
             text_color: Color32::LIGHT_GRAY,
             text_font: FontId::default(),
         }
     }
-}
-
-/// Uniform or per-side inner padding in logical pixels.
-#[derive(Clone, Debug)]
-pub struct Padding {
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-    pub left: f32,
 }
 
 /// An input event that dismisses the pie menu.
@@ -149,6 +198,63 @@ pub enum PieMenuDismissInput {
     Key(Key),
     /// A mouse button click.
     PointerButton(PointerButton),
+}
+
+/// How a button's sub-pie is shown. The two styles are not interchangeable designs: pick
+/// one for the menu with [`PieMenuSubPieSettings::style`]; a single button can override
+/// it ([`crate::PieButton::with_fan_out`], [`crate::PieButton::with_sub_pie_style`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubPieStyle {
+    /// The sub-pie replaces its parent: one level is on screen at a time, to any depth.
+    /// See [`SubPieCenter`], [`crate::PieButton::back`] and
+    /// [`PieMenuSubPieSettings::hover_delay`].
+    #[default]
+    Replace,
+    /// The sub-pie fans out around the button that opens it while the parent stays
+    /// visible (greyed out). It holds up to five buttons: the three directions facing
+    /// the parent are blocked ([`PieDirection::fan_out_slots`]), and its buttons cannot
+    /// have sub-pies of their own. It opens when the pointer reaches its button
+    /// ([`PieMenuFanOutSettings::delay`]) and closes when the pointer returns to the
+    /// parent. While open it has the keyboard: number keys and mnemonics reach only it.
+    ///
+    /// Releasing the key over a fan button selects it; releasing on the opening button
+    /// does what [`PieMenuFanOutSettings::opener_action`] says (by default the fan
+    /// breaks out into a replace-style sub-pie); releasing over nothing else (the
+    /// blocked sector, the fan's dead zone, outside the window) dismisses the menu. A
+    /// click on nothing closes the fan and the menu stays open; the fan does not pop
+    /// back open while the pointer rests on its button. Backspace and a back button
+    /// in the fan close it the same way.
+    FanOut,
+}
+
+/// What selecting the opening button of an open fan-out does
+/// ([`PieMenuFanOutSettings::opener_action`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FanOpenerAction {
+    /// Selecting the fan's own opening button (releasing the key on it, or clicking it)
+    /// turns the fan into a replace-style sub-pie of the same children (see
+    /// [`SubPieCenter`] for where it opens); inside it Backspace or a centre click goes
+    /// back, like any sub-pie.
+    #[default]
+    BreakOut,
+    /// Releasing the key on the opening button dismisses the menu (cancel, like
+    /// releasing in the centre); clicking it just closes the fan.
+    Dismiss,
+}
+
+/// Where a sub-pie is centred when it opens (and where its parent reappears on going back).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubPieCenter {
+    /// At the pointer (default), so every direction is equally far away. Going back
+    /// re-centres the parent on the pointer too. A pinned menu stays where it is.
+    #[default]
+    Pointer,
+    /// At the same centre as its parent: the sub-pie replaces it in place.
+    Parent,
+    /// At the button that opened it, so the menu grows outward. Going back returns to the
+    /// parent's own centre; a [`crate::PieButton::back`] button in the opposite direction
+    /// then sits between the two centres.
+    Button,
 }
 
 /// Controls when the pie menu becomes visible after the trigger is held.
@@ -170,7 +276,7 @@ pub enum ShowBehavior {
 #[derive(Clone, Debug)]
 pub struct PieMenuInput {
     /// Allow number keys 1–9 (numpad or number row; egui does not distinguish them) to activate buttons by direction.
-    pub use_numpad_keys: bool,
+    pub use_number_keys: bool,
     /// Allow single-character mnemonic keys to activate buttons.
     /// Matched key events are consumed so they don't reach other handlers.
     pub use_mnemonic_keys: bool,
@@ -185,6 +291,8 @@ pub struct PieMenuInput {
     ///
     /// Set to `false` for Blender-style interaction, where selection is triggered
     /// by releasing the key that opened the menu rather than by a separate click.
+    /// When `false`, a click on the centre of a sub-pie does not go back either
+    /// (Backspace still does), so the menu ignores primary clicks entirely.
     pub select_on_primary_click: bool,
     /// Inputs that dismiss the menu without selecting a button.
     ///
@@ -192,12 +300,16 @@ pub struct PieMenuInput {
     /// in this list will close the menu when triggered. Clear the vec to disable
     /// all dismiss inputs.
     pub dismiss_inputs: Vec<PieMenuDismissInput>,
+    /// The dismiss inputs of a pinned menu ([`crate::PieMenu::pin`]), used instead of
+    /// [`Self::dismiss_inputs`]. Default: only Escape, so stray clicks and digits
+    /// elsewhere in the app never close it.
+    pub pinned_dismiss_inputs: Vec<PieMenuDismissInput>,
 }
 
 impl Default for PieMenuInput {
     fn default() -> Self {
         Self {
-            use_numpad_keys: true,
+            use_number_keys: true,
             use_mnemonic_keys: true,
             auto_mnemonics: false,
             double_tap_window: Duration::from_millis(400),
@@ -207,6 +319,7 @@ impl Default for PieMenuInput {
                 PieMenuDismissInput::Key(Key::Num5),
                 PieMenuDismissInput::PointerButton(PointerButton::Secondary),
             ],
+            pinned_dismiss_inputs: vec![PieMenuDismissInput::Key(Key::Escape)],
         }
     }
 }
@@ -226,33 +339,42 @@ pub enum RevealAnimation {
     SlideOut,
 }
 
-/// Small digit hints (the number key that selects each button) drawn beside buttons.
+/// Small digit hints (the number key that selects each button), drawn by your render
+/// closure inside the button from [`crate::ButtonView::number_hint`]. Only produced when
+/// [`PieMenuInput::use_number_keys`] is on.
 #[derive(Clone, Debug)]
 pub struct PieMenuNumberHints {
-    /// Have the menu paint the digit *beside* each button. Only has an effect when
-    /// [`PieMenuInput::use_numpad_keys`] is on. To put the digit *inside* your button
-    /// instead (so the button grows to fit it), leave this off and use
-    /// [`crate::PieMenu::number_hint`] in your render closure. `side`, `spacing` and
-    /// `arabic_indic_digits` apply to both; `color` and `font` only to the painted digit.
-    pub show: bool,
-    /// Digit colour. `None` (default) uses egui's weak text colour: a dimmed version of
-    /// the default label colour that follows the light/dark theme.
+    /// Force the digit colour, whether hovered or not (Blender-style). `None` (default)
+    /// uses egui's widget text colours like the labels: `widgets.inactive` normally,
+    /// `widgets.hovered` on the hovered button. Independent of
+    /// [`PieMenuSettings::text_color`]. Disabled buttons are faded by egui either way.
     pub color: Option<Color32>,
-    /// Digit font.
-    pub font: FontId,
-    /// Gap between the button's edge and the digit, in logical pixels.
+    /// Suggested gap between the label and the digit, in logical pixels (for your closure).
     pub spacing: f32,
-    /// Which side of the button the digit is drawn on.
+    /// Which side of the label the digit goes on.
     pub side: HintSide,
-    /// Draw Arabic-Indic digits (٠١٢٣…) instead of Western ones.
-    pub arabic_indic_digits: bool,
+    /// Which digits to draw (Western, Arabic-Indic or Persian).
+    pub digits: HintDigits,
 }
 
-/// Side of a button on which a number hint is drawn.
+/// Digit shapes used for number hints. The keys pressed are the same in every case;
+/// only the drawn digit changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HintDigits {
+    /// 0123456789 (default).
+    #[default]
+    Western,
+    /// ٠١٢٣٤٥٦٧٨٩, used with Arabic.
+    ArabicIndic,
+    /// ۰۱۲۳۴۵۶۷۸۹ (Extended Arabic-Indic), used with Persian and Urdu.
+    Persian,
+}
+
+/// Side of the label on which a number hint is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintSide {
-    /// After the label in reading order (default): right of the button for left-to-right
-    /// text, left of it for right-to-left text.
+    /// After the label in reading order (default): right of it for left-to-right text,
+    /// left of it for right-to-left text.
     Trailing,
     /// The side facing away from the centre: right for eastern buttons, left for western
     /// ones, right for North/South. Based on the displayed position, so it follows a
@@ -267,17 +389,42 @@ pub enum HintSide {
 impl Default for PieMenuNumberHints {
     fn default() -> Self {
         Self {
-            show: false,
             color: None,
-            font: FontId::proportional(11.0),
             spacing: 4.0,
             side: HintSide::Trailing,
-            arabic_indic_digits: false,
+            digits: HintDigits::Western,
         }
     }
 }
 
-/// Animation / highlight behaviour.
+/// How much a pie emphasises its highlighted button: it moves outward and/or grows.
+/// The shift moves the button's layer (in whole physical pixels); the growth is applied
+/// to its content, see [`HoverEmphasis::scale`].
+/// Set separately for the root pie ([`PieMenuAnimations::hover_emphasis`]) and for
+/// sub-pies and fan-outs ([`PieMenuAnimations::sub_pie_hover_emphasis`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoverEmphasis {
+    /// How far the highlighted button moves outward, in logical pixels (`0.0`: not at all).
+    pub shift: f32,
+    /// How much the highlighted button's content grows (`1.0`: not at all). It is applied
+    /// through the font size, never by scaling the layer (which would blur the text):
+    /// [`crate::ButtonView::label_text`] follows it, and so does anything your closure scales by
+    /// [`crate::ButtonView::scale`]. Custom fixed-size widgets only grow if the closure scales
+    /// them.
+    pub scale: f32,
+}
+
+impl HoverEmphasis {
+    /// No emphasis.
+    pub const NONE: Self = Self { shift: 0.0, scale: 1.0 };
+
+    /// Whether this changes nothing.
+    pub fn is_none(self) -> bool {
+        self.shift == 0.0 && self.scale == 1.0
+    }
+}
+
+/// Reveal and hover animation settings.
 #[derive(Clone, Debug)]
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
@@ -286,20 +433,28 @@ pub struct PieMenuAnimations {
     pub reveal_duration: Duration,
     /// [`RevealAnimation::SlideOut`]: layout radius (px) the buttons start from.
     /// `0.0` starts them at the centre; values above
-    /// [`PieMenuSettings::layout_radius`] make them slide inward.
+    /// [`PieMenuLayoutSettings::radius`] make them slide inward.
     pub slide_start_radius: f32,
     /// [`RevealAnimation::SlideOut`]: shape factor the layout starts with, blended to
-    /// [`PieMenuSettings::shape_factor`] during the slide (e.g. `-1.0` slides a diamond
+    /// [`PieMenuLayoutSettings::shape_factor`] during the slide (e.g. `-1.0` slides a diamond
     /// out into whatever the final shape is). `None` keeps the final shape throughout.
     pub slide_start_shape_factor: Option<f32>,
     /// [`RevealAnimation::SlideOut`]: fade the buttons in over this duration while they
     /// slide (it may be shorter or longer than the slide). `None` keeps them fully
     /// opaque from the start.
     pub slide_fade: Option<Duration>,
-    /// Snap the highlight to the nearest button direction instead of following the mouse.
-    pub center_highlight_snapping: bool,
-    /// Whether to draw the center highlight at all.
-    pub center_highlight_show: bool,
+    /// Emphasis of the highlighted button in the root pie. Default: none (the centre
+    /// highlight already shows the direction). The shift moves the button's layer (whole
+    /// pixels); the scale applies to the label text and to what the closure scales by
+    /// [`crate::ButtonView::scale`].
+    pub hover_emphasis: HoverEmphasis,
+    /// Emphasis of the highlighted button in sub-pies and fan-outs. Default: 6 px outward
+    /// and 8% larger; a fan-out has no centre highlight of its own to show the pick. The
+    /// shift moves the button's layer (whole pixels); the scale applies to the label text
+    /// and to what the closure scales by [`crate::ButtonView::scale`].
+    pub sub_pie_hover_emphasis: HoverEmphasis,
+    /// How long a button takes to ease into its emphasis and back.
+    pub hover_duration: Duration,
 }
 
 impl Default for PieMenuAnimations {
@@ -310,8 +465,103 @@ impl Default for PieMenuAnimations {
             slide_start_radius: 0.0,
             slide_start_shape_factor: None,
             slide_fade: Some(Duration::from_millis(200)),
-            center_highlight_snapping: false,
-            center_highlight_show: true,
+            hover_emphasis: HoverEmphasis::NONE,
+            sub_pie_hover_emphasis: HoverEmphasis { shift: 6.0, scale: 1.08 },
+            hover_duration: Duration::from_millis(100),
+        }
+    }
+}
+
+/// Geometry of the ring.
+#[derive(Clone, Debug)]
+pub struct PieMenuLayoutSettings {
+    /// Distance from the menu centre to the inner edge of each button, in logical pixels.
+    pub radius: f32,
+    /// Controls the layout geometry: `0.0` = circle, `+1.0` = square, `-1.0` = diamond.
+    ///
+    /// Cardinal buttons (N/S/E/W) are unaffected; only the diagonal positions change.
+    pub shape_factor: f32,
+    /// Height of the diagonal (intercardinal: NE, SE, SW, NW) buttons, as a fraction of a
+    /// North/South button's centre height above/below the East–West row: `0.5` puts them
+    /// halfway between N/S and E/W, `1.0` level with N/S; low values bottom out with the
+    /// inner corner on the E–W axis. The buttons slide *along* the layout shape (circle,
+    /// square or diamond per [`Self::shape_factor`]), keeping their inner corner on it, so
+    /// lower diagonals also move outward. Hover picking and the centre highlight follow.
+    /// `None` (default): diagonals sit at 45° on the shape.
+    pub intercardinal_height: Option<f32>,
+    /// Minimum gap between the outermost button edge and the screen border.
+    /// The whole menu shifts to maintain this margin instead of clipping buttons.
+    pub screen_margin: f32,
+    /// Radius of the dead zone around the centre: the mouse must be farther out than this
+    /// before a button is highlighted. Releasing or clicking inside it selects nothing.
+    pub dead_zone_radius: f32,
+}
+
+impl Default for PieMenuLayoutSettings {
+    fn default() -> Self {
+        Self {
+            radius: 100.0,
+            shape_factor: 0.0,
+            intercardinal_height: None,
+            screen_margin: 8.0,
+            dead_zone_radius: 12.0,
+        }
+    }
+}
+
+/// Fan-out sub-pies ([`SubPieStyle::FanOut`]).
+#[derive(Clone, Debug)]
+pub struct PieMenuFanOutSettings {
+    /// How long the pointer must rest on the opening button before its fan opens.
+    /// Default: zero (opens as the pointer reaches the button).
+    pub delay: Duration,
+    /// Distance from the opening button's centre to the inner edge of the fan's buttons.
+    /// `None` (default): the same as [`PieMenuLayoutSettings::radius`].
+    pub radius: Option<f32>,
+    /// What selecting the fan's own opening button does.
+    /// See [`FanOpenerAction`]. Default: [`FanOpenerAction::BreakOut`].
+    pub opener_action: FanOpenerAction,
+}
+
+impl Default for PieMenuFanOutSettings {
+    fn default() -> Self {
+        Self {
+            delay: Duration::ZERO,
+            radius: None,
+            opener_action: FanOpenerAction::BreakOut,
+        }
+    }
+}
+
+/// How sub-pies are shown and navigated.
+#[derive(Clone, Debug)]
+pub struct PieMenuSubPieSettings {
+    /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].
+    pub style: SubPieStyle,
+    /// Where a sub-pie is centred when it opens. See [`SubPieCenter`].
+    pub center: SubPieCenter,
+    /// [`SubPieStyle::Replace`]:
+    /// follow a button that leads to another pie once the pointer has rested on it this
+    /// long, without a click, key or release: a sub-pie button opens its sub-pie, and a
+    /// [`crate::PieButton::back`] button inside a sub-pie returns to the parent. The button
+    /// the pointer already points at when a level opens is ignored until the pointer has
+    /// left it once, so a resting pointer never bounces between levels. That applies after
+    /// going back (whatever it rests on) and to a back button after descending; a sub-pie
+    /// button under the pointer after descending starts its timer at once, so you can
+    /// rest on button after button without moving away in between.
+    /// `None` (default): off.
+    pub hover_delay: Option<Duration>,
+    /// Fan-out sub-pies ([`SubPieStyle::FanOut`]).
+    pub fan_out: PieMenuFanOutSettings,
+}
+
+impl Default for PieMenuSubPieSettings {
+    fn default() -> Self {
+        Self {
+            style: SubPieStyle::Replace,
+            center: SubPieCenter::Pointer,
+            hover_delay: None,
+            fan_out: PieMenuFanOutSettings::default(),
         }
     }
 }
@@ -319,55 +569,53 @@ impl Default for PieMenuAnimations {
 /// Top-level settings for a [`crate::PieMenu`].
 #[derive(Clone, Debug)]
 pub struct PieMenuSettings {
-    /// Distance from the menu centre to the inner edge of each button, in logical pixels.
-    pub layout_radius: f32,
-    /// Controls the layout geometry: `0.0` = circle, `+1.0` = square, `-1.0` = diamond.
-    ///
-    /// Cardinal buttons (N/S/E/W) are unaffected; only the diagonal positions change.
-    pub shape_factor: f32,
+    /// Geometry of the ring.
+    pub layout: PieMenuLayoutSettings,
     /// Controls when the menu becomes visible and whether tap responses are possible.
     /// See [`ShowBehavior`].
     pub show_behavior: ShowBehavior,
-    /// Minimum gap between the outermost button edge and the screen border.
-    /// The whole menu shifts to maintain this margin instead of clipping buttons.
-    pub screen_margin: f32,
-    /// Mouse must move at least this far from centre before a button is highlighted.
-    pub mouse_trigger_threshold: f32,
     /// Keyboard and mouse input settings.
     pub input: PieMenuInput,
     /// Appearance of the center background circle and directional highlight.
     pub center_indicator: PieMenuCenterIndicatorSettings,
-    /// Appearance of the title label shown above the center indicator.
-    pub label: PieMenuLabelSettings,
-    /// Highlight animation settings.
+    /// Appearance of the title shown above the center indicator.
+    pub title: PieMenuTitleSettings,
+    /// Reveal and hover animation settings.
     pub animations: PieMenuAnimations,
     /// While the menu is visible, swallow pointer input meant for widgets behind it
-    /// (a full-screen blocker). Set to `false` for a pinned/persistent menu so the
-    /// rest of the UI stays usable. Default `true`.
+    /// (a full-screen blocker). A pinned menu ([`crate::PieMenu::pin`]) never blocks,
+    /// whatever this is set to. Default `true`.
     pub block_background: bool,
+    /// How sub-pies are shown and navigated.
+    pub sub_pies: PieMenuSubPieSettings,
     /// Mirror the layout horizontally (East↔West, diagonals follow), as used by some
     /// right-to-left UIs. Number keys and number hints follow the *displayed* positions,
     /// and [`HintSide::Trailing`] then means "left of the label". Off by default.
     pub mirror_horizontal: bool,
     /// Optional number-key hints next to the buttons.
     pub number_hints: PieMenuNumberHints,
+    /// Force the label colour of [`crate::ButtonView::label_text`], whether hovered or
+    /// not (Blender-style: `Some(Color32::WHITE)`). `None` (default) uses egui's widget
+    /// text colours: `widgets.inactive` normally, `widgets.hovered` on the hovered button,
+    /// so the app's theme applies. Disabled buttons are faded by egui either way.
+    /// Number hints have their own [`PieMenuNumberHints::color`].
+    pub text_color: Option<Color32>,
 }
 
 impl Default for PieMenuSettings {
     fn default() -> Self {
         Self {
-            layout_radius: 100.0,
-            shape_factor: 0.0,
+            layout: PieMenuLayoutSettings::default(),
             show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
-            screen_margin: 8.0,
-            mouse_trigger_threshold: 12.0,
             input: PieMenuInput::default(),
             center_indicator: PieMenuCenterIndicatorSettings::default(),
-            label: PieMenuLabelSettings::default(),
+            title: PieMenuTitleSettings::default(),
             animations: PieMenuAnimations::default(),
             block_background: true,
+            sub_pies: PieMenuSubPieSettings::default(),
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
+            text_color: None,
         }
     }
 }
