@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
-use std::time::Duration;
-use egui_pie_menu::{ButtonProblem, ClusterItem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
+use egui_pie_menu::dev_tool::{SettingsField, SettingsGroup, field_editor, field_label};
+use egui_pie_menu::{ButtonProblem, ClusterItem, HintDigits, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, SubPieStyle};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -73,6 +73,15 @@ const LANGS: &[Lang] = &[
         labels: ["کپی", "چسباندن ویژه", "انجام مجدد", "ذخیره با نام…", "حذف دائمی", "برش", "واگرد", "شکستن خط"] },
 ];
 
+/// The tabs of the left-hand panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeftTab {
+    /// The menu-wide settings (library `group_editor` sections plus the demo's own rows).
+    Menu,
+    /// The buttons.
+    Buttons,
+}
+
 struct Demo {
     /// Index into `LANGS`.
     lang: usize,
@@ -89,41 +98,24 @@ struct Demo {
     show_code: bool,
     /// Which tab of the code panel is selected.
     code_tab: CodeTab,
-
-    // Mirrored f32 values for SmartFloat settings (drag values need plain f32)
-    bg_radius: f32,
-    highlight_radius: f32,
-    highlight_angle_deg: f32,
+    /// Which tab of the left panel is selected.
+    left_tab: LeftTab,
 
     // Button editor: the source of truth; `buttons` is rebuilt from it every frame.
     button_configs: Vec<ButtonConfig>,
     /// The root level, sub-pies included (see `build_buttons`).
     buttons: Vec<PieButton>,
 
-    // Mirror for show threshold drag value (only active in OnMovement mode)
-    show_threshold: f32,
-
-    // Side-panel search query
+    // Search query of the left panel (both tabs)
     search: String,
+    /// A message from the last menu-wide change (e.g. which sub-pies a fan-out style left
+    /// replace-style), shown on the Menu tab until dismissed.
+    notice: Option<String>,
 
-    // Mirror for the slide-out start shape drag value (kept while "Own start shape" is off)
-    slide_start_shape: f32,
-    // Mirror for the slide-out fade duration drag value (kept while "Fade while sliding" is off)
-    slide_fade_ms: u64,
-    // Colour picker value for number hints (kept while "Custom colour" is off)
-    hint_color: Color32,
     /// Height of every pie button in the demo (both kinds), in px.
     button_height: f32,
-    // Drag value for "Intercardinal height" (kept while it is off)
-    intercardinal_height: f32,
-    // Colour picker value for "Force contrast text" (kept while it is off)
-    label_color: Color32,
     // Number hints (drawn inside the buttons) on/off
     show_hints: bool,
-    // Drag value for the sub-pie hover delay (kept while "Navigate on hover" is off)
-    sub_hover_ms: u64,
-    // Drag value for the fan-out radius (kept while "Own radius" is off)
-    fan_radius: f32,
     /// Marker for sub-pie and back buttons that have no icon of their own.
     icons: MarkerIcons,
     /// The embedded image icons, uploaded once as textures (see `IMAGE_ICONS`).
@@ -157,9 +149,6 @@ impl Demo {
 
         let mut menu = PieMenu::new().with_title("Edit");
         menu.settings.input.auto_mnemonics = true; // so "Auto" buttons get a letter
-        let bg_radius = menu.settings.center_indicator.background_radius.unwrap_or(15.0);
-        let highlight_radius = menu.settings.center_indicator.highlight_radius.unwrap_or(15.0);
-        let highlight_angle_deg = menu.settings.center_indicator.highlight_angle.to_degrees();
 
         Self {
             lang: 0,
@@ -171,22 +160,13 @@ impl Demo {
             title: "Edit".to_string(),
             show_code: true,
             code_tab: CodeTab::Menu,
-            bg_radius,
-            highlight_radius,
-            highlight_angle_deg,
+            left_tab: LeftTab::Menu,
             button_configs,
             buttons,
-            show_threshold: DEFAULT_SHOW_THRESHOLD,
             search: String::new(),
-            slide_start_shape: DEFAULT_SLIDE_START_SHAPE,
-            slide_fade_ms: 200,
-            hint_color: Color32::WHITE,
+            notice: None,
             button_height: DEFAULT_BUTTON_HEIGHT,
-            intercardinal_height: 0.5,
-            label_color: Color32::WHITE,
             show_hints: false,
-            sub_hover_ms: DEFAULT_SUB_HOVER_MS,
-            fan_radius: 100.0,
             icons: MarkerIcons::default(),
             images: load_icon_images(ctx),
             sub_pie_look: SubPieLook::default(),
@@ -203,12 +183,8 @@ enum CodeTab {
     Draw,
 }
 
-/// Demo-side defaults for values the library settings don't hold directly.
-const DEFAULT_SHOW_THRESHOLD: f32 = 10.0;
 /// The demo's pie buttons are drawn by the demo, so their height is a demo setting.
 const DEFAULT_BUTTON_HEIGHT: f32 = 24.0;
-const DEFAULT_SLIDE_START_SHAPE: f32 = -1.0; // start the slide as a diamond
-const DEFAULT_SUB_HOVER_MS: u64 = 400;
 
 /// Where a sub-pie or back marker is drawn on its button.
 #[derive(Clone, Copy, PartialEq)]
@@ -750,136 +726,155 @@ fn collect_problems(menu: &PieMenu, configs: &[ButtonConfig], level: &str, out: 
     }
 }
 
-const ALL_REVEALS: &[RevealAnimation] = &[
-    RevealAnimation::None,
-    RevealAnimation::Fade,
-    RevealAnimation::SlideOut,
-];
+// ── Menu tab rows ───────────────────────────────────────────────────────────
 
-fn reveal_label(r: RevealAnimation) -> &'static str {
-    match r {
-        RevealAnimation::None     => "None (instant)",
-        RevealAnimation::Fade     => "Fade",
-        RevealAnimation::SlideOut => "Slide out",
+/// A row of the Menu tab that is not a library settings field: it feeds the demo's own
+/// drawing (the "Draw code") or the demo itself, and carries a small "demo" tag where it is
+/// not part of the menu code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DemoRow {
+    /// `PieMenu::title` (it is in the menu code, so no tag).
+    MenuTitle,
+    ShowHints,
+    ButtonHeight,
+    SubPieLook,
+    SampleIcons,
+    MarkerPosition,
+    SubPieMarker,
+    BackMarker,
+    /// The language picker and the font note (not tagged: it sets library settings too).
+    Language,
+}
+
+impl DemoRow {
+    const ALL: [DemoRow; 9] = [
+        DemoRow::MenuTitle,
+        DemoRow::ShowHints,
+        DemoRow::ButtonHeight,
+        DemoRow::SubPieLook,
+        DemoRow::SampleIcons,
+        DemoRow::MarkerPosition,
+        DemoRow::SubPieMarker,
+        DemoRow::BackMarker,
+        DemoRow::Language,
+    ];
+
+    fn group(self) -> SettingsGroup {
+        match self {
+            DemoRow::MenuTitle => SettingsGroup::Title,
+            DemoRow::ShowHints => SettingsGroup::KeysAndHints,
+            DemoRow::ButtonHeight | DemoRow::SubPieLook | DemoRow::SampleIcons => SettingsGroup::ButtonLook,
+            DemoRow::MarkerPosition | DemoRow::SubPieMarker | DemoRow::BackMarker => SettingsGroup::SubPies,
+            DemoRow::Language => SettingsGroup::Language,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            DemoRow::MenuTitle => "Menu title",
+            DemoRow::ShowHints => "Show number hints",
+            DemoRow::ButtonHeight => "Button height",
+            DemoRow::SubPieLook => "Sub-pie button look",
+            DemoRow::SampleIcons => "Sample icons",
+            DemoRow::MarkerPosition => "Marker position",
+            DemoRow::SubPieMarker => "Sub-pie marker",
+            DemoRow::BackMarker => "Back marker",
+            DemoRow::Language => "Language",
+        }
+    }
+
+    /// Extra words the search matches besides the name.
+    fn keywords(self) -> &'static str {
+        match self {
+            DemoRow::MenuTitle => "title text centre root",
+            DemoRow::ShowHints => "digits keys numbers",
+            DemoRow::ButtonHeight => "size",
+            DemoRow::SubPieLook => "outline dim folder",
+            DemoRow::SampleIcons => "icon icons vector image images procedural painted texture png reset",
+            DemoRow::MarkerPosition => "sub-pie back far end start",
+            DemoRow::SubPieMarker => "arrow icon",
+            DemoRow::BackMarker => "arrow icon",
+            DemoRow::Language => "rtl right to left mirror hebrew arabic persian farsi russian unicode digits font",
+        }
+    }
+
+    /// Whether the row carries the "demo" tag: it feeds the Draw code, not the menu code.
+    fn tagged(self) -> bool {
+        !matches!(self, DemoRow::MenuTitle | DemoRow::Language)
+    }
+
+    /// Like `SettingsField::is_relevant`: the hint row only matters while number keys are on.
+    fn is_relevant(self, s: &PieMenuSettings) -> bool {
+        match self {
+            DemoRow::ShowHints => s.input.use_number_keys,
+            _ => true,
+        }
     }
 }
 
-/// Draws a settings section, unless a search query is active and matches
-/// neither the section title nor its keywords (both case-insensitive).
-fn section(
-    ui: &mut egui::Ui,
-    query: &str,
-    shown: &mut usize,
-    title: &str,
-    keywords: &str,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    if !query.is_empty()
-        && !title.to_lowercase().contains(query)
-        && !keywords.to_lowercase().contains(query)
-    {
-        return;
+/// One row of the Menu tab: a library field or one of the demo's own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Row {
+    Field(SettingsField),
+    Demo(DemoRow),
+}
+
+/// The rows of one section: the fields that apply (see `SettingsGroup::relevant_fields`),
+/// then the demo's own rows of that group.
+fn group_rows(group: SettingsGroup, settings: &PieMenuSettings) -> Vec<Row> {
+    let mut rows: Vec<Row> = group.relevant_fields(settings).into_iter().map(Row::Field).collect();
+    rows.extend(DemoRow::ALL.into_iter().filter(|r| r.group() == group && r.is_relevant(settings)).map(Row::Demo));
+    rows
+}
+
+/// Whether a row matches the (lower-case, non-empty) search `query`: its name, its settings
+/// path (`layout.radius`) or its keywords contain it.
+fn row_matches(row: Row, query: &str) -> bool {
+    let has = |text: &str| text.to_lowercase().contains(query);
+    match row {
+        Row::Field(f) => has(field_label(f)) || has(f.path()),
+        Row::Demo(r) => has(r.name()) || has(r.keywords()),
     }
-    *shown += 1;
-    // Collapsible; Layout and Buttons start open. A search opens every matching section.
-    let default_open = matches!(title, "Layout" | "Buttons");
-    egui::CollapsingHeader::new(RichText::new(title).strong().size(15.0))
-        .id_salt(("section", title))
-        .default_open(default_open)
-        .open((!query.is_empty()).then_some(true))
-        .show(ui, add_contents);
 }
 
-/// Small "⟲" button that resets a value; disabled while the value is already the default.
-fn reset_button(ui: &mut egui::Ui, is_default: bool) -> bool {
-    ui.add_enabled(!is_default, egui::Button::new("⟲").small())
-        .on_hover_text("Reset to default")
-        .clicked()
+/// The rows of a section that a search shows: all of them while the query is empty or matches
+/// the section's title, else only the matching ones.
+fn visible_rows(group: SettingsGroup, settings: &PieMenuSettings, query: &str) -> Vec<Row> {
+    let rows = group_rows(group, settings);
+    if query.is_empty() || group.title().to_lowercase().contains(query) {
+        return rows;
+    }
+    rows.into_iter().filter(|r| row_matches(*r, query)).collect()
 }
 
-/// A drag value with a reset button beside it, decimals and drag speed from `step`.
-/// Returns true if the value changed.
-fn drag_reset<N: egui::emath::Numeric>(
-    ui: &mut egui::Ui,
-    value: &mut N,
-    default: N,
-    range: std::ops::RangeInclusive<N>,
-    step: f64,
-) -> bool {
-    // Decimals from the step (1 → 0, 0.01 → 2, …); drag speed: one step per pixel, but
-    // at least 1/300 of the range so wide ranges (e.g. 0–1000 ms) stay quick to drag.
-    let decimals = (-step.log10()).ceil().max(0.0) as usize;
-    let span = range.end().to_f64() - range.start().to_f64();
-    let speed = step.max(span / 300.0);
-    drag_reset_with(ui, value, default, range, |d| d.speed(speed).fixed_decimals(decimals))
+/// How many rows of the Menu tab a search shows (0 for an empty query): the number in the
+/// badge of the tab while the other tab is showing.
+fn menu_hit_count(settings: &PieMenuSettings, query: &str) -> usize {
+    if query.is_empty() {
+        return 0;
+    }
+    SettingsGroup::ALL.into_iter().map(|g| visible_rows(g, settings, query).len()).sum()
 }
 
-/// A drag value in pixels: whole pixels, shown without decimals, "px" suffix.
-fn px_drag(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::RangeInclusive<f32>) -> bool {
-    let changed = drag_reset_with(ui, value, default, range, |d| d.speed(1.0).fixed_decimals(0).suffix(" px"));
+/// A small "demo" tag for rows that feed only the demo's own drawing.
+fn demo_tag(ui: &mut egui::Ui) {
+    ui.label(RichText::new("demo").small().weak())
+        .on_hover_text("Used by the demo's Draw code (how this demo draws its buttons); not part of the menu code.");
+}
+
+/// A drag value in pixels with a reset button beside it. Returns true if the value changed.
+fn demo_px(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    let mut changed = ui
+        .add(egui::DragValue::new(value).range(range).speed(1.0).fixed_decimals(0).suffix(" px"))
+        .changed();
+    if ui.add_enabled(*value != default, egui::Button::new("\u{21ba}").small()).on_hover_text("Reset to default").clicked() {
+        *value = default;
+        changed = true;
+    }
     if changed {
         *value = value.round();
     }
     changed
-}
-
-/// A [`egui::DragValue`] (drag to change, click to type) plus a reset button, with the
-/// drag value configured by `configure`. Returns true if the value changed.
-fn drag_reset_with<N: egui::emath::Numeric>(
-    ui: &mut egui::Ui,
-    value: &mut N,
-    default: N,
-    range: std::ops::RangeInclusive<N>,
-    configure: impl for<'s> FnOnce(egui::DragValue<'s>) -> egui::DragValue<'s>,
-) -> bool {
-    // Full row: the reset button against the right edge, the drag value filling the
-    // rest of the sidebar width (item spacing between), so all fields line up.
-    let height = ui.spacing().interact_size.y;
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), height),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            let mut changed = false;
-            if reset_button(ui, *value == default) {
-                *value = default;
-                changed = true;
-            }
-            // Blender-style fill: the field's background, then a bar showing where the
-            // value sits in its range, then the drag value on top with a transparent
-            // background so the bar shows through under the number. The bar is egui's
-            // selection colour at full strength while enabled and a neutral grey while
-            // disabled (still showing the value's position), so the two states differ in
-            // hue, not only in brightness.
-            let rect = ui.available_rect_before_wrap();
-            let rect = egui::Rect::from_center_size(rect.center(), Vec2::new(rect.width(), height));
-            let (lo, hi) = (range.start().to_f64(), range.end().to_f64());
-            let fraction = if hi > lo { ((value.to_f64() - lo) / (hi - lo)).clamp(0.0, 1.0) as f32 } else { 0.0 };
-            let visuals = ui.visuals().clone();
-            let state = if ui.rect_contains_pointer(rect) { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
-            let radius = state.corner_radius;
-            ui.painter().rect_filled(rect, radius, state.weak_bg_fill);
-            if fraction > 0.0 {
-                let mut bar = rect;
-                bar.set_width(rect.width() * fraction);
-                let fill = if ui.is_enabled() { visuals.selection.bg_fill } else { visuals.weak_text_color() };
-                ui.painter().rect_filled(bar, radius, fill);
-            }
-            let drag = configure(egui::DragValue::new(&mut *value).range(range));
-            changed |= ui
-                .scope(|ui| {
-                    let w = &mut ui.visuals_mut().widgets;
-                    for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
-                        s.bg_fill = Color32::TRANSPARENT;
-                        s.weak_bg_fill = Color32::TRANSPARENT;
-                    }
-                    ui.add_sized(rect.size(), drag)
-                })
-                .inner
-                .changed();
-            changed
-        },
-    )
-    .inner
 }
 
 /// A button with an optional number hint before or after its label (`true` = after),
@@ -890,17 +885,6 @@ fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)
         Some((h, true))  => egui::Button::new((label, h)).gap(gap),
         Some((h, false)) => egui::Button::new((h, label)).gap(gap),
         None             => egui::Button::new(label),
-    }
-}
-
-const ALL_HINT_SIDES: &[HintSide] = &[HintSide::Trailing, HintSide::Outside, HintSide::Left, HintSide::Right];
-
-fn hint_side_label(s: HintSide) -> &'static str {
-    match s {
-        HintSide::Trailing => "After label (reading order)",
-        HintSide::Outside => "Outside (away from centre)",
-        HintSide::Left    => "Left",
-        HintSide::Right   => "Right",
     }
 }
 
@@ -1148,7 +1132,7 @@ fn button_list_editor(
                             });
                         ui.horizontal(|ui| {
                             ui.label("Spacing");
-                            px_drag(ui, &mut cl.spacing, 4.0, 0.0..=60.0);
+                            demo_px(ui, &mut cl.spacing, 4.0, 0.0..=60.0);
                         });
                         let mut remove = None;
                         for (n, item) in cl.items.iter_mut().enumerate() {
@@ -1232,6 +1216,167 @@ fn button_list_editor(
     }
 }
 
+impl Demo {
+    /// One of the demo's own rows of the Menu tab.
+    fn demo_row(&mut self, ui: &mut egui::Ui, row: DemoRow) {
+        let name = |ui: &mut egui::Ui, hover: &str| {
+            ui.label(row.name()).on_hover_text(hover);
+            if row.tagged() {
+                demo_tag(ui);
+            }
+        };
+        match row {
+            DemoRow::MenuTitle => {
+                ui.horizontal(|ui| {
+                    name(ui, "Shown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.");
+                    ui.add(egui::TextEdit::singleline(&mut self.title).desired_width(120.0));
+                });
+            }
+            DemoRow::ShowHints => {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.show_hints, row.name())
+                        .on_hover_text("Draw the number-key hints inside the demo's buttons (the library hands them to the render closure).");
+                    demo_tag(ui);
+                });
+            }
+            DemoRow::ButtonHeight => {
+                ui.horizontal_wrapped(|ui| {
+                    name(ui, "Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
+                    demo_px(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
+                });
+            }
+            DemoRow::SubPieLook => {
+                ui.horizontal_wrapped(|ui| {
+                    name(ui, "How buttons that open a sub-pie are drawn, to tell them from actions. Uses ButtonView::opens_sub_pie.");
+                    let look_label = |l: SubPieLook| match l {
+                        SubPieLook::Same => "Same as the others",
+                        SubPieLook::Outlined => "Outlined, paler fill",
+                        SubPieLook::Dimmer => "Dimmer fill",
+                    };
+                    egui::ComboBox::from_id_salt("sub_pie_look")
+                        .selected_text(look_label(self.sub_pie_look))
+                        .show_ui(ui, |ui| {
+                            for l in [SubPieLook::Same, SubPieLook::Outlined, SubPieLook::Dimmer] {
+                                ui.selectable_value(&mut self.sub_pie_look, l, look_label(l));
+                            }
+                        });
+                });
+            }
+            DemoRow::SampleIcons => {
+                ui.horizontal_wrapped(|ui| {
+                    name(ui, "Assign painted or image icons to the eight root buttons, or restore the defaults.");
+                    if ui.button("Vector").clicked() {
+                        sample_icons(&mut self.button_configs, SampleIcons::Vector);
+                    }
+                    if ui.button("Image").clicked() {
+                        sample_icons(&mut self.button_configs, SampleIcons::Image);
+                    }
+                    if ui.button("Reset").clicked() {
+                        sample_icons(&mut self.button_configs, SampleIcons::Reset);
+                    }
+                });
+            }
+            DemoRow::MarkerPosition => {
+                ui.horizontal_wrapped(|ui| {
+                    name(ui, "Where the sub-pie and back markers sit on their buttons. Separate from the button's icon, which never replaces them.");
+                    let place_label = |p: MarkerPlacement| match p {
+                        MarkerPlacement::FarEnd => "Far end of the button",
+                        MarkerPlacement::Start => "Start, before the icon",
+                    };
+                    egui::ComboBox::from_id_salt("marker_placement")
+                        .selected_text(place_label(self.icons.placement))
+                        .show_ui(ui, |ui| {
+                            for p in [MarkerPlacement::FarEnd, MarkerPlacement::Start] {
+                                ui.selectable_value(&mut self.icons.placement, p, place_label(p));
+                            }
+                        });
+                });
+            }
+            DemoRow::SubPieMarker => {
+                ui.horizontal(|ui| {
+                    name(ui, "Drawn on a button that opens a sub-pie, whatever its icon. Empty: none.");
+                    ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(50.0));
+                });
+            }
+            DemoRow::BackMarker => {
+                ui.horizontal(|ui| {
+                    name(ui, "Drawn on a back button, whatever its icon. Empty: none.");
+                    ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(50.0));
+                });
+            }
+            DemoRow::Language => {
+                ui.horizontal(|ui| {
+                    name(ui, "Button labels, mirroring (RTL) and digit style of the sample menu.");
+                    let mut changed = false;
+                    egui::ComboBox::from_id_salt("lang")
+                        .selected_text(LANGS[self.lang].name)
+                        .show_ui(ui, |ui| {
+                            for (i, l) in LANGS.iter().enumerate() {
+                                changed |= ui.selectable_value(&mut self.lang, i, l.name).changed();
+                            }
+                        });
+                    if changed {
+                        self.apply_language();
+                    }
+                });
+                ui.label(RichText::new("egui has no bidi: keep each label single-script.").small());
+                if !self.font_note.is_empty() {
+                    ui.label(RichText::new(&self.font_note).small());
+                }
+            }
+        }
+    }
+
+    /// The Menu tab: one collapsing section per library `SettingsGroup`, drawn with
+    /// `field_editor`, plus the demo's own rows. A search (`query`, lower-case) hides the
+    /// rows and sections that do not match.
+    fn menu_tab(&mut self, ui: &mut egui::Ui, query: &str) {
+        if let Some(text) = self.notice.clone() {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(Color32::ORANGE, text);
+                if ui.small_button("dismiss").clicked() {
+                    self.notice = None;
+                }
+            });
+        }
+        let mut shown = 0;
+        for group in SettingsGroup::ALL {
+            let rows = visible_rows(group, &self.menu.settings, query);
+            if rows.is_empty() {
+                continue;
+            }
+            shown += 1;
+            // Collapsible; Ring and Button look start open. A search opens every matching section.
+            let default_open = matches!(group, SettingsGroup::Ring | SettingsGroup::ButtonLook);
+            egui::CollapsingHeader::new(RichText::new(group.title()).strong().size(15.0))
+                .id_salt(("menu_group", group))
+                .default_open(default_open)
+                .open((!query.is_empty()).then_some(true))
+                .show(ui, |ui| {
+                    for row in rows {
+                        match row {
+                            Row::Field(f) => {
+                                field_editor(ui, &mut self.menu.settings, f);
+                            }
+                            Row::Demo(r) => self.demo_row(ui, r),
+                        }
+                    }
+                });
+        }
+        if shown == 0 {
+            ui.label(RichText::new("No matching settings.").italics().color(ui.visuals().weak_text_color()));
+        }
+    }
+
+    /// The Buttons tab (the button list of the old demo until the tree takes over).
+    fn buttons_tab(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Reset buttons").clicked() {
+            self.button_configs = default_button_configs();
+        }
+        button_list_editor(ui, &self.menu, &self.icons, &mut self.button_configs, None);
+    }
+}
+
 impl eframe::App for Demo {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -1240,7 +1385,6 @@ impl eframe::App for Demo {
         // (e.g. a colour picker) is open, Esc belongs to it and must not also reach the
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
-        let d = PieMenuSettings::default(); // defaults for the reset buttons
         self.buttons = build_buttons(&self.button_configs, self.menu.settings.sub_pies.style, false);
         // Problems (shared key / direction) in any level are shown in red in the editor;
         // the menu stays closed until they are fixed, because debug builds assert on them
@@ -1248,8 +1392,21 @@ impl eframe::App for Demo {
         let mut problems = Vec::new();
         collect_problems(&self.menu, &self.button_configs, "", &mut problems);
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
-            // ── Search ───────────────────────────────────────────────
             ui.add_space(4.0);
+            let query = self.search.trim().to_lowercase();
+            // Two tabs; the one that is not showing carries the number of search hits.
+            let menu_hits = menu_hit_count(&self.menu.settings, &query);
+            ui.horizontal(|ui| {
+                for (tab, name, hits) in [(LeftTab::Menu, "Menu", menu_hits), (LeftTab::Buttons, "Buttons", 0)] {
+                    let label = if !query.is_empty() && self.left_tab != tab && tab == LeftTab::Menu {
+                        format!("{name} ({hits})")
+                    } else {
+                        name.to_string()
+                    };
+                    ui.selectable_value(&mut self.left_tab, tab, label);
+                }
+            });
+            // ── Search ───────────────────────────────────────────────
             // One fixed-height row laid out right-to-left: the clear button takes its
             // space first, then the text field fills exactly what is left, so the row
             // never overflows (overflow made the resizable panel grow every frame).
@@ -1268,460 +1425,18 @@ impl eframe::App for Demo {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .id(egui::Id::new("settings_search"))
-                        .hint_text("🔍 Search settings…")
+                        .hint_text("🔍 Search menu and buttons…")
                         .desired_width(f32::INFINITY),
                 );
             });
             ui.separator();
 
-            let query = self.search.trim().to_lowercase();
-            let mut shown = 0;
-
             // Solid (non-floating) scrollbar, so it takes its own space instead of covering
             // the reset buttons at the right edge of each row.
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                section(ui, &query, &mut shown, "Layout", "shape factor diamond circle square radius diagonal intercardinal height", |ui| {
-                    ui.label("Radius");
-                    px_drag(ui, &mut self.menu.settings.layout.radius, d.layout.radius, 40.0..=200.0);
-
-                    ui.label("Shape factor  (−1 diamond · 0 circle · +1 square)");
-                    drag_reset(ui, &mut self.menu.settings.layout.shape_factor, d.layout.shape_factor, -1.0..=1.0, 0.01);
-
-                    let mut own_height = self.menu.settings.layout.intercardinal_height.is_some();
-                    if ui.checkbox(&mut own_height, "Intercardinal height")
-                        .on_hover_text("Place NE/SE/SW/NW at a fraction of the N/S height (0.5 = halfway between N/S and E/W); they slide along the layout shape. Off: at 45°.")
-                        .changed()
-                    {
-                        self.menu.settings.layout.intercardinal_height = own_height.then_some(self.intercardinal_height);
-                    }
-                    ui.add_enabled_ui(own_height, |ui| {
-                        if drag_reset_with(ui, &mut self.intercardinal_height, 0.5, 0.0..=1.0, |d| d.speed(0.001).fixed_decimals(3)) {
-                            self.menu.settings.layout.intercardinal_height = Some(self.intercardinal_height);
-                        }
-                    });
-                });
-
-                section(ui, &query, &mut shown, "Buttons",
-                    "buttons button title menu title height size text colour color force contrast blender", |ui| {
-                    ui.label("Menu title")
-                        .on_hover_text("Shown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.");
-                    ui.add(egui::TextEdit::singleline(&mut self.title).desired_width(f32::INFINITY));
-                    ui.label("Button height")
-                        .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
-                    px_drag(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
-
-                    ui.horizontal(|ui| {
-                        let mut forced = self.menu.settings.text_color.is_some();
-                        if ui.checkbox(&mut forced, "Force contrast text")
-                            .on_hover_text("On: this colour whether hovered or not (Blender-style, white by default). Off: egui's widget colours (dimmer normally, brighter on hover). Disabled buttons are greyed out either way.")
-                            .changed()
-                        {
-                            self.menu.settings.text_color = forced.then_some(self.label_color);
-                        }
-                        ui.add_enabled_ui(forced, |ui| {
-                            if ui.color_edit_button_srgba(&mut self.label_color).changed() {
-                                self.menu.settings.text_color = Some(self.label_color);
-                            }
-                        });
-                    });
-                });
-
-                section(ui, &query, &mut shown, "Number hints",
-                    "number hints digits keys side trailing after outside left right spacing gap color colour force contrast", |ui| {
-                    ui.checkbox(&mut self.show_hints, "Show number hints");
-                    ui.add_enabled_ui(self.show_hints, |ui| {
-                        ui.label("Side");
-                        let current = self.menu.settings.number_hints.side;
-                        egui::ComboBox::from_id_salt("hint_side")
-                            .selected_text(hint_side_label(current))
-                            .show_ui(ui, |ui| {
-                                for &s in ALL_HINT_SIDES {
-                                    ui.selectable_value(&mut self.menu.settings.number_hints.side, s, hint_side_label(s));
-                                }
-                            });
-
-                        ui.label("Spacing");
-                        px_drag(ui, &mut self.menu.settings.number_hints.spacing,
-                            d.number_hints.spacing, 0.0..=40.0);
-
-                        let mut custom = self.menu.settings.number_hints.color.is_some();
-                        if ui.checkbox(&mut custom, "Force contrast digits")
-                            .on_hover_text("On: this colour whether hovered or not (Blender-style). Off: egui's widget colours (dimmer normally, brighter on hover). Independent of the label colour.")
-                            .changed()
-                        {
-                            self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
-                        }
-                        ui.add_enabled_ui(custom, |ui| {
-                            if ui.color_edit_button_srgba(&mut self.hint_color).changed() {
-                                self.menu.settings.number_hints.color = Some(self.hint_color);
-                            }
-                        });
-                    });
-                });
-
-                section(ui, &query, &mut shown, "Button list",
-                    "buttons list label icon emoji tooltip kind checkbox mnemonic mnemonics key auto none colour color enabled present remove reset sub-pie subpie submenu children nested back return cluster items layout row column grid", |ui| {
-                    ui.checkbox(&mut self.menu.settings.input.auto_mnemonics, "Auto mnemonics")
-                        .on_hover_text("Generate mnemonics from labels for buttons set to Auto");
-                    if ui.button("Reset buttons").clicked() {
-                        self.button_configs = default_button_configs();
-                    }
-                    button_list_editor(ui, &self.menu, &self.icons, &mut self.button_configs, None);
-                });
-
-                section(ui, &query, &mut shown, "Icons",
-                    "icon icons vector image images procedural imported painted texture png sample reset", |ui| {
-                    ui.label("Per-button icons are set in the button editor (Icon row).");
-                    ui.horizontal(|ui| {
-                        if ui.button("Sample vector icons").clicked() {
-                            sample_icons(&mut self.button_configs, SampleIcons::Vector);
-                        }
-                        if ui.button("Sample image icons").clicked() {
-                            sample_icons(&mut self.button_configs, SampleIcons::Image);
-                        }
-                        if ui.button("Reset icons").clicked() {
-                            sample_icons(&mut self.button_configs, SampleIcons::Reset);
-                        }
-                    });
-                });
-
-                section(ui, &query, &mut shown, "Sub-pies",
-                    "sub-pie subpie submenu centre center pointer parent button hover delay timer automatic open back style replace fan-out fanout fan radius opener break out dismiss marker icon arrow position far end start folder look outline dim", |ui| {
-                    ui.label("Style")
-                        .on_hover_text("Replace: a sub-pie takes its parent's place, one level at a time. Fan-out: it opens around its button while the parent stays visible (up to five buttons, none facing the parent). A button can override this in the Button list.");
-                    let style_label = |s: SubPieStyle| match s {
-                        SubPieStyle::Replace => "Replace the parent",
-                        SubPieStyle::FanOut => "Fan out beside the parent",
-                    };
-                    egui::ComboBox::from_id_salt("sub_pie_style_menu")
-                        .selected_text(style_label(self.menu.settings.sub_pies.style))
-                        .show_ui(ui, |ui| {
-                            for s in [SubPieStyle::Replace, SubPieStyle::FanOut] {
-                                ui.selectable_value(&mut self.menu.settings.sub_pies.style, s, style_label(s));
-                            }
-                        });
-
-                    ui.label("Marker position")
-                        .on_hover_text("Where the sub-pie and back markers sit on their buttons. Separate from the button's icon, which never replaces them.");
-                    let place_label = |p: MarkerPlacement| match p {
-                        MarkerPlacement::FarEnd => "Far end of the button",
-                        MarkerPlacement::Start => "Start, before the icon",
-                    };
-                    egui::ComboBox::from_id_salt("marker_placement")
-                        .selected_text(place_label(self.icons.placement))
-                        .show_ui(ui, |ui| {
-                            for p in [MarkerPlacement::FarEnd, MarkerPlacement::Start] {
-                                ui.selectable_value(&mut self.icons.placement, p, place_label(p));
-                            }
-                        });
-                    ui.label("Sub-pie button look")
-                        .on_hover_text("How buttons that open a sub-pie are drawn, to tell them from actions. Uses ButtonView::opens_sub_pie.");
-                    let look_label = |l: SubPieLook| match l {
-                        SubPieLook::Same => "Same as the others",
-                        SubPieLook::Outlined => "Outlined, paler fill",
-                        SubPieLook::Dimmer => "Dimmer fill",
-                    };
-                    egui::ComboBox::from_id_salt("sub_pie_look")
-                        .selected_text(look_label(self.sub_pie_look))
-                        .show_ui(ui, |ui| {
-                            for l in [SubPieLook::Same, SubPieLook::Outlined, SubPieLook::Dimmer] {
-                                ui.selectable_value(&mut self.sub_pie_look, l, look_label(l));
-                            }
-                        });
-                    ui.label("Sub-pie marker")
-                        .on_hover_text("Drawn on a button that opens a sub-pie, whatever its icon. Empty: none.");
-                    ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(60.0));
-                    ui.label("Back marker")
-                        .on_hover_text("Drawn on a back button, whatever its icon. Empty: none.");
-                    ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(60.0));
-
-                    ui.label(RichText::new("Fan-out").strong());
-                    ui.label("Delay before it opens (ms)");
-                    let mut ms = self.menu.settings.sub_pies.fan_out.delay.as_millis() as u64;
-                    if drag_reset(ui, &mut ms, 0, 0..=2000, 1.0) {
-                        self.menu.settings.sub_pies.fan_out.delay = Duration::from_millis(ms);
-                    }
-                    let mut own_radius = self.menu.settings.sub_pies.fan_out.radius.is_some();
-                    if ui.checkbox(&mut own_radius, "Own radius")
-                        .on_hover_text("Distance from the opening button's centre to the fan's buttons. Off: the menu's radius.")
-                        .changed()
-                    {
-                        self.menu.settings.sub_pies.fan_out.radius = own_radius.then_some(self.fan_radius);
-                    }
-                    ui.add_enabled_ui(own_radius, |ui| {
-                        if px_drag(ui, &mut self.fan_radius, d.layout.radius, 40.0..=200.0) {
-                            self.menu.settings.sub_pies.fan_out.radius = Some(self.fan_radius);
-                        }
-                    });
-
-                    ui.label("Selecting the fan's own button")
-                        .on_hover_text("What releasing the key on, or clicking, the button that opened the fan does. Break out: the fan becomes a replace-style sub-pie of the same children. Dismiss: releasing cancels the menu; a click just closes the fan.");
-                    let opener_label = |a: FanOpenerAction| match a {
-                        FanOpenerAction::BreakOut => "Break out as a sub-pie",
-                        FanOpenerAction::Dismiss => "Dismiss the menu",
-                    };
-                    egui::ComboBox::from_id_salt("fan_opener_action")
-                        .selected_text(opener_label(self.menu.settings.sub_pies.fan_out.opener_action))
-                        .show_ui(ui, |ui| {
-                            for a in [FanOpenerAction::BreakOut, FanOpenerAction::Dismiss] {
-                                ui.selectable_value(&mut self.menu.settings.sub_pies.fan_out.opener_action, a, opener_label(a));
-                            }
-                        });
-
-                    ui.label(RichText::new("Replace").strong());
-                    ui.label("Centre of a sub-pie")
-                        .on_hover_text("Where a sub-pie opens: at the pointer, in place of its parent, or at the button that opened it (the back button then points at the parent).");
-                    let label = |c: SubPieCenter| match c {
-                        SubPieCenter::Pointer => "At the pointer",
-                        SubPieCenter::Parent => "Same as the parent",
-                        SubPieCenter::Button => "At the opening button",
-                    };
-                    egui::ComboBox::from_id_salt("sub_pie_center")
-                        .selected_text(label(self.menu.settings.sub_pies.center))
-                        .show_ui(ui, |ui| {
-                            for c in [SubPieCenter::Pointer, SubPieCenter::Parent, SubPieCenter::Button] {
-                                ui.selectable_value(&mut self.menu.settings.sub_pies.center, c, label(c));
-                            }
-                        });
-
-                    let mut auto = self.menu.settings.sub_pies.hover_delay.is_some();
-                    if ui.checkbox(&mut auto, "Navigate on hover")
-                        .on_hover_text("Resting the pointer on a sub-pie button opens it after this delay, without a click or release; resting on a back button returns to the parent.")
-                        .changed()
-                    {
-                        self.menu.settings.sub_pies.hover_delay = auto.then(|| Duration::from_millis(self.sub_hover_ms));
-                    }
-                    ui.add_enabled_ui(auto, |ui| {
-                        ui.label("Hover delay (ms)");
-                        if drag_reset(ui, &mut self.sub_hover_ms, DEFAULT_SUB_HOVER_MS, 0..=2000, 1.0) {
-                            self.menu.settings.sub_pies.hover_delay = Some(Duration::from_millis(self.sub_hover_ms));
-                        }
-                    });
-                    ui.label(RichText::new("Give a button a sub-pie or make it a back button in the Button list.").small());
-                });
-
-                section(ui, &query, &mut shown, "Center background", "radius fill color colour stroke width", |ui| {
-                    ui.label("Radius");
-                    let def = d.center_indicator.background_radius.unwrap_or(15.0);
-                    if px_drag(ui, &mut self.bg_radius, def, 0.0..=60.0) {
-                        self.menu.settings.center_indicator.background_radius = Some(self.bg_radius);
-                    }
-
-                    ui.label("Fill color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
-
-                    ui.label("Stroke width");
-                    px_drag(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
-                        d.center_indicator.background_stroke.width, 0.0..=10.0);
-
-                    ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_stroke.color);
-                });
-
-                section(ui, &query, &mut shown, "Highlight",
-                    "shape arc slice circle radius angle fill color colour stroke width snap button", |ui| {
-                    ui.label("Shape");
-                    ui.horizontal(|ui| {
-                        let shape = &mut self.menu.settings.center_indicator.highlight_shape;
-                        ui.checkbox(&mut shape.arc, "Arc");
-                        ui.checkbox(&mut shape.slice, "Slice");
-                        ui.checkbox(&mut shape.circle, "Circle");
-                    });
-
-                    ui.label("Radius");
-                    let def = d.center_indicator.highlight_radius.unwrap_or(15.0);
-                    if px_drag(ui, &mut self.highlight_radius, def, 1.0..=60.0) {
-                        self.menu.settings.center_indicator.highlight_radius = Some(self.highlight_radius);
-                    }
-
-                    ui.label("Arc angle (°)");
-                    let def = d.center_indicator.highlight_angle.to_degrees();
-                    if drag_reset(ui, &mut self.highlight_angle_deg, def, 5.0..=360.0, 1.0) {
-                        self.menu.settings.center_indicator.highlight_angle = self.highlight_angle_deg.to_radians();
-                    }
-
-                    ui.label("Circle radius");
-                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_circle_radius,
-                        d.center_indicator.highlight_circle_radius, 1.0..=40.0);
-
-                    ui.label("Fill color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
-
-                    ui.label("Stroke width");
-                    px_drag(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
-                        d.center_indicator.highlight_stroke.width, 0.0..=10.0);
-
-                    ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_stroke.color);
-
-                    ui.checkbox(&mut self.menu.settings.center_indicator.highlight_snapping, "Snap to button");
-                });
-
-                section(ui, &query, &mut shown, "Center label",
-                    "title text color colour background stroke width", |ui| {
-                    ui.checkbox(&mut self.menu.settings.title.show, "Show title");
-                    ui.label("Text color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.title.text_color);
-                    ui.label("Background color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.title.background_color);
-                    ui.label("Stroke width");
-                    px_drag(ui, &mut self.menu.settings.title.background_stroke.width,
-                        d.title.background_stroke.width, 0.0..=4.0);
-                    ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.title.background_stroke.color);
-                });
-
-                section(ui, &query, &mut shown, "Show behaviour",
-                    "behavior instant movement threshold quick tap double tap", |ui| {
-                    let is_instant = matches!(self.menu.settings.show_behavior, ShowBehavior::Instant);
-                    egui::ComboBox::from_id_salt("show_behavior")
-                        .selected_text(if is_instant { "Instant" } else { "On movement" })
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(is_instant, "Instant").clicked() {
-                                self.menu.settings.show_behavior = ShowBehavior::Instant;
-                            }
-                            if ui.selectable_label(!is_instant, "On movement").clicked() {
-                                self.menu.settings.show_behavior =
-                                    ShowBehavior::OnMovement { threshold: self.show_threshold };
-                            }
-                        });
-
-                    if let ShowBehavior::OnMovement { ref mut threshold } = self.menu.settings.show_behavior {
-                        ui.label("Threshold");
-                        if px_drag(ui, threshold, DEFAULT_SHOW_THRESHOLD, 0.0..=50.0) {
-                            self.show_threshold = *threshold;
-                        }
-                    }
-
-                    if is_instant {
-                        ui.label("QuickTap / DoubleTap not available.");
-                    }
-                });
-
-                section(ui, &query, &mut shown, "Reveal animation",
-                    "animation fade none instant slide slideout duration start radius shape factor diamond square opacity", |ui| {
-                    let current = self.menu.settings.animations.reveal;
-                    egui::ComboBox::from_id_salt("reveal")
-                        .selected_text(reveal_label(current))
-                        .show_ui(ui, |ui| {
-                            for &r in ALL_REVEALS {
-                                ui.selectable_value(&mut self.menu.settings.animations.reveal, r, reveal_label(r));
-                            }
-                        });
-
-                    let reveal = self.menu.settings.animations.reveal;
-                    if matches!(reveal, RevealAnimation::Fade | RevealAnimation::SlideOut) {
-                        ui.label("Duration (ms)");
-                        let mut ms = self.menu.settings.animations.reveal_duration.as_millis() as u64;
-                        let def = d.animations.reveal_duration.as_millis() as u64;
-                        if drag_reset(ui, &mut ms, def, 0..=1000, 1.0) {
-                            self.menu.settings.animations.reveal_duration = Duration::from_millis(ms);
-                        }
-                    }
-
-                    if reveal == RevealAnimation::SlideOut {
-                        // Fade first, right under the main duration.
-                        let mut fade = self.menu.settings.animations.slide_fade.is_some();
-                        if ui.checkbox(&mut fade, "Fade while sliding").changed() {
-                            self.menu.settings.animations.slide_fade =
-                                fade.then(|| Duration::from_millis(self.slide_fade_ms));
-                        }
-                        ui.add_enabled_ui(fade, |ui| {
-                            ui.label("Fade duration (ms)");
-                            let def = d.animations.slide_fade.map_or(200, |f| f.as_millis() as u64);
-                            if drag_reset(ui, &mut self.slide_fade_ms, def, 0..=1000, 1.0) {
-                                self.menu.settings.animations.slide_fade = Some(Duration::from_millis(self.slide_fade_ms));
-                            }
-                        });
-
-                        ui.label("Start radius  (0 = from the centre)");
-                        px_drag(ui, &mut self.menu.settings.animations.slide_start_radius,
-                            d.animations.slide_start_radius, 0.0..=300.0);
-
-                        let mut own_shape = self.menu.settings.animations.slide_start_shape_factor.is_some();
-                        if ui.checkbox(&mut own_shape, "Own start shape").changed() {
-                            self.menu.settings.animations.slide_start_shape_factor =
-                                own_shape.then_some(self.slide_start_shape);
-                        }
-                        ui.add_enabled_ui(own_shape, |ui| {
-                            ui.label("Start shape  (−1 diamond · 0 circle · +1 square)");
-                            if drag_reset(ui, &mut self.slide_start_shape, DEFAULT_SLIDE_START_SHAPE, -1.0..=1.0, 0.01) {
-                                self.menu.settings.animations.slide_start_shape_factor = Some(self.slide_start_shape);
-                            }
-                        });
-                    }
-                });
-
-                section(ui, &query, &mut shown, "Hover emphasis",
-                    "hover emphasis highlight animation move shift outward grow scale enlarge root parent sub-pie subpie fan-out fanout duration", |ui| {
-                    let anim = &mut self.menu.settings.animations;
-                    ui.label(RichText::new("The highlighted button moves outward and/or grows.").small());
-                    // The same two controls for each kind of pie.
-                    let amounts = |ui: &mut egui::Ui, title: &str, hint: &str, e: &mut HoverEmphasis, def: HoverEmphasis| {
-                        ui.label(RichText::new(title).strong()).on_hover_text(hint);
-                        ui.label("Move outward");
-                        px_drag(ui, &mut e.shift, def.shift, 0.0..=30.0);
-                        ui.label("Grow  (1 = not at all)");
-                        drag_reset(ui, &mut e.scale, def.scale, 1.0..=1.5, 0.01);
-                    };
-                    amounts(ui, "Root pie", "The first pie that opens. Off by default: its centre highlight already shows the direction.",
-                        &mut anim.hover_emphasis, d.animations.hover_emphasis);
-                    amounts(ui, "Sub-pies and fan-outs", "Every pie opened from a button, in either style. A fan-out has no centre highlight of its own.",
-                        &mut anim.sub_pie_hover_emphasis, d.animations.sub_pie_hover_emphasis);
-
-                    ui.label(RichText::new("Both").strong());
-                    ui.label("Duration (ms)");
-                    let mut ms = anim.hover_duration.as_millis() as u64;
-                    if drag_reset(ui, &mut ms, d.animations.hover_duration.as_millis() as u64, 0..=500, 1.0) {
-                        anim.hover_duration = Duration::from_millis(ms);
-                    }
-                });
-
-                section(ui, &query, &mut shown, "Language / RTL", "language rtl right to left mirror hebrew arabic persian farsi russian unicode digits", |ui| {
-                    let mut changed = false;
-                    egui::ComboBox::from_id_salt("lang")
-                        .selected_text(LANGS[self.lang].name)
-                        .show_ui(ui, |ui| {
-                            for (i, l) in LANGS.iter().enumerate() {
-                                changed |= ui.selectable_value(&mut self.lang, i, l.name).changed();
-                            }
-                        });
-                    if changed { self.apply_language(); }
-                    ui.checkbox(&mut self.menu.settings.mirror_horizontal, "Mirror layout (RTL)");
-                    ui.label(RichText::new("egui has no bidi: keep each label single-script.").small());
-                    if !self.font_note.is_empty() { ui.label(RichText::new(&self.font_note).small()); }
-                });
-
-                if shown == 0 {
-                    ui.label(RichText::new("No matching settings.").italics().color(ui.visuals().weak_text_color()));
-                }
-
-                section(ui, &query, &mut shown, "All settings (generic editor)",
-                    "all settings generic editor dev tool code", |ui| {
-                    ui.label(RichText::new("One control for every field of PieMenuSettings (the dev tool's generic editor). The code panel shows the result.").small());
-                    if egui_pie_menu::dev_tool::settings_editor(ui, &mut self.menu.settings) {
-                        // Re-sync the demo's mirrored values, so its own widgets show the new
-                        // numbers and don't write the stale ones back. A setting that is off
-                        // (`None`) keeps the old mirror value.
-                        let s = &self.menu.settings;
-                        if let Some(v) = s.center_indicator.background_radius { self.bg_radius = v; }
-                        if let Some(v) = s.center_indicator.highlight_radius { self.highlight_radius = v; }
-                        self.highlight_angle_deg = s.center_indicator.highlight_angle.to_degrees();
-                        if let Some(v) = s.layout.intercardinal_height { self.intercardinal_height = v; }
-                        if let ShowBehavior::OnMovement { threshold } = s.show_behavior { self.show_threshold = threshold; }
-                        if let Some(v) = s.animations.slide_start_shape_factor { self.slide_start_shape = v; }
-                        if let Some(v) = s.animations.slide_fade { self.slide_fade_ms = v.as_millis() as u64; }
-                        if let Some(v) = s.number_hints.color { self.hint_color = v; }
-                        if let Some(v) = s.text_color { self.label_color = v; }
-                        if let Some(v) = s.sub_pies.fan_out.radius { self.fan_radius = v; }
-                        if let Some(v) = s.sub_pies.hover_delay { self.sub_hover_ms = v.as_millis() as u64; }
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(RichText::new(&self.last_action).size(13.0));
+            egui::ScrollArea::vertical().show(ui, |ui| match self.left_tab {
+                LeftTab::Menu => self.menu_tab(ui, &query),
+                LeftTab::Buttons => self.buttons_tab(ui),
             });
         });
 
@@ -1779,8 +1494,9 @@ impl eframe::App for Demo {
                 // which come from the theme, can be checked in both.
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker at their far end (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
+                ui.label(RichText::new(&self.last_action).weak());
             });
+            ui.label(RichText::new("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker at their far end (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins").small().weak());
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
             let text_top = ui.cursor().min.y + 20.0;
@@ -2150,5 +1866,49 @@ mod tests {
         assert!(code.contains("// Back"), "a replace sub-pie keeps its back button");
         let fan = draw_code(&default_button_configs(), SubPieStyle::FanOut);
         assert!(!fan.contains("// Back"), "a fan-out omits back buttons");
+    }
+
+    #[test]
+    fn every_library_field_is_in_one_menu_section() {
+        let s = PieMenuSettings::default();
+        let mut seen = Vec::new();
+        for g in SettingsGroup::ALL {
+            for r in group_rows(g, &s) {
+                if let Row::Field(f) = r {
+                    assert!(!seen.contains(&f), "{f:?} twice");
+                    seen.push(f);
+                }
+            }
+        }
+        // Number hints are relevant while number keys are on (the default).
+        assert!(s.input.use_number_keys);
+        let relevant = SettingsField::ALL.iter().filter(|f| f.is_relevant(&s)).count();
+        assert_eq!(seen.len(), relevant);
+    }
+
+    #[test]
+    fn menu_search_counts_rows_and_sections() {
+        let s = PieMenuSettings::default();
+        assert_eq!(menu_hit_count(&s, ""), 0);
+        // A field label, a settings path, a demo row's keywords.
+        assert_eq!(visible_rows(SettingsGroup::Ring, &s, "radius").len(), 2, "ring radius and dead zone radius");
+        assert!(visible_rows(SettingsGroup::Ring, &s, "layout.radius").contains(&Row::Field(SettingsField::LayoutRadius)));
+        assert!(visible_rows(SettingsGroup::ButtonLook, &s, "vector").contains(&Row::Demo(DemoRow::SampleIcons)));
+        // A section title shows the whole section.
+        assert_eq!(visible_rows(SettingsGroup::Ring, &s, "ring"), group_rows(SettingsGroup::Ring, &s));
+        // No match: nothing; the count adds up over the sections.
+        assert!(visible_rows(SettingsGroup::Title, &s, "zzz").is_empty());
+        assert_eq!(menu_hit_count(&s, "zzz"), 0);
+        let total: usize = SettingsGroup::ALL.iter().map(|g| visible_rows(*g, &s, "radius").len()).sum();
+        assert_eq!(menu_hit_count(&s, "radius"), total);
+        assert!(total >= 4, "ring, centre, highlight, fan-out radius ...");
+    }
+
+    #[test]
+    fn hint_rows_follow_number_keys() {
+        let mut s = PieMenuSettings::default();
+        assert!(group_rows(SettingsGroup::KeysAndHints, &s).contains(&Row::Demo(DemoRow::ShowHints)));
+        s.input.use_number_keys = false;
+        assert!(!group_rows(SettingsGroup::KeysAndHints, &s).contains(&Row::Demo(DemoRow::ShowHints)));
     }
 }
