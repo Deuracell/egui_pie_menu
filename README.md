@@ -621,12 +621,53 @@ menu.settings.animations.hover_duration = Duration::from_millis(100);    // easi
 
 ### Dev tool
 
-A window that edits the settings live and prints the Rust code that reproduces them (first iteration: layout, show behaviour, input, sub-pies and fan-out, number hints, animations and hover emphasis, centre indicator, title). Tune the menu in your running app, then copy the generated `menu.settings.… = …;` lines into your project. The demo has an "Open dev tool" button.
+The `dev_tool` module is a set of embeddable pieces, with no window of its own. Put them in your own side panels, tune the menu live, and copy the generated code into your project.
+
+| Piece | What it does |
+|---|---|
+| `settings_editor(ui, &mut settings) -> bool` | controls for every settings field, grouped in collapsing headers |
+| `buttons_editor(ui, &mut buttons, auto_mnemonics) -> bool` | tree editor over the real `PieButton` data (sub-pies, fan-outs, clusters); buttons with a `check_buttons` problem turn red |
+| `code_view(ui, &code)` | read-only monospace code area with a "Copy" button |
+| `menu_to_code(title, &settings, &buttons) -> String` | a complete snippet: `use` lines, `let buttons = vec![..];`, `PieMenu::new()` with the `.configure(..)` closure, and a commented `show` skeleton |
+| `buttons_to_code(&buttons)` / `settings_to_code(&settings)` | the two halves on their own; `settings_to_code` lists only what differs from the default |
 
 ```rust
-// `open: bool` in your app state; the window's close button clears it.
-egui_pie_menu::dev_tool::show_dev_tool(ctx, &mut open, &mut menu.settings);
+use egui_pie_menu::dev_tool::*;
+
+egui::Panel::left("editor").show(ui, |ui| {
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        settings_editor(ui, &mut self.menu.settings);
+        buttons_editor(ui, &mut self.buttons, self.menu.settings.input.auto_mnemonics);
+    });
+});
+egui::Panel::right("code").show(ui, |ui| {
+    let code = menu_to_code(Some("Edit"), &self.menu.settings, &self.buttons);
+    code_view(ui, &code);
+});
 ```
+
+Generated output (a small menu with a changed radius and mnemonics on):
+
+```rust
+use egui_pie_menu::*;
+
+let buttons = vec![
+    PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c'),
+    PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+        PieButton::back(PieDirection::West),
+        PieButton::new(PieDirection::North).with_label("Paste"),
+    ]),
+];
+
+let menu = PieMenu::new()
+    .with_title("Edit")
+    .configure(|s| {
+        s.layout.radius = 120.0;
+        s.input.auto_mnemonics = true;
+    });
+```
+
+The generated code is verified by tests: the code for a rich button tree and for settings with a change in every group is compiled as real Rust (via macros) and has to rebuild exactly the edited buttons and settings. Code that needs `Duration` (durations in the settings) comes with `use std::time::Duration;`.
 
 ### Highlight shapes
 
