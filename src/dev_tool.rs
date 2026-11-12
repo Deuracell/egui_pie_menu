@@ -179,8 +179,9 @@ pub fn settings_changes(s: &PieMenuSettings) -> Vec<String> {
     settings_changes_bound(s, &Bindings::default())
 }
 
-/// [`settings_changes`] with the build-time [`Bindings`] of fields: a field bound in
-/// [`BindingMode::Build`] is always listed, with its expression (`s.title.text_color = theme.accent;`).
+/// [`settings_changes`] with the [`Bindings`] of fields: a field bound in [`BindingMode::Build`]
+/// is always listed, with its expression (`s.title.text_color = theme.accent;`); one bound in
+/// [`BindingMode::Live`] is left out (the live block sets it before the first `show`).
 pub fn settings_changes_bound(s: &PieMenuSettings, bindings: &Bindings) -> Vec<String> {
     let default = settings_entries(&PieMenuSettings::default());
     settings_entries(s)
@@ -188,6 +189,9 @@ pub fn settings_changes_bound(s: &PieMenuSettings, bindings: &Bindings) -> Vec<S
         .zip(default)
         .filter_map(|((path, value), (_, was))| {
             let field = SettingsField::ALL.into_iter().find(|f| f.path() == path);
+            if field.is_some_and(|f| bindings.expr(&BindTarget::Field(f), BindingMode::Live).is_some()) {
+                return None;
+            }
             match field.and_then(|f| bindings.expr(&BindTarget::Field(f), BindingMode::Build).map(|e| (f, e))) {
                 Some((f, expr)) => Some(format!("s.{path} = {};", field_value_code(f, expr))),
                 None => (value != was).then(|| format!("s.{path} = {value};")),
@@ -993,7 +997,10 @@ mod tests {
             s.title.text_font = theme.font.clone();
             s.text_color = Some(theme.accent);
         }));
-        let generated = settings_to_code_bound(&PieMenuSettings::default(), &b);
+        // A live field is left out even when its value differs from the default.
+        let mut changed = PieMenuSettings::default();
+        changed.number_hints.color = Some(Color32::RED);
+        let generated = settings_to_code_bound(&changed, &b);
         assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
         assert_eq!(built.text_color, Some(theme.accent));
     }
