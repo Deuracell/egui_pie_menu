@@ -702,7 +702,11 @@ menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, cir
 cargo run --example demo
 ```
 
-  Right-click anywhere in the window to open the menu. The left panel exposes all settings as live drag fields and colour pickers.
+  Right-click anywhere in the window (or hold Space) to open the menu. The demo is also the dev tool, in three panes:
+
+- Left: the editors. Live drag fields and colour pickers for the settings, the button list editor (labels, icons, sub-pies, fan-outs, clusters), the "Menu title" field, and an "All settings (generic editor)" section with one control for every field of `PieMenuSettings`.
+- Centre: the menu itself, so every change can be tried at once ("Pin pie-menu" keeps it open).
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts.
 
 ## Upgrading from v0.36.0
 
