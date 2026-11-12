@@ -2,7 +2,7 @@ use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu::dev_tool::{
     Selection, SettingsField, SettingsGroup, TreeEdit, button_inspector, button_tree, button_tree_filtered, field_editor, field_label,
-    set_menu_sub_pie_style,
+    preview_target, relevant_fields, selection_kind, set_menu_sub_pie_style,
 };
 use egui_pie_menu::{
     ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
@@ -115,6 +115,13 @@ struct Demo {
     decor: DecorMap,
     /// The node selected in the button tree.
     selection: Selection,
+    /// What the canvas shows.
+    mode: Mode,
+    /// The last tree without problems: what Configure mode previews.
+    snapshot: Vec<PieButton>,
+    /// The preview menus of Configure mode, one per level of the tree (by the path of the
+    /// sub-pie button whose children form it; empty: the root level).
+    previews: HashMap<Vec<usize>, PieMenu>,
 
     // Search query of the left panel (both tabs)
     search: String,
@@ -176,6 +183,9 @@ impl Demo {
             buttons,
             decor,
             selection: Selection::root(),
+            mode: Mode::Demo,
+            snapshot: Vec::new(),
+            previews: HashMap::new(),
             search: String::new(),
             notice: None,
             button_height: DEFAULT_BUTTON_HEIGHT,
@@ -902,6 +912,159 @@ fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)
     }
 }
 
+// ── Configure mode ──────────────────────────────────────────────────────────
+
+/// What the canvas shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    /// The real menu, opened with right-click or Space, as an app would use it.
+    Demo,
+    /// A preview of the selected node of the button tree, driven by the editors.
+    Configure,
+}
+
+/// The level of the tree whose buttons are the children of the button at `parent_path` (empty:
+/// the root level).
+fn level_at<'a>(buttons: &'a [PieButton], parent_path: &[usize]) -> Option<&'a [PieButton]> {
+    if parent_path.is_empty() { Some(buttons) } else { button_at(buttons, parent_path).map(PieButton::children) }
+}
+
+/// The settings a preview menu is drawn with: the real ones, except for what would make the
+/// preview react to input it should not: no hover timer for sub-pies, no mnemonic keys, nothing
+/// that dismisses a pinned menu. `in_sub_pie`: the preview shows the children of a sub-pie as its
+/// ring, which the real menu draws with the sub-pie hover emphasis.
+fn preview_settings(real: &PieMenuSettings, in_sub_pie: bool) -> PieMenuSettings {
+    let mut s = real.clone();
+    s.sub_pies.hover_delay = None;
+    s.input.use_mnemonic_keys = false;
+    s.input.pinned_dismiss_inputs = Vec::new();
+    if in_sub_pie {
+        s.animations.hover_emphasis = s.animations.sub_pie_hover_emphasis;
+    }
+    s
+}
+
+/// Settings whose effect needs a pointer, a click, time or a descent into a sub-pie, so the
+/// preview cannot show them: they are judged in Demo mode only.
+fn judged_in_demo_only(field: SettingsField) -> bool {
+    use SettingsField as F;
+    matches!(
+        field,
+        F::Reveal
+            | F::RevealDuration
+            | F::SlideStartRadius
+            | F::SlideStartShapeFactor
+            | F::SlideFade
+            | F::HoverEmphasis
+            | F::SubPieHoverEmphasis
+            | F::HoverDuration
+            | F::SubPieCenter
+            | F::SubPieHoverDelay
+            | F::FanOutDelay
+            | F::FanOutOpenerAction
+    )
+}
+
+/// The menu-wide settings that concern the selected node and are judged in Demo mode only.
+fn demo_only_fields(settings: &PieMenuSettings, buttons: &[PieButton], selection: &Selection) -> Vec<SettingsField> {
+    relevant_fields(settings, selection_kind(buttons, settings, selection)).into_iter().filter(|f| judged_in_demo_only(*f)).collect()
+}
+
+/// The note the inspector shows in Configure mode for those settings ("" when none apply).
+fn demo_only_note(fields: &[SettingsField]) -> String {
+    if fields.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = fields.iter().map(|f| field_label(*f)).collect();
+    format!("The preview does not show these settings; judge them in Demo mode: {}.", names.join(", "))
+}
+
+impl Demo {
+    /// The Configure canvas: a preview of what the selected node of the tree is about, below
+    /// the toolbar. It draws separate preview menus (one per level of the tree, pinned at the
+    /// centre of the canvas), never `self.menu`, from the last tree that had no problems.
+    fn configure_canvas(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, viewport: Rect) {
+        // The preview always draws the last problem-free tree: debug builds assert on problems.
+        let mut settings = preview_settings(&self.menu.settings, false);
+        if tree_problems(&settings, &self.buttons).is_empty() {
+            self.snapshot.clone_from(&self.buttons);
+        }
+        if self.snapshot.is_empty() || !tree_problems(&settings, &self.snapshot).is_empty() {
+            ui.label(RichText::new("The preview is paused until the button problems are fixed.").color(Color32::LIGHT_RED));
+            return;
+        }
+        let target = preview_target(&self.snapshot, &settings, &self.selection);
+        let Some(level) = level_at(&self.snapshot, &target.level_path) else { return };
+        if !target.level_path.is_empty() {
+            settings = preview_settings(&self.menu.settings, true);
+        }
+
+        // Breadcrumb: "Menu › Paste Special" for the children of a sub-pie; each part selects it.
+        if !target.level_path.is_empty() {
+            ui.horizontal(|ui| {
+                if ui.link("Menu").clicked() {
+                    self.selection = Selection::root();
+                }
+                for n in 1..=target.level_path.len() {
+                    ui.label("›");
+                    let label = button_at(&self.snapshot, &target.level_path[..n]).map_or("?", |b| b.label.as_str());
+                    if ui.link(label).clicked() {
+                        self.selection = Selection::button(&target.level_path[..n]);
+                    }
+                }
+            });
+        }
+        let canvas = Rect::from_min_max(egui::pos2(viewport.min.x, ui.cursor().min.y), viewport.max);
+        let center = canvas.center();
+
+        // The preview menu of this level, pinned at the centre, with the fan of the target open.
+        let id = ("preview", target.level_path.clone());
+        let preview = self.previews.entry(target.level_path.clone()).or_insert_with(|| PieMenu::new().with_id(id));
+        preview.settings = settings;
+        preview.title = match button_at(&self.snapshot, &target.level_path) {
+            Some(parent) => Some(parent.label.clone()),
+            None => (!self.title.is_empty()).then(|| self.title.clone()),
+        };
+        preview.pointer_area = None;
+        if !preview.is_pinned() || !preview.path().is_empty() {
+            preview.pin(center);
+        }
+        preview.position = center;
+        preview.set_open_fan_out(target.fan_trigger);
+
+        // Number hints still show, but the digits do nothing.
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(e, egui::Event::Key { key: egui::Key::Num1 | egui::Key::Num2 | egui::Key::Num3 | egui::Key::Num4
+                    | egui::Key::Num5 | egui::Key::Num6 | egui::Key::Num7 | egui::Key::Num8 | egui::Key::Num9, .. })
+            });
+        });
+        let look = Look {
+            decor: &self.decor,
+            images: &self.images,
+            icons: &self.icons,
+            sub_pie_look: self.sub_pie_look,
+            button_h: self.button_height,
+            hint_gap: self.menu.settings.number_hints.spacing,
+            show_hints: self.show_hints,
+        };
+        let selection = self.selection.clone();
+        let mut clicked = None;
+        // No pointer: nothing is hovered and nothing is selected by the menu itself; a click is
+        // taken by the overlay of `draw_button`, which selects the node in the tree.
+        preview.show_with_pointer(ctx, level, None, true, |ui, b| {
+            let mut path = target.level_path.clone();
+            path.extend_from_slice(b.path);
+            if let Some(s) = draw_button(ui, b, &path, &look, Some(&selection)) {
+                clicked = Some(s);
+            }
+        });
+        if let Some(s) = clicked {
+            self.selection = s;
+        }
+    }
+}
+
 // ── Drawing the buttons ─────────────────────────────────────────────────────
 
 /// What `draw_button` needs besides the button itself.
@@ -1444,6 +1607,10 @@ impl Demo {
                         match row {
                             Row::Field(f) => {
                                 field_editor(ui, &mut self.menu.settings, f);
+                                if self.mode == Mode::Configure && judged_in_demo_only(f) {
+                                    ui.label(RichText::new("judged in Demo mode only").small().weak())
+                                        .on_hover_text("The Configure preview has no pointer, clock or navigation: switch to Demo mode to see this setting at work.");
+                                }
                             }
                             Row::Demo(r) => self.demo_row(ui, r),
                         }
@@ -1494,9 +1661,17 @@ impl Demo {
             });
         egui::ScrollArea::vertical().id_salt("buttons_inspector_scroll").auto_shrink([false, false]).show(ui, |ui| {
             let decor = &mut self.decor;
+            let note = if self.mode == Mode::Configure {
+                demo_only_note(&demo_only_fields(&self.menu.settings, &self.buttons, &self.selection))
+            } else {
+                String::new()
+            };
             let out = button_inspector(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, |ui, path, button| {
                 // Read first, write only on a change: the inspector may have reshaped the
                 // tree this frame, and the table follows only once it returns.
+                if !note.is_empty() {
+                    ui.label(RichText::new(&note).small().weak());
+                }
                 let mut d = decor_at(decor, path);
                 if appearance_editor(ui, button, &mut d) {
                     decor.insert(path.to_vec(), d);
@@ -1612,12 +1787,23 @@ impl eframe::App for Demo {
                 });
         }
 
+        let configuring = self.mode == Mode::Configure;
+        if configuring {
+            // The real menu is not part of Configure mode.
+            self.menu.close();
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             // The panel's own area (not its clip rect, which can be larger), so the
             // pinned menu, the result text and the pointer checks share one centre.
             let viewport = ui.max_rect();
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.pinned, "Pin pie-menu");
+                ui.selectable_value(&mut self.mode, Mode::Demo, "Demo")
+                    .on_hover_text("The real menu: right-click or hold Space to open it, as in an app");
+                ui.selectable_value(&mut self.mode, Mode::Configure, "Configure")
+                    .on_hover_text("A preview of what the selected node of the button tree is about; click a button to select it");
+                ui.separator();
+                ui.add_enabled(!configuring, egui::Checkbox::new(&mut self.pinned, "Pin pie-menu"))
+                    .on_disabled_hover_text("Configure mode pins its own previews");
                 ui.checkbox(&mut self.show_code, "Code panel");
                 ui.separator();
                 // egui's own theme switch (System / Dark / Light), so the default text colours,
@@ -1626,6 +1812,11 @@ impl eframe::App for Demo {
                 ui.separator();
                 ui.label(RichText::new(&self.last_action).weak());
             });
+            if configuring {
+                ui.label(RichText::new("Configure: the canvas previews the selected node (no pointer, number keys do nothing). Click a button to select it. Hover, reveal and navigation settings are judged in Demo mode.").small().weak());
+                self.configure_canvas(ctx, ui, viewport);
+                return;
+            }
             ui.label(RichText::new("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker at their far end (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins").small().weak());
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -1907,6 +2098,148 @@ mod tests {
     }
 
     #[test]
+    fn configure_mode_previews_every_node_without_panicking() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        demo.mode = Mode::Configure;
+        let viewport = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let paths: Vec<Selection> = vec![
+            Selection::root(),
+            Selection::button([0]),
+            Selection::button([1]),
+            Selection::button([1, 0]),
+            Selection::button([7]),
+        ];
+        for sel in paths {
+            demo.selection = sel;
+            frames(&mut demo, |d, ui| {
+                let ctx = ui.ctx().clone();
+                d.configure_canvas(&ctx, ui, viewport);
+            });
+        }
+        // One preview menu per level that was shown, never the real menu.
+        assert!(demo.previews.contains_key(&vec![]) && demo.previews.contains_key(&vec![1]));
+        assert!(demo.previews.values().all(PieMenu::is_pinned));
+        assert!(!demo.menu.is_open());
+        // A tree with a problem is not previewed: the last clean one stays.
+        let clean = demo.snapshot.len();
+        demo.buttons.push(PieButton::new(PieDirection::North)); // the North slot is taken
+        frames(&mut demo, |d, ui| {
+            let ctx = ui.ctx().clone();
+            d.configure_canvas(&ctx, ui, viewport);
+        });
+        assert_eq!(demo.snapshot.len(), clean);
+        assert!(!tree_problems(&demo.menu.settings, &demo.buttons).is_empty());
+    }
+
+    /// A click on a preview button selects it in the tree (the overlay of `draw_button`).
+    /// Headless: the pointer goes to where the North button of the ring is drawn.
+    #[test]
+    fn clicking_a_preview_button_selects_it() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        demo.mode = Mode::Configure;
+        demo.selection = Selection::root();
+        let viewport = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let frame = |demo: &mut Demo, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let ctx = ui.ctx().clone();
+                demo.configure_canvas(&ctx, ui, viewport);
+            });
+            out.textures_delta.clear();
+        };
+        for _ in 0..5 {
+            frame(&mut demo, vec![]);
+        }
+        let center = demo.previews[&vec![]].position;
+        let at = egui::pos2(center.x, center.y - demo.menu.settings.layout.radius);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut demo, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut demo, vec![button(true)]);
+        frame(&mut demo, vec![button(false)]);
+        assert_eq!(demo.selection, Selection::button([0]), "the North button is Copy");
+
+        // "Word wrap" (NW) is drawn as a checkbox row whose inner checkbox also takes clicks:
+        // the overlay on top still selects the button, wherever on it the click lands.
+        let mut hit = Vec::new();
+        for ix in 0..16 {
+            for iy in 0..16 {
+                let at = egui::pos2(center.x - 170.0 + 8.0 * ix as f32, center.y - 130.0 + 8.0 * iy as f32);
+                demo.selection = Selection::root();
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                };
+                frame(&mut demo, vec![egui::Event::PointerMoved(at)]);
+                frame(&mut demo, vec![button(true)]);
+                frame(&mut demo, vec![button(false)]);
+                if demo.selection == Selection::button([7]) {
+                    hit.push(at);
+                }
+            }
+        }
+        assert!(hit.len() >= 4, "clicks on the checkbox button select it: {} hits", hit.len());
+    }
+
+    /// A cluster: a click on one of its items selects that item, a click on its frame the button.
+    #[test]
+    fn clicking_a_preview_cluster_selects_item_or_button() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        demo.mode = Mode::Configure;
+        demo.buttons[2] = PieButton::cluster(PieDirection::East)
+            .with_label("Format")
+            .with_items(vec![ClusterItem::new(0, "Bold"), ClusterItem::new(1, "Italic")]);
+        demo.decor.remove(&vec![2]);
+        let viewport = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let frame = |demo: &mut Demo, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let ctx = ui.ctx().clone();
+                demo.configure_canvas(&ctx, ui, viewport);
+            });
+            out.textures_delta.clear();
+        };
+        for _ in 0..5 {
+            frame(&mut demo, vec![]);
+        }
+        let center = demo.previews[&vec![]].position;
+        let (mut items, mut frames_hit) = (std::collections::BTreeSet::new(), 0);
+        for ix in 0..24 {
+            for iy in 0..10 {
+                let at = egui::pos2(center.x + 20.0 + 8.0 * ix as f32, center.y - 40.0 + 8.0 * iy as f32);
+                demo.selection = Selection::root();
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                };
+                frame(&mut demo, vec![egui::Event::PointerMoved(at)]);
+                frame(&mut demo, vec![button(true)]);
+                frame(&mut demo, vec![button(false)]);
+                match (&demo.selection.path[..], demo.selection.item) {
+                    ([2], Some(k)) => {
+                        items.insert(k);
+                    }
+                    ([2], None) => frames_hit += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(items.into_iter().collect::<Vec<_>>(), vec![0, 1], "both items can be clicked");
+        assert!(frames_hit > 0, "the frame around the items selects the cluster itself");
+    }
+
+    #[test]
     fn a_fan_out_style_pins_what_cannot_fan_and_shows_the_notice() {
         let ctx = egui::Context::default();
         let mut demo = Demo::new(&ctx);
@@ -2016,6 +2349,70 @@ mod tests {
         let total: usize = SettingsGroup::ALL.iter().map(|g| visible_rows(*g, &s, "radius").len()).sum();
         assert_eq!(menu_hit_count(&s, "radius"), total);
         assert!(total >= 4, "ring, centre, highlight, fan-out radius ...");
+    }
+
+    #[test]
+    fn preview_settings_override_only_what_reacts_to_input() {
+        let mut real = PieMenuSettings::default();
+        real.sub_pies.hover_delay = Some(std::time::Duration::from_millis(400));
+        real.animations.sub_pie_hover_emphasis.scale = 1.3;
+        real.layout.radius = 123.0;
+        let p = preview_settings(&real, false);
+        assert_eq!(p.sub_pies.hover_delay, None);
+        assert!(!p.input.use_mnemonic_keys);
+        assert!(p.input.pinned_dismiss_inputs.is_empty());
+        assert_eq!(p.layout.radius, 123.0, "everything else follows the real settings");
+        assert_eq!(p.animations.hover_emphasis, real.animations.hover_emphasis);
+        // The children of a sub-pie are drawn with the sub-pie hover emphasis.
+        assert_eq!(preview_settings(&real, true).animations.hover_emphasis, real.animations.sub_pie_hover_emphasis);
+        // The real settings are untouched.
+        assert!(real.sub_pies.hover_delay.is_some() && real.input.use_mnemonic_keys);
+    }
+
+    #[test]
+    fn the_preview_level_follows_the_selection() {
+        let (buttons, _) = default_tree();
+        let s = PieMenuSettings::default();
+        let level_of = |sel: Selection| {
+            let t = preview_target(&buttons, &s, &sel);
+            (t.level_path.clone(), level_at(&buttons, &t.level_path).map(<[PieButton]>::len), t.fan_trigger)
+        };
+        assert_eq!(level_of(Selection::root()), (vec![], Some(8), None));
+        assert_eq!(level_of(Selection::button([0])), (vec![], Some(8), None), "a plain button: its own ring");
+        assert_eq!(level_of(Selection::button([1])), (vec![1], Some(6), None), "a replace sub-pie shows its children");
+        assert_eq!(level_of(Selection::button([1, 0])), (vec![1], Some(6), None), "a child: the same ring");
+        // Under a fan-out style the parent ring stays and the fan opens.
+        let mut fan = s.clone();
+        fan.sub_pies.style = SubPieStyle::FanOut;
+        let mut buttons = buttons;
+        buttons[1] = PieButton::new(PieDirection::NorthEast).with_label("Fan").with_fan_out(vec![
+            PieButton::new(PieDirection::NorthEast).with_label("A"),
+            PieButton::new(PieDirection::East).with_label("B"),
+        ]);
+        let t = preview_target(&buttons, &fan, &Selection::button([1]));
+        assert_eq!((t.level_path, t.fan_trigger), (vec![], Some(1)));
+        let t = preview_target(&buttons, &fan, &Selection::button([1, 1]));
+        assert_eq!((t.level_path, t.fan_trigger, t.highlight), (vec![], Some(1), Some(1)));
+    }
+
+    #[test]
+    fn demo_only_settings_are_listed_for_the_selected_node() {
+        let (buttons, _) = default_tree();
+        let s = PieMenuSettings::default();
+        let fields = demo_only_fields(&s, &buttons, &Selection::button([1]));
+        assert!(fields.contains(&SettingsField::SubPieCenter) && fields.contains(&SettingsField::SubPieHoverDelay));
+        assert!(fields.iter().all(|f| judged_in_demo_only(*f)));
+        // A root action: only the root hover emphasis and easing.
+        let fields = demo_only_fields(&s, &buttons, &Selection::button([0]));
+        assert_eq!(fields, vec![SettingsField::HoverEmphasis, SettingsField::HoverDuration]);
+        assert!(demo_only_note(&fields).contains("Demo mode"));
+        // The menu itself: the ring settings are shown by the preview, the hover ones are not.
+        let fields = demo_only_fields(&s, &buttons, &Selection::root());
+        assert!(!fields.contains(&SettingsField::LayoutRadius));
+        assert_eq!(demo_only_note(&[]), "");
+        // Layout and colours are judged in the preview.
+        assert!(!judged_in_demo_only(SettingsField::LayoutRadius));
+        assert!(!judged_in_demo_only(SettingsField::TextColor));
     }
 
     #[test]
