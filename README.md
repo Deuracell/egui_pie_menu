@@ -623,6 +623,8 @@ menu.settings.animations.hover_duration = Duration::from_millis(100);    // easi
 
 The `dev_tool` module is a set of embeddable pieces, with no window of its own. Put them in your own side panels, tune the menu live, and copy the generated code into your project.
 
+The buttons editor adds a ready-made sub-pie or fan-out with one click ("Add sub-pie" / "Add fan-out"), and a fan-out's blocked directions (the three facing the parent) cannot be picked.
+
 | Piece | What it does |
 |---|---|
 | `settings_editor(ui, &mut settings) -> bool` | controls for every settings field, grouped in collapsing headers |

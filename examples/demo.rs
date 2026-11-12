@@ -6,7 +6,10 @@ use egui_pie_menu::{ButtonProblem, ClusterItem, FanOpenerAction, HintDigits, Hov
 fn main() -> eframe::Result {
     eframe::run_native(
         "egui_pie_menu demo",
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([1600.0, 900.0]).with_min_inner_size([900.0, 600.0]),
+            ..Default::default()
+        },
         Box::new(|cc| {
             let font_note = load_system_fonts(&cc.egui_ctx);
             let mut demo = Demo::new(&cc.egui_ctx);
@@ -901,6 +904,23 @@ fn hint_side_label(s: HintSide) -> &'static str {
     }
 }
 
+/// Turns the first absent direction slot of a level into a sub-pie (`fan`: a fan-out) with
+/// the default five children plus back button, and returns its index; `None` when all
+/// slots are present. The style is stored only when it differs from `menu_style`.
+fn add_sub_pie(configs: &mut [ButtonConfig], fan: bool, menu_style: SubPieStyle) -> Option<usize> {
+    let i = configs.iter().position(|c| !c.present)?;
+    let color = configs.iter().find(|c| c.present).map_or(Color32::from_rgb(70, 130, 180), |c| c.color);
+    let wanted = if fan { SubPieStyle::FanOut } else { SubPieStyle::Replace };
+    let label = if fan { "Fan-out" } else { "Sub-pie" };
+    configs[i] = ButtonConfig {
+        submenu: true,
+        style: (wanted != menu_style).then_some(wanted),
+        ..ButtonConfig::new(label, color)
+    };
+    configs[i].children = configs[i].default_sub_pie(i);
+    Some(i)
+}
+
 /// What the editor of a fan-out's children needs from the parent level.
 struct FanInfo {
     /// Direction index of the button that opens the fan.
@@ -920,6 +940,20 @@ fn button_list_editor(
     fan: Option<FanInfo>,
 ) {
     let style = menu.settings.sub_pies.style;
+    if fan.is_none() {
+        ui.horizontal(|ui| {
+            let free = configs.iter().any(|c| !c.present);
+            ui.label("Add:");
+            for (name, is_fan) in [("sub-pie", false), ("fan-out", true)] {
+                if ui.add_enabled(free, egui::Button::new(name)).clicked() {
+                    add_sub_pie(configs, is_fan, style);
+                }
+            }
+            if !free {
+                ui.label(RichText::new("all 8 directions are used: untick one first").weak().small());
+            }
+        });
+    }
     // This level's buttons as the menu will see them: the mnemonic in effect per config
     // (configs without a button have none) and the configs with a problem, shown in red.
     let buttons = build_buttons(configs, style, fan.is_some());
@@ -966,7 +1000,8 @@ fn button_list_editor(
         egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(), ui.make_persistent_id(("button_cfg", i)), false)
             .show_header(ui, |ui| {
-                ui.checkbox(&mut cfg.present, "")
+                let blocked = matches!(&fan, Some(f) if PieDirection::ALL[f.dir].blocks_fan_out(PieDirection::ALL[i]));
+                ui.add_enabled(!blocked || cfg.present, egui::Checkbox::new(&mut cfg.present, ""))
                     .on_hover_text("Include this button in the menu (untick to leave the direction empty)");
                 ui.add_enabled(cfg.present, egui::Label::new(title));
             })
@@ -2069,6 +2104,39 @@ impl eframe::App for Demo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_sub_pie_uses_the_first_absent_slot() {
+        let mut cfgs = default_button_configs();
+        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::Replace), None);
+        cfgs[3].present = false;
+        cfgs[5].present = false;
+        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::Replace), Some(3));
+        let c = &cfgs[3];
+        assert!(c.present && c.submenu && c.style.is_none());
+        assert_eq!(c.label, "Sub-pie");
+        let slots = PieDirection::SouthEast.fan_out_slots();
+        for (k, ch) in c.children.iter().enumerate() {
+            let allowed = slots.contains(&PieDirection::ALL[k]);
+            assert_eq!(ch.present, allowed || ch.back, "child {k}");
+        }
+        assert_eq!(c.children.iter().filter(|c| c.present && !c.back).count(), 5);
+        let backs: Vec<usize> = (0..8).filter(|&k| c.children[k].back).collect();
+        assert_eq!(backs, vec![7]);
+        // Next absent slot; style overrides.
+        assert_eq!(add_sub_pie(&mut cfgs, true, SubPieStyle::Replace), Some(5));
+        assert_eq!(cfgs[5].style, Some(SubPieStyle::FanOut));
+        assert_eq!(cfgs[5].label, "Fan-out");
+        cfgs[0].present = false;
+        assert_eq!(add_sub_pie(&mut cfgs, true, SubPieStyle::FanOut), Some(0));
+        assert_eq!(cfgs[0].style, None);
+        cfgs[1].present = false;
+        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::FanOut), Some(1));
+        assert_eq!(cfgs[1].style, Some(SubPieStyle::Replace));
+        cfgs[2].present = false;
+        assert_eq!(add_sub_pie(&mut cfgs, false, SubPieStyle::Replace), Some(2));
+        assert_eq!(cfgs[2].style, None);
+    }
 
     #[test]
     fn draw_code_covers_shown_buttons_and_sub_pies() {
