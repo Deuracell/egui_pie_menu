@@ -80,8 +80,12 @@ struct Demo {
     pinned: bool,
     /// True while the open menu was opened by holding Space (not right-click).
     space_open: bool,
-    /// The settings dev tool window is open.
-    dev_tool_open: bool,
+    /// The root menu's title ("Menu title" field; empty: no title).
+    title: String,
+    /// The right-hand code panel is shown.
+    show_code: bool,
+    /// Which tab of the code panel is selected.
+    code_tab: CodeTab,
 
     // Mirrored f32 values for SmartFloat settings (drag values need plain f32)
     bg_radius: f32,
@@ -161,7 +165,9 @@ impl Demo {
             last_action: String::new(),
             pinned: false,
             space_open: false,
-            dev_tool_open: false,
+            title: "Edit".to_string(),
+            show_code: true,
+            code_tab: CodeTab::Menu,
             bg_radius,
             highlight_radius,
             highlight_angle_deg,
@@ -183,6 +189,15 @@ impl Demo {
             sub_pie_look: SubPieLook::default(),
         }
     }
+}
+
+/// The tabs of the right-hand code panel.
+#[derive(Clone, Copy, PartialEq)]
+enum CodeTab {
+    /// The library-level code (`menu_to_code`).
+    Menu,
+    /// A sketch of the render closure (`draw_code`).
+    Draw,
 }
 
 /// Demo-side defaults for values the library settings don't hold directly.
@@ -597,6 +612,86 @@ fn build_buttons(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool
             }
         })
         .collect()
+}
+
+/// A sketch of the render closure that draws the demo's buttons, for the "Draw code" tab:
+/// one `match` arm per shown button (`b.path` indexes the shown buttons of each level, see
+/// [`shown`]). It covers what the library cannot know: colours, tooltips, icons, the checkbox
+/// kind and cluster layouts. Hover colours, scale and number hints are left out.
+fn draw_code(configs: &[ButtonConfig], menu_style: SubPieStyle) -> String {
+    let mut out = String::from(
+        "// Sketch of how the demo draws its buttons: colours, tooltips, icons and cluster\n\
+         // layouts are the demo's own choices, not library settings.\n\
+         |ui, b| match b.path {\n",
+    );
+    draw_arms(configs, menu_style, false, &mut Vec::new(), &mut out);
+    out += "    _ => {}\n}\n";
+    out
+}
+
+/// Appends the arms of one level (and, recursively, of its sub-pies) to `out`.
+fn draw_arms(configs: &[ButtonConfig], menu_style: SubPieStyle, in_fan: bool, path: &mut Vec<usize>, out: &mut String) {
+    for (n, i) in shown(configs, in_fan).enumerate() {
+        let c = &configs[i];
+        path.push(n);
+        let route: Vec<String> = path.iter().map(|p| p.to_string()).collect();
+        let label = c.label.replace('\n', " ");
+        out.push_str(&format!("    [{}] => {{ // {label}\n", route.join(", ")));
+        let mut body: Vec<String> = Vec::new();
+        let fill = format!("egui::Color32::from_rgb({}, {}, {})", c.color.r(), c.color.g(), c.color.b());
+        let tooltip = if c.tooltip.is_empty() { String::new() } else { format!("\n    .on_hover_text({:?})", c.tooltip) };
+        if let Some(cl) = &c.cluster {
+            let v = format!("egui::vec2({:?}, {:?})", cl.spacing, cl.spacing);
+            body.push(format!("// a frame filled with {fill} around the items"));
+            body.push(format!("ui.spacing_mut().item_spacing = {v};"));
+            let item = |n: usize| format!("b.item({n}, ui.button(b.item_label({n})));");
+            let count = cl.items.len();
+            match cl.layout {
+                ClusterLayout::Row | ClusterLayout::Column => {
+                    body.push(format!("ui.{}(|ui| {{", if cl.layout == ClusterLayout::Row { "horizontal" } else { "vertical" }));
+                    body.extend((0..count).map(|n| format!("    {}", item(n))));
+                    body.push("});".to_string());
+                }
+                ClusterLayout::Grid => {
+                    body.push(format!("egui::Grid::new(\"cluster\").num_columns(2).spacing({v}).show(ui, |ui| {{"));
+                    for n in 0..count {
+                        body.push(format!("    {}", item(n)));
+                        if n % 2 == 1 {
+                            body.push("    ui.end_row();".to_string());
+                        }
+                    }
+                    body.push("});".to_string());
+                }
+            }
+        } else {
+            match c.icon_kind {
+                IconKind::Vector(v) => body.push(format!("// icon: {} (painted vector icon, see VectorIcon::paint in the demo)", v.name())),
+                IconKind::Image(k) => body.push(format!("// icon: {} (embedded image, tinted with the text colour)", IMAGE_ICONS[k % IMAGE_ICONS.len()].0)),
+                IconKind::Text => {}
+            }
+            let mut text = "b.label_text()".to_string();
+            if c.icon_kind == IconKind::Text && !c.icon.is_empty() {
+                text += &format!(".prefix({:?})", format!("{}  ", c.icon));
+            }
+            if c.submenu {
+                body.push("// opens a sub-pie (the demo adds a marker at the far end)".to_string());
+            }
+            if c.kind == ButtonKind::Checkbox {
+                body.push("// the demo toggles `checked` when the button is selected".to_string());
+                body.push(format!("ui.checkbox(&mut checked, {text}){tooltip};"));
+            } else {
+                body.push(format!("ui.add(egui::Button::new({text}).fill({fill})){tooltip};"));
+            }
+        }
+        for line in body.iter().flat_map(|l| l.lines()) {
+            out.push_str(&format!("        {line}\n"));
+        }
+        out.push_str("    }\n");
+        if c.submenu {
+            draw_arms(&c.children, menu_style, c.fans(menu_style), path, out);
+        }
+        path.pop();
+    }
 }
 
 /// The configs along `route` (button indices from the root, as in `ButtonView::path` and
@@ -1173,7 +1268,10 @@ impl eframe::App for Demo {
                 });
 
                 section(ui, &query, &mut shown, "Buttons",
-                    "buttons button height size text colour color force contrast blender", |ui| {
+                    "buttons button title menu title height size text colour color force contrast blender", |ui| {
+                    ui.label("Menu title")
+                        .on_hover_text("Shown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.");
+                    ui.add(egui::TextEdit::singleline(&mut self.title).desired_width(f32::INFINITY));
                     ui.label("Button height")
                         .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
                     px_drag(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
@@ -1564,12 +1662,56 @@ impl eframe::App for Demo {
                     ui.label(RichText::new("No matching settings.").italics().color(ui.visuals().weak_text_color()));
                 }
 
-                if ui.button("Open dev tool").clicked() { self.dev_tool_open = true; }
+                section(ui, &query, &mut shown, "All settings (generic editor)",
+                    "all settings generic editor dev tool code", |ui| {
+                    ui.label(RichText::new("One control for every field of PieMenuSettings (the dev tool's generic editor). The code panel shows the result.").small());
+                    if egui_pie_menu::dev_tool::settings_editor(ui, &mut self.menu.settings) {
+                        // Re-sync the demo's mirrored values, so its own widgets show the new
+                        // numbers and don't write the stale ones back. A setting that is off
+                        // (`None`) keeps the old mirror value.
+                        let s = &self.menu.settings;
+                        if let Some(v) = s.center_indicator.background_radius { self.bg_radius = v; }
+                        if let Some(v) = s.center_indicator.highlight_radius { self.highlight_radius = v; }
+                        self.highlight_angle_deg = s.center_indicator.highlight_angle.to_degrees();
+                        if let Some(v) = s.layout.intercardinal_height { self.intercardinal_height = v; }
+                        if let ShowBehavior::OnMovement { threshold } = s.show_behavior { self.show_threshold = threshold; }
+                        if let Some(v) = s.animations.slide_start_shape_factor { self.slide_start_shape = v; }
+                        if let Some(v) = s.animations.slide_fade { self.slide_fade_ms = v.as_millis() as u64; }
+                        if let Some(v) = s.number_hints.color { self.hint_color = v; }
+                        if let Some(v) = s.text_color { self.label_color = v; }
+                        if let Some(v) = s.sub_pies.fan_out.radius { self.fan_radius = v; }
+                        if let Some(v) = s.sub_pies.hover_delay { self.sub_hover_ms = v.as_millis() as u64; }
+                    }
+                });
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new(&self.last_action).size(13.0));
             });
         });
+
+        // The generated code, live. Declared before the central panel, so the central panel
+        // (and with it the menu's viewport) shrinks to what both side panels leave.
+        if self.show_code {
+            egui::Panel::right("code").resizable(true).default_size(440.0).min_size(260.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.code_tab, CodeTab::Menu, "Menu code");
+                    ui.selectable_value(&mut self.code_tab, CodeTab::Draw, "Draw code");
+                });
+                ui.separator();
+                match self.code_tab {
+                    CodeTab::Menu => {
+                        let title = (!self.title.is_empty()).then_some(self.title.as_str());
+                        let code = egui_pie_menu::dev_tool::menu_to_code(title, &self.menu.settings, &self.buttons);
+                        egui_pie_menu::dev_tool::code_view(ui, &code);
+                    }
+                    CodeTab::Draw => {
+                        let code = draw_code(&self.button_configs, self.menu.settings.sub_pies.style);
+                        egui_pie_menu::dev_tool::code_view(ui, &code);
+                    }
+                }
+            });
+        }
 
         // The menu needs at least one button and no configuration problems.
         let menu_ok = problems.is_empty() && !self.buttons.is_empty();
@@ -1590,14 +1732,13 @@ impl eframe::App for Demo {
                 });
         }
 
-        // the dev tool is embedded in the side panels (reworked next)
-
         egui::CentralPanel::default().show(ui, |ui| {
             // The panel's own area (not its clip rect, which can be larger), so the
             // pinned menu, the result text and the pointer checks share one centre.
             let viewport = ui.max_rect();
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.pinned, "Pin pie-menu");
+                ui.checkbox(&mut self.show_code, "Code panel");
                 ui.separator();
                 // egui's own theme switch (System / Dark / Light), so the default text colours,
                 // which come from the theme, can be checked in both.
@@ -1671,10 +1812,13 @@ impl eframe::App for Demo {
             let hint_gap = self.menu.settings.number_hints.spacing;
             let button_h = self.button_height;
 
-            // The title is the open (replace-style) sub-pie's parent, or "Edit" at the root.
+            // The title is the open (replace-style) sub-pie's parent, or the "Menu title" at the root.
             let style = self.menu.settings.sub_pies.style;
             let parent = route_configs(&self.button_configs, self.menu.path(), style).and_then(|r| r.last().copied());
-            self.menu.title = Some(parent.map_or("Edit", |c| c.label.as_str()).to_string());
+            self.menu.title = match parent {
+                Some(c) => Some(c.label.clone()),
+                None => (!self.title.is_empty()).then(|| self.title.clone()),
+            };
             let configs = &self.button_configs;
             let icons = &self.icons;
             let images = &self.images;
@@ -1919,5 +2063,24 @@ impl eframe::App for Demo {
                 PieMenuResponse::None => {}
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draw_code_covers_shown_buttons_and_sub_pies() {
+        let code = draw_code(&default_button_configs(), SubPieStyle::Replace);
+        assert!(code.contains("[0] => { // Copy"));
+        assert!(code.contains(".on_hover_text(\"Ctrl+C\")"));
+        assert!(code.contains("from_rgb(70, 130, 180)"));
+        assert!(code.contains("[1, 0] => {"), "sub-pie children get nested paths");
+        assert!(code.contains("prefix(\"🗑  \")"));
+        assert!(code.contains("ui.checkbox(&mut checked"));
+        assert!(code.contains("// Back"), "a replace sub-pie keeps its back button");
+        let fan = draw_code(&default_button_configs(), SubPieStyle::FanOut);
+        assert!(!fan.contains("// Back"), "a fan-out omits back buttons");
     }
 }
