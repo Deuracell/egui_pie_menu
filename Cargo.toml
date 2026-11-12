@@ -1,6 +1,6 @@
 [package]
 name = "egui_pie_menu"
-version = "0.36.0"
+version = "0.36.1"
 edition = "2024"
 description = "A radial (pie) menu widget for egui, inspired by Blender's pie menus"
 license = "MIT"
@@ -11,7 +11,7 @@ categories = ["gui"]
 
 [dependencies]
 egui = "0.36.2"
-num-traits = "0.2.19"
 
 [dev-dependencies]
 eframe = "0.36.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

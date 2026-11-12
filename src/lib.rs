@@ -1,257 +1,67 @@
+//! A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired by
+//! Blender's pie menus.
+//!
+//! Keep a [`PieMenu`] in your app state, [`PieMenu::open`] it on a trigger, and call
+//! [`PieMenu::show`] every frame. The menu owns its open state: `show` does nothing while
+//! it is closed and closes it again on any response other than [`PieMenuResponse::None`].
+//!
+//! ```no_run
+//! use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuResponse};
+//!
+//! # fn frame(ctx: &egui::Context, menu: &mut PieMenu) {
+//! let buttons = [
+//!     PieButton::new(PieDirection::North).with_label("Copy"),
+//!     PieButton::new(PieDirection::South).with_label("Paste"),
+//! ];
+//! // Open on right-click, at the pointer.
+//! if ctx.input(|i| i.pointer.secondary_pressed())
+//!     && let Some(pos) = ctx.input(|i| i.pointer.latest_pos())
+//! {
+//!     menu.open(pos);
+//! }
+//! let key_down = ctx.input(|i| i.pointer.secondary_down());
+//! match menu.show(ctx, &buttons, key_down, |ui, b| {
+//!     ui.label(b.label_text());
+//! }) {
+//!     // `idx` is the index within the button's own level; `selected_path` is the full route.
+//!     PieMenuResponse::Selected(idx) => println!("selected {idx}, route {:?}", menu.selected_path()),
+//!     PieMenuResponse::QuickTap => println!("tapped without opening"),
+//!     _ => {}
+//! }
+//! # }
+//! ```
+
 pub use egui::FontId;
 pub use egui::text::{LayoutJob, TextFormat};
+use egui::emath::TSTransform;
 use egui::{Color32, Key, Pos2, Rect, Stroke, Ui, Vec2};
-use std::f32::consts::TAU;
-use std::time::{Duration, Instant};
-
-mod utils;
-pub use utils::common_utils::SmartFloat;
+use std::collections::HashMap;
+use std::time::Duration;
 
 pub mod settings;
 pub use settings::*;
 
-pub(crate) mod highlight_shapes;
-use highlight_shapes::{ArcValues, CircleValues, HighlightPainter, SliceValues};
+mod button;
+mod highlight_shapes;
+mod layout;
+mod mnemonic;
+#[cfg(test)]
+mod tests;
 
-/// How a button gets its mnemonic key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Mnemonic {
-    /// Follow the menu (default): generated from the button's label when
-    /// [`PieMenuInput::auto_mnemonics`] is on, otherwise none.
-    #[default]
-    Auto,
-    /// This key (case-insensitive). Reserved: generated mnemonics never use it.
-    Key(char),
-    /// Never has a mnemonic, even when [`PieMenuInput::auto_mnemonics`] is on.
-    None,
-}
+pub use button::{ButtonProblem, ButtonView, ClusterItem, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
+pub use mnemonic::{Mnemonic, mnemonic_text};
 
-/// A single button slot in the pie menu.
-///
-/// Defines *where* the button sits (`direction`), its keyboard mnemonic and the
-/// label text used to generate one. All visual content is rendered by the caller
-/// via the closure passed to [`PieMenu::show`].
-#[derive(Clone, Debug)]
-pub struct PieButton {
-    /// Which of the eight directions this button occupies.
-    pub direction: PieDirection,
-    /// How this button gets its mnemonic key. Use [`PieMenu::mnemonics`] for the
-    /// keys actually in effect (e.g. to underline them with [`mnemonic_text`]).
-    pub mnemonic: Mnemonic,
-    /// The text shown on the button, used to generate a mnemonic for
-    /// [`Mnemonic::Auto`]. Rendering is still up to the closure.
-    pub label: String,
-    /// Buttons of the sub-pie opened by this button. Empty for a plain button.
-    pub children: Vec<PieButton>,
-    /// A disabled button is never highlighted or selected (mouse, number keys,
-    /// mnemonic) and gets no generated mnemonic. It is still drawn by your closure;
-    /// check [`ButtonView::enabled`] to grey it out.
-    pub enabled: bool,
-}
-
-impl PieButton {
-    /// Creates a button at `direction` with an empty label and [`Mnemonic::Auto`].
-    pub fn new(direction: PieDirection) -> Self {
-        Self {
-            direction,
-            mnemonic: Mnemonic::Auto,
-            label: String::new(),
-            children: Vec::new(),
-            enabled: true,
-        }
-    }
-
-    /// Enables or disables this button. See [`PieButton::enabled`].
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-
-    /// Sets the label text used to generate a mnemonic.
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = label.into();
-        self
-    }
-
-    /// Makes this button open a sub-pie containing `children` when selected.
-    ///
-    /// Inside a sub-pie, Backspace or a click on the centre goes back one level.
-    /// Use [`PieMenu::current_buttons`] to get the buttons currently shown, and
-    /// [`PieMenu::selected_path`] to learn which leaf was chosen.
-    pub fn with_children(mut self, children: Vec<PieButton>) -> Self {
-        self.children = children;
-        self
-    }
-
-    /// Sets an explicit mnemonic key for this button. Case-insensitive.
-    pub fn with_mnemonic(mut self, c: char) -> Self {
-        self.mnemonic = Mnemonic::Key(c);
-        self
-    }
-
-    /// This button never gets a mnemonic, even when auto mnemonics are on.
-    pub fn without_mnemonic(mut self) -> Self {
-        self.mnemonic = Mnemonic::None;
-        self
-    }
-}
-
-/// A problem with the buttons of one pie level, from [`PieMenu::check_buttons`].
-///
-/// Indices refer to the slice that was checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ButtonProblem {
-    /// Two buttons occupy the same direction.
-    SharedDirection { first: usize, second: usize, direction: PieDirection },
-    /// Two enabled buttons have the same mnemonic key.
-    DuplicateMnemonic { first: usize, second: usize, key: char },
-}
-
-impl ButtonProblem {
-    /// The two button indices involved.
-    pub fn buttons(&self) -> [usize; 2] {
-        match self {
-            ButtonProblem::SharedDirection { first, second, .. }
-            | ButtonProblem::DuplicateMnemonic { first, second, .. } => [*first, *second],
-        }
-    }
-}
-
-impl std::fmt::Display for ButtonProblem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ButtonProblem::SharedDirection { first, second, direction } => {
-                write!(f, "buttons {first} and {second} are both in direction {direction:?}")
-            }
-            ButtonProblem::DuplicateMnemonic { first, second, key } => {
-                write!(f, "buttons {first} and {second} share the mnemonic '{key}'")
-            }
-        }
-    }
-}
-
-/// Problems with the buttons of one pie level: several buttons in one direction, or
-/// the same mnemonic on several enabled buttons. Buttons in different (sub-)pie levels
-/// are never compared with each other, so they may reuse directions and keys.
-fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>]) -> Vec<ButtonProblem> {
-    let mut problems = Vec::new();
-    let mut dirs: Vec<(usize, &PieDirection)> = Vec::new();
-    for (i, b) in buttons.iter().enumerate() {
-        if let Some((first, _)) = dirs.iter().find(|(_, d)| **d == b.direction) {
-            problems.push(ButtonProblem::SharedDirection {
-                first: *first,
-                second: i,
-                direction: b.direction.clone(),
-            });
-        } else {
-            dirs.push((i, &b.direction));
-        }
-    }
-    let mut keys: Vec<(char, usize)> = Vec::new();
-    for (i, (b, m)) in buttons.iter().zip(mnemonics).enumerate() {
-        let (true, Some(c)) = (b.enabled, *m) else { continue };
-        if let Some((_, first)) = keys.iter().find(|(k, _)| *k == c) {
-            problems.push(ButtonProblem::DuplicateMnemonic { first: *first, second: i, key: c });
-        } else {
-            keys.push((c, i));
-        }
-    }
-    problems
-}
-
-/// Resolves the mnemonic key in effect for each button.
-///
-/// - [`Mnemonic::Key`] is used as given, and its key is reserved.
-/// - [`Mnemonic::None`] never gets one.
-/// - [`Mnemonic::Auto`] gets one generated from its label when `auto` is on. All
-///   buttons are considered together: a button whose letters are all claimed makes
-///   another button move to one of its alternative letters, so as many buttons as
-///   possible get a distinct mnemonic. Word initials are preferred, then the other
-///   letters left to right. Only a button with no possible letter is left without one.
-///   Any alphabetic letter of any script can be generated (combining marks are skipped;
-///   Hebrew final forms and Arabic alef variants are folded to one key).
-fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
-    let mut resolved: Vec<Option<char>> = buttons
-        .iter()
-        .map(|b| match b.mnemonic {
-            Mnemonic::Key(c) => Some(fold_char(c)),
-            Mnemonic::Auto | Mnemonic::None => None,
-        })
-        .collect();
-    if !auto {
-        return resolved;
-    }
-    let taken: Vec<char> = resolved.iter().flatten().copied().collect();
-
-    // Candidate letters per Auto button, best first: word initials, then every other letter.
-    let candidates: Vec<Vec<char>> = buttons
-        .iter()
-        .map(|button| {
-            let mut list: Vec<char> = Vec::new();
-            if button.mnemonic == Mnemonic::Auto && button.enabled {
-                let label = &button.label;
-                let letters = |c: &char| is_mnemonic_letter(*c);
-                let initials = label
-                    .split(|c: char| !c.is_alphanumeric())
-                    .filter_map(|w| w.chars().next())
-                    .filter(letters);
-                for c in initials.chain(label.chars().filter(letters)) {
-                    let c = fold_char(c);
-                    if !taken.contains(&c) && !list.contains(&c) {
-                        list.push(c);
-                    }
-                }
-            }
-            list
-        })
-        .collect();
-
-    // Maximum bipartite matching (buttons <-> letters) via augmenting paths, so a
-    // button whose only letters are claimed can make an earlier button move to
-    // its alternative. Free letters are always preferred over displacing anyone.
-    fn place(
-        i: usize,
-        candidates: &[Vec<char>],
-        owner: &mut std::collections::HashMap<char, usize>,
-        visited: &mut Vec<char>,
-    ) -> bool {
-        for &c in &candidates[i] {
-            if !owner.contains_key(&c) {
-                owner.insert(c, i);
-                return true;
-            }
-        }
-        for &c in &candidates[i] {
-            if visited.contains(&c) {
-                continue;
-            }
-            visited.push(c);
-            let other = owner[&c];
-            if place(other, candidates, owner, visited) {
-                owner.insert(c, i);
-                return true;
-            }
-        }
-        false
-    }
-
-    // Most constrained buttons first, so they are settled before flexible ones.
-    let mut order: Vec<usize> = (0..buttons.len()).filter(|&i| !candidates[i].is_empty()).collect();
-    order.sort_by_key(|&i| candidates[i].len());
-    let mut owner = std::collections::HashMap::new();
-    for i in order {
-        place(i, &candidates, &mut owner, &mut Vec::new());
-    }
-    for (c, i) in owner {
-        resolved[i] = Some(c);
-    }
-    resolved
-}
+use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};
+use mnemonic::{char_to_key, fold_char, resolve_all, resolve_mnemonics};
 
 /// Outcome of a [`PieMenu::show`] call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieMenuResponse {
-    /// A button was activated; value is its index in the slice passed to `show`.
+    /// A button or cluster item was activated. For a button the value is its index within
+    /// its own level: the slice passed to `show` for a root button, but the index in the
+    /// sub-pie's or fan-out's children for a button inside one. For an item of a cluster
+    /// ([`PieButton::cluster`]) it is the item number you gave to [`ButtonView::item`].
+    /// [`PieMenu::selected_path`] is the full route from the root.
     Selected(usize),
     /// The menu was dismissed without a selection.
     Dismissed,
@@ -265,132 +75,180 @@ pub enum PieMenuResponse {
     None,
 }
 
-/// What the menu knows about one button, handed to your render closure by
-/// [`PieMenu::show`]. Everything is resolved for the level currently shown, so you never
-/// have to precompute mnemonics or hints.
-pub struct ButtonView<'a> {
-    /// Index of the button within the level being shown (what `Selected(idx)` returns).
-    pub idx: usize,
-    /// Whether the pointer currently highlights this button.
-    pub hovered: bool,
-    /// Whether the button can be selected (`false`: grey it out).
-    pub enabled: bool,
-    /// The button itself (label, direction, …).
-    pub button: &'a PieButton,
-    /// The mnemonic key in effect for this button (lower-case), if any.
-    pub mnemonic: Option<char>,
-    /// A number-key hint to draw inside your own button. `None` when number keys are
-    /// off, or when [`PieMenuNumberHints::show`] is on (the menu then paints the digit
-    /// beside the button itself).
-    pub number_hint: Option<NumberHint>,
-    text_color: Color32,
-    body_font: FontId,
+/// What one frame of a level produced, before sub-pies, fans and back buttons are resolved.
+enum LevelEvent {
+    None,
+    Dismissed,
+    QuickTap,
+    DoubleTap,
+    /// A button of the level being shown.
+    Pick(usize),
+    /// A child of the open fan-out: (the fan's button, the child).
+    FanPick(usize, usize),
+    /// An item of a cluster button of the level being shown: (the cluster button, the
+    /// item number).
+    ClusterPick(usize, usize),
+    /// A click in an open fan-out that hit no fan button: close the fan.
+    CloseFan,
+    /// The fan's own opening button was selected: break the fan out into a sub-pie.
+    BreakOut(usize),
 }
 
-impl ButtonView<'_> {
-    /// The button's label with its mnemonic (if any) underlined, ready for
-    /// `ui.label(..)` or `egui::Button::new(..)`. Colour and font follow the current
-    /// egui style; override with [`LabelText::color`] / [`LabelText::font`].
-    pub fn label_text(&self) -> LabelText {
-        LabelText {
-            prefix: String::new(),
-            text: self.button.label.clone(),
-            mnemonic: self.mnemonic,
-            color: self.text_color,
-            font: self.body_font.clone(),
-        }
-    }
+/// What [`PieMenu::draw_level`] needs to draw one ring of buttons.
+struct LevelDraw<'a> {
+    buttons: &'a [PieButton],
+    center: Pos2,
+    /// Layout radius of this ring.
+    radius: f32,
+    /// When the ring appeared, for the reveal animation.
+    shown_at: Option<f64>,
+    hovered: Option<usize>,
+    /// The parent ring while a fan is open: every button but this one is greyed out …
+    dim_except: Option<usize>,
+    /// … to this opacity (eases to and from `DIMMED_OPACITY` as the fan opens and closes).
+    dim_opacity: f32,
+    /// How the highlighted button is emphasised.
+    emphasis: HoverEmphasis,
+    /// Salt for the buttons' Area ids.
+    id: egui::Id,
+    /// Route from the root to this ring (each button's `path` is this plus its index).
+    path_prefix: &'a [usize],
+    /// Multiplied into every button's opacity (1.0: untouched; the fading main ring of a
+    /// break-out uses `1 - fade`).
+    opacity_scale: f32,
 }
 
-/// A button label with its mnemonic underlined; see [`ButtonView::label_text`].
-/// Converts into [`egui::WidgetText`], so pass it to `ui.label(..)` directly.
-#[derive(Clone, Debug)]
-pub struct LabelText {
-    prefix: String,
-    text: String,
-    mnemonic: Option<char>,
-    color: Color32,
-    font: FontId,
+/// An open fan-out, laid out for this frame.
+struct Fan<'a> {
+    /// Index of the button that opened it, in the level being shown.
+    trigger: usize,
+    children: &'a [PieButton],
+    center: Pos2,
+    radius: f32,
+    /// The opening button's rect: the pointer on it selects nothing in the fan.
+    trigger_rect: Rect,
 }
 
-impl LabelText {
-    /// Text (and underline) colour.
-    pub fn color(mut self, color: Color32) -> Self {
-        self.color = color;
-        self
-    }
-
-    /// Font.
-    pub fn font(mut self, font: FontId) -> Self {
-        self.font = font;
-        self
-    }
-
-    /// Text placed before the label, never underlined (e.g. an icon: `"🗑  "`).
-    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.prefix = prefix.into();
-        self
-    }
-
-    fn to_job(&self) -> LayoutJob {
-        let format = TextFormat { color: self.color, font_id: self.font.clone(), ..Default::default() };
-        let mut job = LayoutJob::default();
-        if !self.prefix.is_empty() {
-            job.append(&self.prefix, 0.0, format.clone());
-        }
-        match self.mnemonic {
-            Some(m) => append_mnemonic_text(&mut job, &self.text, m, format),
-            None => job.append(&self.text, 0.0, format),
-        }
-        job
-    }
+/// A fan-out that was broken out into a sub-pie: what the transition needs. The sub-pie
+/// itself is an ordinary level (see [`PieMenu::break_out`]); this is the main ring fading
+/// out, the opener included.
+struct BreakOut {
+    /// egui time of the break-out, for the fades.
+    started: f64,
+    /// Where the parent's centre (circle) and ring were drawn.
+    parent_center: Pos2,
+    parent_radius: f32,
+    /// The opener's index in the parent ring.
+    opener: usize,
 }
 
-impl From<LabelText> for egui::WidgetText {
-    fn from(l: LabelText) -> Self {
-        l.to_job().into()
-    }
+/// The longest repaint delay ever requested. A huge ("never") delay setting is capped to
+/// this instead of overflowing the conversion to a `Duration`.
+const MAX_REPAINT_DELAY: Duration = Duration::from_secs(3600);
+
+/// Asks egui for a repaint in `secs` seconds (capped, never panicking).
+fn repaint_after(ctx: &egui::Context, secs: f64) {
+    let delay = Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(MAX_REPAINT_DELAY);
+    ctx.request_repaint_after(delay.min(MAX_REPAINT_DELAY));
 }
+
+/// Opacity of the parent (its centre and its other buttons) while a fan-out is open.
+const DIMMED_OPACITY: f32 = 0.35;
 
 /// Radial (pie) menu widget.
 ///
 /// Owns interaction state but not button content. Construct once, then call
 /// [`PieMenu::show`] every frame with the buttons for the current context.
-/// A number-key hint to draw inside your own button; see [`ButtonView::number_hint`]
-/// (or [`PieMenu::number_hint`] outside the render closure).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NumberHint {
-    /// The digit, already converted to Arabic-Indic if that setting is on.
-    pub text: String,
-    /// Whether the digit goes after (right of) the label rather than before it,
-    /// resolved from [`PieMenuNumberHints::side`].
-    pub on_right: bool,
-}
-
 pub struct PieMenu {
     pub id: egui::Id,
-    open_time: Instant,
-    selected_index: Option<usize>,
+    /// Text shown above the center indicator (see [`PieMenuSettings::title`] for its
+    /// appearance). `None`: no title.
+    pub title: Option<String>,
+    /// The pointer only counts inside this rect; outside it the menu behaves as if there
+    /// were no pointer (nothing hovered, clicks select nothing). Mainly for a pinned menu
+    /// that shares the window with other widgets. `None` (default): everywhere.
+    pub pointer_area: Option<Rect>,
+    /// Between [`PieMenu::open`] and a closing response.
+    is_open: bool,
+    /// Opened with [`PieMenu::pin`]: stays open after a selection.
+    pinned: bool,
+    hovered_index: Option<usize>,
     pub position: Pos2,
     pub settings: PieMenuSettings,
     release_handled: bool,
     /// Whether the show condition has been met since `open()` was called.
-    mouse_shown: bool,
-    /// Timestamp of the last QuickTap, used for double-tap detection.
-    last_quick_tap: Option<Instant>,
-    /// Set by `open()` when this press follows a QuickTap within the double-tap window.
+    visible: bool,
+    /// egui time (`InputState::time`) of the last QuickTap, used for double-tap detection.
+    /// egui's clock is used rather than `std::time::Instant`, which panics on wasm.
+    last_quick_tap: Option<f64>,
+    /// Set by `open()`: the first `show` after it decides `double_tap_pending`.
+    fresh_open: bool,
+    /// This press follows a QuickTap within the double-tap window.
     /// While set, the menu never becomes visible; releasing yields `DoubleTap`.
     double_tap_pending: bool,
     /// Debug-only: the duplicate direction/mnemonic check already ran for this open.
     checked_buttons: bool,
-    /// When the buttons became visible; drives the reveal animation.
-    shown_at: Option<Instant>,
+    /// egui time when the buttons became visible; drives the reveal animation.
+    /// `None` while visible means "stamp it on the next `show`".
+    shown_at: Option<f64>,
     /// Indices of the buttons descended through to reach the current sub-pie level.
     path: Vec<usize>,
     /// Full index path of the last leaf selection (see [`PieMenu::selected_path`]).
     selected_path: Vec<usize>,
-    /// Cached button sizes from the previous frame, used to centre each Area.
-    button_sizes: Vec<Vec2>,
+    /// Cached button sizes from the previous frame, used to centre each Area, per ring of
+    /// buttons (keyed by the ring's id, see [`PieMenu::level_ring_id`]). Every ring has its
+    /// own Areas, so a ring seen for the first time is hidden by egui for its sizing frame
+    /// instead of being painted at positions computed from another ring's sizes.
+    ring_sizes: HashMap<egui::Id, Vec<Vec2>>,
+    /// Where each button of the level was drawn last frame (its final, un-animated
+    /// centre), for [`SubPieCenter::Button`].
+    button_centers: Vec<Pos2>,
+    /// The centre of each level descended through (parallel to `path`), restored on
+    /// going back.
+    level_centers: Vec<Pos2>,
+    /// Sub-pie hover timer: the hovered sub-pie button and the egui time it became so.
+    hover_since: Option<(usize, f64)>,
+    /// Bumped by every `open`, so animation state kept by egui (button emphasis, fan
+    /// dimming) starts fresh for each opening and does not leak from the previous one.
+    anim_gen: u64,
+    /// Where the menu's centre was actually drawn last frame (the position clamped to the
+    /// screen). The centre click that goes back is tested against this, not `position`.
+    display_center: Pos2,
+    /// The open fan-out: index of its button in the level being shown.
+    fan: Option<usize>,
+    /// The button of the fan that was open last, while the parent's dimming eases out.
+    last_fan: Option<usize>,
+    /// A fan the user just closed (click, Backspace, back button) while the pointer still
+    /// rests on its button: it does not reopen until the pointer has left that button.
+    fan_suppressed: Option<usize>,
+    /// egui time the fan appeared (`None`: stamp on the next draw), for its animation.
+    fan_shown_at: Option<f64>,
+    /// Test-only: the fan buttons' final centres from the previous frame.
+    #[cfg(test)]
+    fan_centers: Vec<Pos2>,
+    /// The fan child the pointer highlights.
+    fan_hover: Option<usize>,
+    /// The pointer has been out at the fan since it opened; coming back in then closes it.
+    fan_armed: bool,
+    /// Fan-out hover timer: the hovered fan button and the egui time it became so.
+    fan_pending: Option<(usize, f64)>,
+    /// The current level has not been shown yet since it opened.
+    level_fresh: bool,
+    /// The button the pointer already pointed at when the current level opened. The
+    /// hover timer ignores it until the pointer has left it once, so arriving in a level
+    /// never triggers the next navigation by itself.
+    inert_hover: Option<usize>,
+    /// The current level was entered by descending into a sub-pie (not by going back or
+    /// opening the menu), so a sub-pie button under the resting pointer starts its timer at
+    /// once and the navigation flows on.
+    entered_forward: bool,
+    /// Set while the level shown is a broken-out fan (see [`BreakOut`]).
+    breakout: Option<BreakOut>,
+    /// The radius of the broken-out level (the fan's); `None`: `settings.layout.radius`.
+    level_radius: Option<f32>,
+    /// Where the open fan's centre was drawn last frame, and its radius.
+    fan_display_center: Pos2,
+    fan_display_radius: f32,
 }
 
 impl Default for PieMenu {
@@ -405,19 +263,44 @@ impl PieMenu {
     pub fn new() -> Self {
         Self {
             id: egui::Id::new("pie_menu"),
-            open_time: Instant::now(),
-            selected_index: None,
+            title: None,
+            pointer_area: None,
+            is_open: false,
+            pinned: false,
+            hovered_index: None,
             position: Pos2::ZERO,
             settings: PieMenuSettings::default(),
             release_handled: false,
-            mouse_shown: false,
+            visible: false,
             last_quick_tap: None,
+            fresh_open: false,
             double_tap_pending: false,
             checked_buttons: false,
             shown_at: None,
             path: Vec::new(),
             selected_path: Vec::new(),
-            button_sizes: Vec::new(),
+            ring_sizes: HashMap::new(),
+            button_centers: Vec::new(),
+            level_centers: Vec::new(),
+            hover_since: None,
+            anim_gen: 0,
+            display_center: Pos2::ZERO,
+            fan: None,
+            last_fan: None,
+            fan_suppressed: None,
+            fan_shown_at: None,
+            #[cfg(test)]
+            fan_centers: Vec::new(),
+            fan_hover: None,
+            fan_armed: false,
+            fan_pending: None,
+            level_fresh: true,
+            inert_hover: None,
+            entered_forward: false,
+            breakout: None,
+            level_radius: None,
+            fan_display_center: Pos2::ZERO,
+            fan_display_radius: 0.0,
         }
     }
 
@@ -428,6 +311,12 @@ impl PieMenu {
         self
     }
 
+    /// Sets the title shown above the center indicator.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
     /// Override the default [`PieMenuSettings`] at construction time.
     pub fn with_settings(mut self, settings: PieMenuSettings) -> Self {
         self.settings = settings;
@@ -435,11 +324,34 @@ impl PieMenu {
     }
 
     /// Problems in one level's buttons: several in one direction, or the same mnemonic
-    /// on several enabled buttons. Debug builds assert on these when the menu opens;
-    /// call this to check (or show the problems) yourself, e.g. in an editor, in any
-    /// build. Pass the buttons of a single level.
+    /// on several enabled buttons (or cluster items, which share the level's keys); two
+    /// items of a cluster with the same number; and, for each button that opens a fan-out, the same
+    /// among its children plus children in a blocked direction or with sub-pies of their
+    /// own ([`ButtonProblem::InFanOut`]). Debug builds assert on these when the level
+    /// opens; call this to check (or show the problems) yourself, e.g. in an editor, in
+    /// any build. Pass the buttons of a single level.
     pub fn check_buttons(&self, buttons: &[PieButton]) -> Vec<ButtonProblem> {
-        button_problems(buttons, &self.mnemonics(buttons))
+        let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
+        let mut problems = button_problems(buttons, &mnemonics);
+        problems.extend(item_problems(buttons, &mnemonics, &item_mnemonics));
+        for (parent, button) in buttons.iter().enumerate().filter(|(_, b)| self.opens_fan(b)) {
+            let children = button.children();
+            for problem in fan_out_problems(button.direction, children, &self.mnemonics(children)) {
+                problems.push(ButtonProblem::InFanOut { parent, problem: Box::new(problem) });
+            }
+        }
+        problems
+    }
+
+    /// Whether `button` opens its sub-pie as a fan-out: it has children, and its own
+    /// style (or else [`PieMenuSubPieSettings::style`]) is [`SubPieStyle::FanOut`].
+    pub fn opens_fan(&self, button: &PieButton) -> bool {
+        match &button.kind {
+            PieButtonKind::SubPie { children, style } => {
+                !children.is_empty() && style.unwrap_or(self.settings.sub_pies.style) == SubPieStyle::FanOut
+            }
+            _ => false,
+        }
     }
 
     /// The mnemonic key in effect for each button (lower-case), from each button's
@@ -449,28 +361,45 @@ impl PieMenu {
         resolve_mnemonics(buttons, self.settings.input.auto_mnemonics)
     }
 
+    /// The mnemonic key in effect for each declared item of each cluster among `buttons`:
+    /// per button, per item in declaration order (empty for a button that is not a
+    /// cluster). Items compete with the level's buttons for keys, so no key is handed
+    /// out twice; see [`ClusterItem`]. Inside the render closure, prefer
+    /// [`ButtonView::item_mnemonic`] and [`ButtonView::item_label`].
+    pub fn cluster_mnemonics(&self, buttons: &[PieButton]) -> Vec<Vec<Option<char>>> {
+        resolve_all(buttons, self.settings.input.auto_mnemonics).1
+    }
+
     /// The number-key hint for `button`, for drawing inside your own button so the button
     /// grows to fit it, e.g. `egui::Button::new((label, hint.text)).gap(spacing)`.
     ///
-    /// Returns `None` when number keys are off. This is independent of
-    /// [`PieMenuNumberHints::show`], which makes the menu paint the digit *beside* the
-    /// button instead; use one or the other. Call it before [`PieMenu::show`] (which
-    /// borrows the menu mutably) and move the results into the render closure.
+    /// Returns `None` when number keys are off. Inside the render closure, prefer
+    /// [`ButtonView::number_hint`], which also knows whether the button is hovered
+    /// (this one gives the colour for a non-hovered button in a dark theme).
     pub fn number_hint(&self, button: &PieButton) -> Option<NumberHint> {
-        self.settings.input.use_numpad_keys.then(|| NumberHint {
-            text: self.hint_digit(&Self::eff(&button.direction, self.settings.mirror_horizontal)).to_string(),
-            on_right: self.hint_on_right(&Self::eff(&button.direction, self.settings.mirror_horizontal)),
+        self.number_hint_styled(button, false, &egui::Visuals::dark())
+    }
+
+    /// [`Self::number_hint`] with the colour resolved for `hovered` against `visuals`.
+    fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
+        let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
+        let hints = &self.settings.number_hints;
+        (self.settings.input.use_number_keys && !button.is_cluster()).then(|| NumberHint {
+            text: self.hint_digit(&dir).to_string(),
+            color: button_text_color(hints.color, visuals, hovered, button.enabled),
+            on_right: self.hint_on_right(&dir),
         })
     }
 
-    /// The hint digit for a direction, honouring `arabic_indic_digits`.
+    /// The hint digit for a direction, in the [`PieMenuNumberHints::digits`] style.
     fn hint_digit(&self, dir: &PieDirection) -> char {
         let digit = Self::direction_digit(dir);
-        if self.settings.number_hints.arabic_indic_digits {
-            char::from_u32('٠' as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
-        } else {
-            digit
-        }
+        let zero = match self.settings.number_hints.digits {
+            HintDigits::Western => return digit,
+            HintDigits::ArabicIndic => '٠',
+            HintDigits::Persian => '۰',
+        };
+        char::from_u32(zero as u32 + digit.to_digit(10).unwrap_or(0)).unwrap_or(digit)
     }
 
     /// Whether the hint goes on the right of the button, from [`PieMenuNumberHints::side`].
@@ -488,131 +417,143 @@ impl PieMenu {
         }
     }
 
-    /// Call this when opening the menu. Resets interaction state and sets position.
+    /// Opens the menu centred at `pos` and resets its interaction state. It stays open
+    /// until [`PieMenu::show`] returns a closing response (anything but
+    /// [`PieMenuResponse::None`]) or [`PieMenu::close`] is called.
     pub fn open(&mut self, pos: Pos2) {
         self.position = pos;
-        self.open_time = Instant::now();
+        self.is_open = true;
+        self.pinned = false;
         self.release_handled = false;
-        self.selected_index = None;
-        self.mouse_shown = false;
+        self.hovered_index = None;
+        self.visible = false;
         self.shown_at = None;
         self.path.clear();
+        self.level_centers.clear();
+        self.hover_since = None;
+        self.close_fan();
+        self.last_fan = None;
+        self.fan_suppressed = None;
+        self.anim_gen = self.anim_gen.wrapping_add(1);
+        self.display_center = pos;
+        self.level_fresh = true;
+        self.inert_hover = None;
+        self.entered_forward = false;
         self.selected_path.clear();
+        self.clear_breakout();
         self.checked_buttons = false;
-        self.double_tap_pending = self
-            .last_quick_tap
-            .map(|t| t.elapsed() <= self.settings.input.double_tap_window)
-            .unwrap_or(false);
+        self.double_tap_pending = false;
+        self.fresh_open = true;
     }
 
-    /// Makes the menu visible immediately, regardless of [`ShowBehavior`].
-    /// Call right after [`PieMenu::open`] for a pinned/persistent menu.
-    pub fn reveal(&mut self) {
-        self.mouse_shown = true;
-        self.shown_at = Some(Instant::now());
-    }
-
-    /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying the shape factor.
+    /// Opens the menu as a pinned (persistent) one centred at `center`:
     ///
-    /// - `0.0`  → circle: all buttons equidistant (L2, unit vector)
-    /// - `+1.0` → square: diagonals pushed out to the corners (L∞ norm)
-    /// - `-1.0` → diamond: diagonals pulled in toward the centre (L1 norm)
-    /// The direction as displayed: mirrored when [`PieMenuSettings::mirror_horizontal`] is on.
-    fn eff(dir: &PieDirection, mirror: bool) -> PieDirection {
-        if mirror { dir.mirrored() } else { dir.clone() }
+    /// - visible immediately, regardless of [`ShowBehavior`];
+    /// - stays open after a selection ([`PieMenuResponse::Selected`] is still returned);
+    /// - never blocks the widgets behind it, and leaves typing to a focused text field;
+    /// - is dismissed only by [`PieMenuInput::pinned_dismiss_inputs`] (default: Escape)
+    ///   or [`PieMenu::close`];
+    /// - ignores `key_down`: there is no key to release.
+    ///
+    /// Set [`PieMenu::pointer_area`] so clicks on the rest of your UI don't select the
+    /// button the pointer happens to point towards. Update [`PieMenu::position`] to move it.
+    pub fn pin(&mut self, center: Pos2) {
+        self.open(center);
+        self.pinned = true;
+        self.reveal();
     }
 
-    fn direction_vec(dir: &PieDirection, shape_factor: f32) -> Vec2 {
-        let fraction = match dir {
-            PieDirection::North => 0.75,
-            PieDirection::NorthEast => 0.875,
-            PieDirection::East => 1.0,
-            PieDirection::SouthEast => 0.125,
-            PieDirection::South => 0.25,
-            PieDirection::SouthWest => 0.375,
-            PieDirection::West => 0.5,
-            PieDirection::NorthWest => 0.625,
-        };
-        let angle = TAU * fraction;
-        let circle = Vec2::new(angle.cos(), angle.sin());
-
-        match dir {
-            PieDirection::NorthEast
-            | PieDirection::SouthEast
-            | PieDirection::SouthWest
-            | PieDirection::NorthWest => {
-                if shape_factor > 0.0 {
-                    let l_inf = circle / circle.x.abs().max(circle.y.abs());
-                    circle * (1.0 - shape_factor) + l_inf * shape_factor
-                } else if shape_factor < 0.0 {
-                    let l1 = circle / (circle.x.abs() + circle.y.abs());
-                    let t = -shape_factor;
-                    circle * (1.0 - t) + l1 * t
-                } else {
-                    circle
-                }
-            }
-            _ => circle,
-        }
+    /// Closes the menu without a response. Does nothing if it is not open.
+    pub fn close(&mut self) {
+        self.is_open = false;
+        self.pinned = false;
     }
 
-    fn direction_digit(dir: &PieDirection) -> char {
-        match dir {
-            PieDirection::North => '8',
-            PieDirection::NorthEast => '9',
-            PieDirection::East => '6',
-            PieDirection::SouthEast => '3',
-            PieDirection::South => '2',
-            PieDirection::SouthWest => '1',
-            PieDirection::West => '4',
-            PieDirection::NorthWest => '7',
-        }
+    /// Whether the menu is open: [`PieMenu::show`] does nothing unless it is.
+    pub fn is_open(&self) -> bool {
+        self.is_open
     }
 
-    /// Smallest absolute difference between two angles, in `0..=PI`.
-    fn angle_diff(a: f32, b: f32) -> f32 {
-        let d = (a - b).rem_euclid(TAU);
-        d.min(TAU - d)
+    /// Whether the open menu is a pinned one (see [`PieMenu::pin`]).
+    pub fn is_pinned(&self) -> bool {
+        self.is_open && self.pinned
     }
 
-    /// Index of the enabled button the pointer vector `mouse_vec` (from the menu
-    /// centre) points at, or `None`. Empty directions are skipped: the pointer snaps to
-    /// the closest available button. On an exact tie (e.g. straight down between East
-    /// and West buttons) the earlier button in the slice wins.
-    fn pick_button(buttons: &[PieButton], mouse_vec: Vec2, shape_factor: f32, mirror: bool) -> Option<usize> {
-        let angle = mouse_vec.y.atan2(mouse_vec.x);
-        let dir_angle = |d: &PieDirection| {
-            let v = Self::direction_vec(d, shape_factor);
-            v.y.atan2(v.x)
-        };
-        buttons
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.enabled)
-            .map(|(idx, b)| (idx, Self::angle_diff(angle, dir_angle(&Self::eff(&b.direction, mirror)))))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(idx, _)| idx)
+    /// Makes the open menu visible immediately, regardless of [`ShowBehavior`].
+    pub fn reveal(&mut self) {
+        self.visible = true;
+        self.shown_at = None;
     }
 
-    /// Index of the button the pointer currently highlights, if any.
+    /// Index of the button the pointer currently highlights in the level being shown, if
+    /// any. While a fan-out is open this is the button that opened it.
     pub fn hovered(&self) -> Option<usize> {
-        self.selected_index
+        self.hovered_index
     }
 
-    fn direction_numpad(dir: &PieDirection) -> Key {
-        match dir {
-            PieDirection::North => Key::Num8,
-            PieDirection::NorthEast => Key::Num9,
-            PieDirection::East => Key::Num6,
-            PieDirection::SouthEast => Key::Num3,
-            PieDirection::South => Key::Num2,
-            PieDirection::SouthWest => Key::Num1,
-            PieDirection::West => Key::Num4,
-            PieDirection::NorthWest => Key::Num7,
+    /// The open fan-out, if any: the index of the button that opened it (in the level
+    /// being shown) and the index of the fan child the pointer highlights.
+    pub fn open_fan_out(&self) -> Option<(usize, Option<usize>)> {
+        self.fan.map(|trigger| (trigger, self.fan_hover))
+    }
+
+    /// Test helper: where each button of the open fan was drawn last frame.
+    #[cfg(test)]
+    pub(crate) fn fan_centers_for_test(&self) -> &[Pos2] {
+        &self.fan_centers
+    }
+
+    /// The id of the ring of buttons of the sub-pie level at `path` (the root, empty path:
+    /// the menu's own id). It names the ring's Areas and its size cache.
+    fn level_ring_id(&self, path: &[usize]) -> egui::Id {
+        if path.is_empty() { self.id } else { self.id.with(("level", path.to_vec())) }
+    }
+
+    /// The id of the ring of the fan of button `trigger` in the level at `path`.
+    fn fan_ring_id(&self, path: &[usize], trigger: usize) -> egui::Id {
+        if path.is_empty() { self.id.with(("fan", trigger)) } else { self.id.with(("fan", path.to_vec(), trigger)) }
+    }
+
+    /// The ring being shown: a broken-out level keeps its fan's ring (same Areas and sizes).
+    fn current_ring_id(&self) -> egui::Id {
+        match &self.breakout {
+            Some(b) => self.fan_ring_id(&self.path[..self.path.len().saturating_sub(1)], b.opener),
+            None => self.level_ring_id(&self.path),
         }
     }
 
-    /// Show the pie menu for this frame.
+    /// Makes sure ring `id` has a cached size per button (placeholders for new ones).
+    fn ensure_ring_sizes(&mut self, id: egui::Id, count: usize) {
+        self.ring_sizes.entry(id).or_default().resize(count, Vec2::new(50.0, 24.0));
+    }
+
+    fn open_fan(&mut self, trigger: usize) {
+        self.fan = Some(trigger);
+        self.fan_suppressed = None;
+        self.last_fan = Some(trigger);
+        self.fan_shown_at = None;
+        self.fan_hover = None;
+        self.fan_armed = false;
+        self.fan_pending = None;
+        self.hover_since = None;
+    }
+
+    fn close_fan(&mut self) {
+        self.fan = None;
+        self.fan_hover = None;
+        self.fan_pending = None;
+    }
+
+    /// The user closes the open fan: like [`Self::close_fan`], and it stays closed while
+    /// the pointer rests where it would reopen it.
+    fn dismiss_fan(&mut self) {
+        self.fan_suppressed = self.fan;
+        self.close_fan();
+    }
+
+    /// Shows the pie menu for this frame. Call it every frame; it does nothing (and
+    /// returns [`PieMenuResponse::None`]) unless the menu is open (see [`PieMenu::open`]).
+    /// Any other response closes the menu, except a selection in a pinned menu.
     ///
     /// `render_button(ui, &button_view)` is called once per button inside a floating
     /// [`egui::Area`] centred at that button's position. Use it to draw any egui
@@ -620,45 +561,112 @@ impl PieMenu {
     /// index, hover state, resolved mnemonic and number hint; `ui.label(b.label_text())`
     /// draws the label with its mnemonic underlined.
     ///
-    /// `key_down` should be `true` while the hotkey that opened the menu is held.
+    /// `key_down` should be `true` while the key or button that opened the menu is held.
     ///
-    /// `buttons` is always the **root** level. When a button has
-    /// [`PieButton::children`], selecting it descends into a sub-pie; the
-    /// `usize` in callbacks and in [`PieMenuResponse::Selected`] is then an index
-    /// into [`PieMenu::current_buttons`], and the full route to the chosen leaf
-    /// is available from [`PieMenu::selected_path`].
+    /// `buttons` is always the **root** level. When a button has children
+    /// ([`PieButton::with_children`]), selecting it opens them as a sub-pie, replacing
+    /// the level shown or fanning out next to it ([`SubPieStyle`]). The `usize` in
+    /// [`PieMenuResponse::Selected`] is the chosen button's index within its own level (for a
+    /// cluster's item: the number given to [`ButtonView::item`]);
+    /// the full route to it is [`PieMenu::selected_path`], and each button's route is
+    /// [`ButtonView::path`] in the render closure.
+    ///
+    /// The pointer position is egui's latest one; use [`PieMenu::show_with_pointer`] to
+    /// supply your own.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         buttons: &[PieButton],
-        current_mouse_pos: Option<Pos2>,
         key_down: bool,
-        title: Option<&str>,
+        render_button: impl FnMut(&mut Ui, &ButtonView),
+    ) -> PieMenuResponse {
+        let pointer = ctx.input(|i| i.pointer.latest_pos());
+        self.show_with_pointer(ctx, buttons, pointer, key_down, render_button)
+    }
+
+    /// [`PieMenu::show`] with the pointer position supplied by the caller (`None`: no
+    /// pointer), e.g. one in another coordinate space or from a different input source.
+    pub fn show_with_pointer(
+        &mut self,
+        ctx: &egui::Context,
+        buttons: &[PieButton],
+        pointer: Option<Pos2>,
+        key_down: bool,
+        render_button: impl FnMut(&mut Ui, &ButtonView),
+    ) -> PieMenuResponse {
+        let before = (self.path.clone(), self.fan);
+        let response = self.show_inner(ctx, buttons, pointer, key_down, render_button);
+        // A new level or fan is drawn on the next frame; make sure there is one even if
+        // nothing else (input, animation) would ask for it, e.g. after a hover timer.
+        if self.path != before.0 || self.fan != before.1 {
+            ctx.request_repaint();
+        }
+        response
+    }
+
+    fn show_inner(
+        &mut self,
+        ctx: &egui::Context,
+        buttons: &[PieButton],
+        pointer: Option<Pos2>,
+        key_down: bool,
         mut render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
-        if Self::resolve_level(buttons, &self.path).is_none() {
-            self.path.clear();
+        if !self.is_open {
+            return PieMenuResponse::None;
+        }
+        let current_mouse_pos = pointer.filter(|p| self.pointer_area.is_none_or(|area| area.contains(*p)));
+        // A pinned menu has no key to release.
+        let key_down = key_down || self.pinned;
+
+        // A stale path (the buttons changed under an open sub-pie, or its level is now
+        // empty) falls back to the root level.
+        if Self::resolve_level(buttons, &self.path).is_none_or(|level| level.is_empty()) {
+            self.back_to_root();
         }
         let level = Self::resolve_level(buttons, &self.path).unwrap_or(buttons);
 
-        // Go back one level: Backspace, or a click on the centre.
-        if !self.path.is_empty() && self.mouse_shown {
-            let thr = self.settings.mouse_trigger_threshold;
-            let back = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace))
-                || (ctx.input(|i| i.pointer.primary_clicked())
-                    && current_mouse_pos.is_some_and(|p| (p - self.position).length() <= thr));
-            if back {
-                self.path.pop();
-                self.restart_level(current_mouse_pos, key_down);
+        // Backspace closes an open fan-out, otherwise goes back one level; so does a click
+        // on the centre (when clicks are enabled).
+        if self.visible && (self.fan.is_some() || !self.path.is_empty()) {
+            let thr = self.settings.layout.dead_zone_radius;
+            let backspace = self.keys_for_menu(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Backspace));
+            let centre_click = self.settings.input.select_on_primary_click
+                && ctx.input(|i| i.pointer.primary_clicked())
+                && current_mouse_pos.is_some_and(|p| (p - self.display_center).length() <= thr);
+            if backspace && self.fan.is_some() {
+                self.dismiss_fan();
+                return PieMenuResponse::None;
+            }
+            if (backspace || centre_click) && !self.path.is_empty() {
+                self.go_back(current_mouse_pos, key_down);
                 return PieMenuResponse::None;
             }
         }
 
-        match self.show_level(ctx, level, current_mouse_pos, key_down, title, &mut render_button) {
-            PieMenuResponse::Selected(idx) => {
-                if level.get(idx).is_some_and(|b| !b.children.is_empty()) {
-                    self.path.push(idx);
-                    self.restart_level(current_mouse_pos, key_down);
+        // The ring one level up, for the main ring fading out after a break-out.
+        let parent: &[PieButton] = match self.path.split_last() {
+            Some((_, up)) => Self::resolve_level(buttons, up).unwrap_or(&[]),
+            None => &[],
+        };
+        let response = match self.show_level(ctx, level, parent, current_mouse_pos, key_down, &mut render_button) {
+            LevelEvent::None => PieMenuResponse::None,
+            LevelEvent::Dismissed => PieMenuResponse::Dismissed,
+            LevelEvent::QuickTap => PieMenuResponse::QuickTap,
+            LevelEvent::DoubleTap => PieMenuResponse::DoubleTap,
+            LevelEvent::Pick(idx) => {
+                let button = level.get(idx);
+                if button.is_some_and(|b| b.is_back()) && !self.path.is_empty() {
+                    self.go_back(current_mouse_pos, key_down);
+                    PieMenuResponse::None
+                } else if button.is_some_and(|b| self.opens_fan(b)) {
+                    self.open_fan(idx);
+                    // As for a sub-pie: if the key is already up, the fan is click/keyboard
+                    // driven; otherwise a later release selects in it.
+                    self.release_handled = !key_down;
+                    PieMenuResponse::None
+                } else if button.is_some_and(|b| !b.children().is_empty()) {
+                    self.descend(idx, current_mouse_pos, key_down);
                     PieMenuResponse::None
                 } else {
                     self.selected_path = self.path.clone();
@@ -666,12 +674,50 @@ impl PieMenu {
                     PieMenuResponse::Selected(idx)
                 }
             }
-            other => other,
+            LevelEvent::ClusterPick(button, item) => {
+                self.selected_path = self.path.clone();
+                self.selected_path.extend([button, item]);
+                PieMenuResponse::Selected(item)
+            }
+            LevelEvent::CloseFan => {
+                self.dismiss_fan();
+                PieMenuResponse::None
+            }
+            LevelEvent::BreakOut(trigger) => {
+                self.break_out(ctx, trigger, current_mouse_pos, key_down);
+                PieMenuResponse::None
+            }
+            LevelEvent::FanPick(trigger, child) => {
+                let is_back = level.get(trigger).and_then(|b| b.children().get(child)).is_some_and(|b| b.is_back());
+                if is_back {
+                    self.dismiss_fan();
+                    PieMenuResponse::None
+                } else {
+                    self.selected_path = self.path.clone();
+                    self.selected_path.extend([trigger, child]);
+                    PieMenuResponse::Selected(child)
+                }
+            }
+        };
+        match response {
+            PieMenuResponse::None => {}
+            // A pinned menu stays open after a selection, back at its root level.
+            PieMenuResponse::Selected(_) if self.pinned => {
+                if !self.path.is_empty() {
+                    self.back_to_root();
+                    self.restart_level(None, key_down);
+                } else {
+                    self.close_fan();
+                }
+            }
+            _ => self.close(),
         }
+        response
     }
 
-    /// The buttons currently displayed (root level, or the open sub-pie).
-    /// Use this, not your root slice, to look up labels inside the render closure.
+    /// The level currently displayed: the root, or the open (replace-style) sub-pie.
+    /// An open fan-out's children are not a level of their own: they are the
+    /// [`PieButton::children`] of one of these buttons (see [`PieMenu::open_fan_out`]).
     pub fn current_buttons<'a>(&self, root: &'a [PieButton]) -> &'a [PieButton] {
         Self::resolve_level(root, &self.path).unwrap_or(root)
     }
@@ -683,7 +729,9 @@ impl PieMenu {
     }
 
     /// After [`PieMenuResponse::Selected`]: the full index path from the root to the
-    /// chosen button (the last element is the index within its level).
+    /// chosen button (the last element is the index within its level). For an item of a
+    /// cluster the last element is the item number and the one before it is the cluster
+    /// button's index within its level: `[.., cluster_button_index, n]`.
     pub fn selected_path(&self) -> &[usize] {
         &self.selected_path
     }
@@ -691,214 +739,222 @@ impl PieMenu {
     fn resolve_level<'a>(root: &'a [PieButton], path: &[usize]) -> Option<&'a [PieButton]> {
         let mut level = root;
         for &i in path {
-            level = &level.get(i)?.children;
+            level = level.get(i)?.children();
         }
         Some(level)
     }
 
-    /// Re-centres on the pointer and shows the (new) level immediately.
-    fn restart_level(&mut self, mouse: Option<Pos2>, key_down: bool) {
-        if let Some(p) = mouse {
+    /// Whether keys (Backspace, dismiss keys, number keys, mnemonics) belong to the menu:
+    /// always for a blocking menu, otherwise only while egui does not want the keyboard
+    /// for a focused text field.
+    fn keys_for_menu(&self, ctx: &egui::Context) -> bool {
+        (self.settings.block_background && !self.pinned) || !ctx.egui_wants_keyboard_input()
+    }
+
+    /// Opens the sub-pie of button `idx` of the current level.
+    fn descend(&mut self, idx: usize, mouse: Option<Pos2>, key_down: bool) {
+        let center = match self.settings.sub_pies.center {
+            // A pinned menu stays put rather than jumping to the pointer.
+            SubPieCenter::Pointer => mouse.filter(|_| !self.pinned),
+            SubPieCenter::Parent => None,
+            SubPieCenter::Button => self.button_centers.get(idx).copied(),
+        };
+        self.level_centers.push(self.position);
+        self.path.push(idx);
+        self.restart_level(center, key_down);
+        self.entered_forward = true;
+    }
+
+    /// Breaks the open fan of button `trigger` out into a sub-pie level, in place: the
+    /// children stay exactly where the fan drew them (same centre, radius, Area ids and
+    /// cached sizes) and the main ring, the opener included, fades out (see [`BreakOut`]).
+    /// The parent's state is kept while the level is open so that going back restores it.
+    fn break_out(&mut self, ctx: &egui::Context, trigger: usize, mouse: Option<Pos2>, key_down: bool) {
+        if self.breakout.is_some() {
+            // A fan inside a broken-out level: no transition, an ordinary sub-pie.
+            self.close_fan();
+            self.descend(trigger, mouse, key_down);
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let parent = BreakOut {
+            started: now,
+            parent_center: self.display_center,
+            parent_radius: self.level_radius(),
+            opener: trigger,
+        };
+        let (center, radius) = (self.fan_display_center, self.fan_display_radius);
+        self.close_fan();
+        self.level_centers.push(self.position);
+        self.path.push(trigger);
+        self.restart_level(Some(center), key_down);
+        self.entered_forward = true;
+        // Fully revealed at once: no sliding, no fading in of the children.
+        self.shown_at = Some(now - 1.0e6);
+        self.level_radius = Some(radius);
+        self.breakout = Some(parent);
+        // The parent's dimming must not ease back up under the new centre.
+        ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), false, 0.0);
+    }
+
+    /// Forgets a break-out in progress (the level shown is an ordinary one again).
+    fn clear_breakout(&mut self) {
+        self.breakout = None;
+        self.level_radius = None;
+    }
+
+    /// The radius of the level being shown.
+    fn level_radius(&self) -> f32 {
+        self.level_radius.unwrap_or(self.settings.layout.radius)
+    }
+
+    /// Returns to the parent level of the open sub-pie.
+    fn go_back(&mut self, mouse: Option<Pos2>, key_down: bool) {
+        let broken_out = self.breakout.take();
+        let left = self.path.pop();
+        let parent_center = self.level_centers.pop();
+        let center = match self.settings.sub_pies.center {
+            _ if broken_out.is_some() => parent_center,
+            SubPieCenter::Pointer if !self.pinned => mouse,
+            _ => parent_center,
+        };
+        self.restart_level(center, key_down);
+        // The pointer may still rest on the button just left: it must not fan out again.
+        self.fan_suppressed = left;
+    }
+
+    /// Forgets the open sub-pie(s); the root level reappears where it was when it was left
+    /// ([`SubPieCenter::Pointer`]: where the menu is now, unless pinned).
+    fn back_to_root(&mut self) {
+        let root_center = self.level_centers.first().copied();
+        if self.pinned || self.settings.sub_pies.center != SubPieCenter::Pointer {
+            self.position = root_center.unwrap_or(self.position);
+        }
+        self.path.clear();
+        self.level_centers.clear();
+        self.hover_since = None;
+        self.close_fan();
+        self.clear_breakout();
+        self.level_fresh = true;
+        self.inert_hover = None;
+        self.entered_forward = false;
+        self.checked_buttons = false;
+    }
+
+    /// Shows the (new) level immediately, centred at `center` (`None`: where the menu is).
+    fn restart_level(&mut self, center: Option<Pos2>, key_down: bool) {
+        if let Some(p) = center {
             self.position = p;
         }
-        self.selected_index = None;
+        self.display_center = self.position;
+        self.hover_since = None;
+        self.close_fan();
+        self.clear_breakout();
+        self.last_fan = None;
+        self.fan_suppressed = None;
+        self.level_fresh = true;
+        self.inert_hover = None;
+        self.entered_forward = false;
+        self.hovered_index = None;
         self.checked_buttons = false;
-        self.mouse_shown = true;
-        self.shown_at = Some(Instant::now());
+        self.visible = true;
+        self.shown_at = None; // restart the reveal animation on the next `show`
         // If the key is already up (selection came from the release), the sub-pie is
         // click/keyboard driven; otherwise a later release selects as usual.
         self.release_handled = !key_down;
     }
 
-    fn show_level(
-        &mut self,
-        ctx: &egui::Context,
-        buttons: &[PieButton],
-        current_mouse_pos: Option<Pos2>,
-        key_down: bool,
-        title: Option<&str>,
-        render_button: &mut impl FnMut(&mut Ui, &ButtonView),
-    ) -> PieMenuResponse {
-        // Ensure cached size vec is long enough
-        if self.button_sizes.len() < buttons.len() {
-            self.button_sizes
-                .resize(buttons.len(), Vec2::new(50.0, 24.0));
-        }
-
-        // Always restore selectable labels. If the menu is visible we disable them below,
-        // but any early return (dismissed, QuickTap, DoubleTap, not yet shown) leaves this
-        // restored so labels are selectable again the frame after the menu closes.
-        ctx.all_styles_mut(|s| s.interaction.selectable_labels = true);
-
-        let center = self.position;
-
-        // Update mouse_shown: latch on once the show condition is met.
-        // (shown_at is stamped below, once mouse_shown has latched)
-        // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`).
-        if !self.mouse_shown && !self.double_tap_pending {
-            match self.settings.show_behavior {
-                ShowBehavior::Instant => self.mouse_shown = true,
-                ShowBehavior::OnMovement { threshold } => {
-                    if let Some(p) = current_mouse_pos {
-                        if (p - center).length() > threshold {
-                            self.mouse_shown = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        if self.mouse_shown && self.shown_at.is_none() {
-            self.shown_at = Some(Instant::now());
-        }
-
-        // Before the menu is visible, handle key release as QuickTap/DoubleTap only.
-        if !self.mouse_shown {
-            if !key_down && !self.release_handled {
-                self.release_handled = true;
-                if self.double_tap_pending {
-                    self.double_tap_pending = false;
-                    self.last_quick_tap = None;
-                    return PieMenuResponse::DoubleTap;
-                } else {
-                    self.last_quick_tap = Some(Instant::now());
-                    return PieMenuResponse::QuickTap;
-                }
-            }
-            return PieMenuResponse::None;
-        }
-
-        // Early exit checks
-        let dismissed = ctx.input(|i| {
-            self.settings.input.dismiss_inputs.iter().any(|d| match d {
-                PieMenuDismissInput::Key(k) => i.key_pressed(*k),
-                PieMenuDismissInput::PointerButton(pb) => i.pointer.button_clicked(*pb),
-            })
-        });
-        if dismissed {
-            return PieMenuResponse::Dismissed;
-        }
-
-        let shape_factor = self.settings.shape_factor;
+    /// Shifts `center` so the ring of `buttons` (sizes from `sizes`) at `radius` stays
+    /// within the screen with the configured margin.
+    fn clamp_center(&self, center: Pos2, buttons: &[PieButton], sizes: &[Vec2], radius: f32, screen: Rect) -> Pos2 {
         let mirror = self.settings.mirror_horizontal;
-
-        // Compute the bounding box of all buttons (relative to self.position) and
-        // shift the whole menu so it stays within the screen rect with a margin.
-        let screen_rect = ctx.content_rect();
-        let margin = self.settings.screen_margin;
+        let margin = self.settings.layout.screen_margin;
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
-        for (idx, button) in buttons.iter().enumerate() {
-            let dv = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
-            let dn = dv.normalized();
-            let sz = self.button_sizes[idx];
-            let hw = sz.x / 2.0;
-            let hh = sz.y / 2.0;
-            let sx = if dn.x > 0.5 {
-                1.0
-            } else if dn.x < -0.5 {
-                -1.0
+        for (button, &size) in buttons.iter().zip(sizes) {
+            let dir = Self::eff(&button.direction, mirror);
+            let offset = self.button_offset(&dir, size, radius, self.settings.layout.shape_factor);
+            bb_min = bb_min.min(offset - size / 2.0);
+            bb_max = bb_max.max(offset + size / 2.0);
+        }
+        // `f32::clamp` panics when the range is empty: a ring that does not fit the screen
+        // (a small window, a big margin) is centred on the screen along that axis instead.
+        let axis = |v: f32, lo: f32, hi: f32| {
+            if lo <= hi {
+                v.clamp(lo, hi)
+            } else if ((lo + hi) / 2.0).is_finite() {
+                (lo + hi) / 2.0
             } else {
-                0.0
-            };
-            let sy = if dn.y > 0.5 {
-                1.0
-            } else if dn.y < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-            let offset = dv * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
-            bb_min = bb_min.min(offset - sz / 2.0);
-            bb_max = bb_max.max(offset + sz / 2.0);
-        }
-        let center = Pos2::new(
-            center.x.clamp(
-                screen_rect.min.x + margin - bb_min.x,
-                screen_rect.max.x - margin - bb_max.x,
-            ),
-            center.y.clamp(
-                screen_rect.min.y + margin - bb_min.y,
-                screen_rect.max.y - margin - bb_max.y,
-            ),
-        );
+                v
+            }
+        };
+        Pos2::new(
+            axis(center.x, screen.min.x + margin - bb_min.x, screen.max.x - margin - bb_max.x),
+            axis(center.y, screen.min.y + margin - bb_min.y, screen.max.y - margin - bb_max.y),
+        )
+    }
 
-        // Block hover/interaction on background widgets while the menu is open.
-        // Sits on Foreground (above panels, below Tooltip where buttons live) so
-        // nothing underneath highlights as the mouse moves over it.
-        if self.settings.block_background {
-            egui::Area::new(self.id.with("_blocker"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(egui::Pos2::ZERO)
-                .show(ctx, |ui| {
-                    ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
-                });
-        }
+    /// Each button's displayed layout vector (which follows `layout.intercardinal_height`), for
+    /// hover picking and the centre highlight.
+    fn layout_dirs(&self, buttons: &[PieButton], sizes: &[Vec2], radius: f32) -> Vec<Vec2> {
+        let mirror = self.settings.mirror_horizontal;
+        buttons
+            .iter()
+            .zip(sizes)
+            .map(|(b, &size)| self.layout_vec(&Self::eff(&b.direction, mirror), size, radius, self.settings.layout.shape_factor))
+            .collect()
+    }
 
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
-
-        // Center background circle
-        if self
-            .settings
-            .center_indicator
-            .background_radius
-            .is_enabled()
-        {
-            painter.circle(
-                center,
-                self.settings.center_indicator.background_radius.get(),
-                self.settings.center_indicator.background_fill_color,
-                self.settings.center_indicator.background_stroke,
-            );
-        }
-
-        // Debug builds: assert once per open (and per sub-pie level) that this level's
-        // buttons are well-formed. Only buttons shown together are compared.
-        #[cfg(debug_assertions)]
-        if !self.checked_buttons {
-            self.checked_buttons = true;
-            let problems = self.check_buttons(buttons);
-            debug_assert!(
-                problems.is_empty(),
-                "egui_pie_menu: {}",
-                problems.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("; ")
-            );
-        }
-
-        // Numpad key selection. The key (and its text event) is consumed so the digit
-        // does not also reach other handlers or text fields.
-        if self.settings.input.use_numpad_keys {
-            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+    /// Number-key or mnemonic selection among `buttons` (a level, or an open fan-out's
+    /// children). Matched keys and their text events are consumed, so they reach neither
+    /// other handlers nor text fields.
+    ///
+    /// Returns the button's index and, for a mnemonic of a cluster's item, its number.
+    /// `items`: whether cluster items take part (not in a fan-out).
+    fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton], items: bool) -> Option<(usize, Option<usize>)> {
+        let mirror = self.settings.mirror_horizontal;
+        if self.settings.input.use_number_keys {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
                 let dir = Self::eff(&button.direction, mirror);
-                let key = Self::direction_numpad(&dir);
+                let key = Self::direction_number_key(&dir);
                 let digit = Self::direction_digit(&dir).to_string();
                 let hit = ctx.input_mut(|i| {
                     let hit = i.consume_key(egui::Modifiers::NONE, key);
-                    if hit {
-                        if let Some(p) = i
+                    if hit
+                        && let Some(p) = i
                             .events
                             .iter()
                             .position(|e| matches!(e, egui::Event::Text(t) if *t == digit))
-                        {
-                            i.events.remove(p);
-                        }
+                    {
+                        i.events.remove(p);
                     }
                     hit
                 });
                 if hit {
-                    return PieMenuResponse::Selected(idx);
+                    return Some((idx, None));
                 }
             }
         }
 
-        // Mnemonic key selection — consume matched events so other handlers never see them.
         if self.settings.input.use_mnemonic_keys {
-            let mnemonics = self.mnemonics(buttons);
-            for (idx, mnemonic) in mnemonics.iter().enumerate() {
-                if !buttons[idx].enabled {
-                    continue;
+            let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
+            // Every key that can be pressed, in button order, items after their cluster's turn.
+            let mut owners: Vec<(char, usize, Option<usize>)> = Vec::new();
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+                if button.is_cluster() {
+                    if !items {
+                        continue;
+                    }
+                    for (item, m) in button.cluster_items().iter().zip(&item_mnemonics[idx]) {
+                        if let (true, Some(m)) = (item.enabled, *m) {
+                            owners.push((m, idx, Some(item.number)));
+                        }
+                    }
+                } else if let Some(m) = mnemonics[idx] {
+                    owners.push((m, idx, None));
                 }
-                let Some(m) = *mnemonic else { continue };
+            }
+            for (m, idx, item) in owners {
                 let target = fold_char(m);
                 let key = char_to_key(m);
                 let pressed = ctx.input_mut(|i| {
@@ -915,51 +971,517 @@ impl PieMenu {
                         }
                         _ => true,
                     });
-                    // Latin letters also match by key code.
+                    // Latin letters also match by key code, but not as part of a Ctrl/Cmd
+                    // chord: Ctrl+C is a shortcut, not the mnemonic `c`.
                     if let Some(key) = key {
-                        if i.key_pressed(key) {
-                            i.consume_key(egui::Modifiers::NONE, key);
-                            hit = true;
-                        }
+                        hit |= i.consume_key(egui::Modifiers::NONE, key);
                     }
                     hit
                 });
                 if pressed {
-                    return PieMenuResponse::Selected(idx);
+                    return Some((idx, item));
+                }
+            }
+        }
+        None
+    }
+
+    /// Draws one ring of buttons through the caller's closure, each in its own floating
+    /// Area. `sizes` holds last frame's button sizes (used to centre each Area) and is
+    /// updated; `centers`, if given, receives each button's final (un-animated) centre.
+    fn draw_level(
+        &self,
+        ctx: &egui::Context,
+        now: f64,
+        level: &LevelDraw,
+        sizes: &mut [Vec2],
+        mut centers: Option<&mut Vec<Pos2>>,
+        render_button: &mut impl FnMut(&mut Ui, &ButtonView),
+    ) -> Vec<ItemHit> {
+        let items = std::cell::RefCell::new(Vec::new());
+        let mirror = self.settings.mirror_horizontal;
+        let shape_factor = self.settings.layout.shape_factor;
+        // Resolved once per frame for the view handed to the render closure.
+        let (mnemonics, item_mnemonics) = resolve_all(level.buttons, self.settings.input.auto_mnemonics);
+        let visuals = ctx.global_style().visuals.clone();
+        let body_font = ctx.global_style().text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
+
+        // Reveal animation: movement and opacity progress, each 0..1.
+        let anim = &self.settings.animations;
+        let elapsed = level.shown_at.map(|at| (now - at) as f32);
+        let progress = |d: Duration| {
+            elapsed.map_or(1.0, |e| (e / d.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0))
+        };
+        let (move_t, opacity) = match anim.reveal {
+            RevealAnimation::None => (1.0, 1.0),
+            RevealAnimation::Fade => (1.0, progress(anim.reveal_duration)),
+            RevealAnimation::SlideOut => (
+                progress(anim.reveal_duration),
+                anim.slide_fade.map_or(1.0, progress),
+            ),
+        };
+        if move_t < 1.0 || opacity < 1.0 {
+            ctx.request_repaint();
+        }
+
+        let mut path = level.path_prefix.to_vec();
+        path.push(0);
+        for (idx, button) in level.buttons.iter().enumerate() {
+            // Each axis is offset independently (see `button_offset`), which keeps NE/NW at
+            // the same Y and SE/SW at the same Y even when button widths differ.
+            let eff_dir = Self::eff(&button.direction, mirror);
+            let cached_size = sizes[idx];
+            let final_center = level.center + self.button_offset(&eff_dir, cached_size, level.radius, shape_factor);
+            if let Some(centers) = centers.as_deref_mut() {
+                if centers.len() <= idx {
+                    centers.resize(idx + 1, final_center);
+                }
+                centers[idx] = final_center;
+            }
+            let dimmed = level.dim_except.is_some_and(|keep| keep != idx);
+            let is_hovered = level.hovered == Some(idx) && !dimmed;
+
+            let button_center = if move_t < 1.0 {
+                let eased = 1.0 - (1.0 - move_t).powi(3);
+                // Interpolate the radius and (optionally) the shape factor, then lay the
+                // button out as if that were the final layout, scaled about the centre.
+                // With a start radius of 0 this collapses every button onto the centre.
+                let end_radius = level.radius;
+                let radius = anim.slide_start_radius + (end_radius - anim.slide_start_radius) * eased;
+                let start_sf = anim.slide_start_shape_factor.unwrap_or(shape_factor);
+                let sf = start_sf + (shape_factor - start_sf) * eased;
+                let scale = if end_radius > 0.0 { radius / end_radius } else { 1.0 };
+                level.center + self.button_offset(&eff_dir, cached_size, end_radius, sf) * scale
+            } else {
+                final_center
+            };
+            let area_pos = button_center - cached_size / 2.0;
+            if let Some(last) = path.last_mut() {
+                *last = idx;
+            }
+
+            // Hover emphasis, part 1: the eased amount, which scales the button's content
+            // through the font size (see `ButtonView::scale`).
+            let emphasis = ctx.animate_bool_with_time(
+                level.id.with((self.anim_gen, level.path_prefix, idx, "hover")),
+                is_hovered && !level.emphasis.is_none(),
+                anim.hover_duration.as_secs_f32(),
+            );
+            let scale = 1.0 + (level.emphasis.scale.max(0.0) - 1.0) * emphasis;
+
+            let response = egui::Area::new(level.id.with(idx))
+                .order(egui::Order::Tooltip)
+                // egui's own area fade is always off: Fade replaces it, None means none.
+                .fade_in(false)
+                .fixed_pos(area_pos)
+                .show(ctx, |ui| {
+                    if opacity < 1.0 {
+                        ui.set_opacity(opacity);
+                    }
+                    if dimmed {
+                        ui.multiply_opacity(level.dim_opacity);
+                    }
+                    if level.opacity_scale != 1.0 {
+                        ui.multiply_opacity(level.opacity_scale);
+                    }
+                    // Buttons are single-line. An Area keeps last frame's size as its max
+                    // width, so content that grows (a number hint added, a label changed)
+                    // would wrap instead of widening the button. Don't wrap; let it grow.
+                    // Explicit newlines still work, and the closure can override this.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    // A press on a button's label selects the button, not its text.
+                    // Set on this Ui only, so the app's own labels and style are untouched.
+                    ui.style_mut().interaction.selectable_labels = false;
+                    // Disabled: egui's disabled look, and no hover outline on the widget.
+                    if !button.enabled {
+                        ui.disable();
+                    }
+                    render_button(ui, &ButtonView {
+                        idx,
+                        path: &path,
+                        hovered: is_hovered,
+                        enabled: button.enabled,
+                        button,
+                        mnemonic: mnemonics[idx],
+                        number_hint: self.number_hint_styled(button, is_hovered, &visuals),
+                        rtl: mirror,
+                        text_color: button_text_color(self.settings.text_color, &visuals, is_hovered, button.enabled),
+                        body_font: body_font.clone(),
+                        opens_fan: self.opens_fan(button),
+                        scale,
+                        items: &items,
+                        item_mnemonics: &item_mnemonics[idx],
+                    })
+                });
+
+            sizes[idx] = response.response.rect.size();
+
+            // Hover emphasis, part 2: shift the layer outward. Only translated, never
+            // scaled (a layer scale would resample the glyph images and blur the text),
+            // and snapped to whole physical pixels (fractional offsets blur them too).
+            // Layer transforms are sticky, so the identity is set again once eased back.
+            let transform = if emphasis > 0.0 {
+                let outward = (final_center - level.center).normalized();
+                let outward = if outward.is_finite() { outward } else { Vec2::ZERO };
+                let ppp = ctx.pixels_per_point();
+                let snap = |v: f32| (v * ppp).round() / ppp;
+                let shift = outward * level.emphasis.shift * emphasis;
+                TSTransform::from_translation(Vec2::new(snap(shift.x), snap(shift.y)))
+            } else {
+                TSTransform::IDENTITY
+            };
+            ctx.set_transform_layer(response.response.layer_id, transform);
+        }
+        items.into_inner()
+    }
+
+    fn show_level(
+        &mut self,
+        ctx: &egui::Context,
+        buttons: &[PieButton],
+        parent: &[PieButton],
+        current_mouse_pos: Option<Pos2>,
+        key_down: bool,
+        render_button: &mut impl FnMut(&mut Ui, &ButtonView),
+    ) -> LevelEvent {
+        // This level's ring: its own Areas and size cache.
+        let ring = self.current_ring_id();
+        self.ensure_ring_sizes(ring, buttons.len());
+
+        // egui's clock (seconds), also available on wasm.
+        let now = ctx.input(|i| i.time);
+        if self.fresh_open {
+            self.fresh_open = false;
+            let window = self.settings.input.double_tap_window.as_secs_f64();
+            self.double_tap_pending = self.last_quick_tap.is_some_and(|t| now - t <= window);
+        }
+
+        let center = self.position;
+
+        // Update visible: latch on once the show condition is met.
+        // (shown_at is stamped below, once visible has latched)
+        // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`).
+        if !self.visible && !self.double_tap_pending {
+            match self.settings.show_behavior {
+                ShowBehavior::Instant => self.visible = true,
+                ShowBehavior::OnMovement { threshold } => {
+                    if current_mouse_pos.is_some_and(|p| (p - center).length() > threshold) {
+                        self.visible = true;
+                    }
                 }
             }
         }
 
-        // Update hover selection from mouse angle
-        self.selected_index = current_mouse_pos.and_then(|mouse_pos| {
-            let mouse_vec = mouse_pos - center;
-            if mouse_vec.length() <= self.settings.mouse_trigger_threshold {
-                return None;
+        if self.visible && self.shown_at.is_none() {
+            self.shown_at = Some(now);
+        }
+
+        // Before the menu is visible, handle key release as QuickTap/DoubleTap only.
+        if !self.visible {
+            if !key_down && !self.release_handled {
+                self.release_handled = true;
+                if self.double_tap_pending {
+                    self.double_tap_pending = false;
+                    self.last_quick_tap = None;
+                    return LevelEvent::DoubleTap;
+                } else {
+                    self.last_quick_tap = Some(now);
+                    return LevelEvent::QuickTap;
+                }
             }
-            Self::pick_button(buttons, mouse_vec, shape_factor, mirror)
+            return LevelEvent::None;
+        }
+
+        // Keyboard ownership. A blocking menu takes keyboard focus away, so a text field
+        // that was focused when the menu opened stops receiving keys from the next frame
+        // (this frame it already ran, so consuming keys below would be too late).
+        // A non-blocking (or pinned) menu leaves typing alone: while egui wants keyboard
+        // input, dismiss keys, number keys and mnemonics go to that widget, not the menu.
+        let blocking = self.settings.block_background && !self.pinned;
+        if blocking {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
+        let keys_for_menu = self.keys_for_menu(ctx);
+
+        // Early exit checks. Dismiss keys are consumed, and only match without Ctrl/Cmd.
+        let input = &self.settings.input;
+        let dismiss_inputs = if self.pinned { &input.pinned_dismiss_inputs } else { &input.dismiss_inputs };
+        let dismissed = ctx.input_mut(|i| {
+            dismiss_inputs.iter().any(|d| match d {
+                PieMenuDismissInput::Key(k) => keys_for_menu && i.consume_key(egui::Modifiers::NONE, *k),
+                PieMenuDismissInput::PointerButton(pb) => i.pointer.button_clicked(*pb),
+            })
+        });
+        if dismissed {
+            return LevelEvent::Dismissed;
+        }
+
+        let shape_factor = self.settings.layout.shape_factor;
+        let mirror = self.settings.mirror_horizontal;
+        let radius = self.level_radius();
+        let dead_zone = self.settings.layout.dead_zone_radius;
+
+        // Shift the whole menu so every button stays within the screen rect with a margin.
+        let screen_rect = ctx.content_rect();
+        let center = self.clamp_center(center, buttons, &self.ring_sizes[&ring], radius, screen_rect);
+        self.display_center = center;
+
+        // Block hover/interaction on background widgets while the menu is open.
+        // Sits on Foreground (above panels, below Tooltip where buttons live) so
+        // nothing underneath highlights as the mouse moves over it.
+        if blocking {
+            egui::Area::new(self.id.with("_blocker"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::Pos2::ZERO)
+                .show(ctx, |ui| {
+                    ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+                });
+        }
+
+        // Debug builds: assert once per open (and per sub-pie level) that this level's
+        // buttons are well-formed. Only buttons shown together are compared.
+        #[cfg(debug_assertions)]
+        if !self.checked_buttons {
+            self.checked_buttons = true;
+            let problems = self.check_buttons(buttons);
+            debug_assert!(
+                problems.is_empty(),
+                "egui_pie_menu: {}",
+                problems.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("; ")
+            );
+        }
+
+        // The button the pointer points at in this level, by angle against each button's
+        // displayed layout vector. Nothing inside the dead zone.
+        let dirs = self.layout_dirs(buttons, &self.ring_sizes[&ring], radius);
+        let level_pick = current_mouse_pos.and_then(|p| {
+            let mouse_vec = p - center;
+            (mouse_vec.length() > dead_zone).then(|| Self::pick_button(buttons, mouse_vec, &dirs)).flatten()
         });
 
+        // An open fan-out closes when its button is gone, when the pointer comes back in to
+        // the parent after having been out at the fan, or (before it has been out there,
+        // e.g. a fan opened by key) when it points at another button of the parent.
+        if let Some(trigger) = self.fan {
+            let gone = buttons.get(trigger).is_none_or(|b| !self.opens_fan(b));
+            let left = current_mouse_pos.is_some_and(|p| {
+                let distance = (p - center).length();
+                if distance >= radius {
+                    self.fan_armed = true;
+                }
+                if self.fan_armed { distance < radius - dead_zone } else { level_pick.is_some_and(|i| i != trigger) }
+            });
+            if gone || left {
+                self.close_fan();
+            }
+        }
+
+        // Lay the open fan out around its button.
+        let mut fan_ring = ring;
+        let fan: Option<Fan> = self.fan.map(|trigger| {
+            let button = &buttons[trigger];
+            let children = button.children();
+            fan_ring = self.fan_ring_id(&self.path, trigger);
+            self.ensure_ring_sizes(fan_ring, children.len());
+            let size = self.ring_sizes[&ring][trigger];
+            let button_center = center + self.button_offset(&Self::eff(&button.direction, mirror), size, radius, shape_factor);
+            let fan_radius = self.settings.sub_pies.fan_out.radius.unwrap_or(radius);
+            self.fan_display_radius = fan_radius;
+            let fan_center = self.clamp_center(button_center, children, &self.ring_sizes[&fan_ring], fan_radius, screen_rect);
+            self.fan_display_center = fan_center;
+            Fan {
+                trigger,
+                children,
+                center: fan_center,
+                radius: fan_radius,
+                trigger_rect: Rect::from_center_size(button_center, size),
+            }
+        });
+
+        // The parent's centre (circle, highlight, title) and its other buttons are greyed out
+        // while a fan is open, easing in and out with it.
+        // After a break-out it stays at rest: the main ring and old centre fade out instead.
+        let dim_time = if self.breakout.is_some() { 0.0 } else { 0.12 };
+        let dim = ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), fan.is_some(), dim_time);
+        let dim_opacity = 1.0 + (DIMMED_OPACITY - 1.0) * dim;
+
+        // A break-out's fades: the old centre and main ring out, the new centre in. One
+        // linear progress for all, whatever the reveal style.
+        let reveal = &self.settings.animations;
+        let fade = self.breakout.as_ref().map_or(1.0, |b| match reveal.reveal {
+            RevealAnimation::None => 1.0,
+            _ => ((now - b.started) as f32 / reveal.reveal_duration.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0),
+        });
+        if fade < 1.0 {
+            ctx.request_repaint();
+        }
+        let mut painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
+        painter.multiply_opacity(dim_opacity * fade);
+        if let Some(b) = self.breakout.as_ref().filter(|_| fade < 1.0)
+            && let Some(circle_radius) = self.settings.center_indicator.background_radius
+        {
+            let mut old = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, self.id));
+            old.multiply_opacity(DIMMED_OPACITY * (1.0 - fade));
+            old.circle(
+                b.parent_center,
+                circle_radius,
+                self.settings.center_indicator.background_fill_color,
+                self.settings.center_indicator.background_stroke,
+            );
+        }
+
+        // Center background circle
+        if let Some(radius) = self.settings.center_indicator.background_radius {
+            painter.circle(
+                center,
+                radius,
+                self.settings.center_indicator.background_fill_color,
+                self.settings.center_indicator.background_stroke,
+            );
+        }
+
+        // Keys: an open fan has the keyboard to itself.
+        if keys_for_menu {
+            match &fan {
+                Some(fan) => {
+                    if let Some((child, _)) = self.key_pick(ctx, fan.children, false) {
+                        return LevelEvent::FanPick(fan.trigger, child);
+                    }
+                }
+                None => {
+                    match self.key_pick(ctx, buttons, true) {
+                        Some((idx, Some(item))) => return LevelEvent::ClusterPick(idx, item),
+                        Some((idx, None)) => return LevelEvent::Pick(idx),
+                        None => {}
+                    }
+                }
+            }
+        }
+
+        // Hover.
+        match &fan {
+            Some(fan) => {
+                // The parent's highlight stays on the fan's button; the pointer picks among
+                // the fan's children, by angle from the fan's centre. Nothing while it is
+                // on the opening button, in the fan's dead zone, or pointing back at the
+                // parent (the blocked sector: three of the eight 45° slices).
+                self.hovered_index = Some(fan.trigger);
+                self.hover_since = None;
+                let fan_dirs = self.layout_dirs(fan.children, &self.ring_sizes[&fan_ring], fan.radius);
+                self.fan_hover = current_mouse_pos.and_then(|p| {
+                    let v = p - fan.center;
+                    let angle = v.y.atan2(v.x);
+                    let back = center - fan.center;
+                    // Pointing back at the parent picks nothing, unless the pointer is right
+                    // on a child (one pushed into that sector by `layout.intercardinal_height`).
+                    let nearest_child = fan_dirs
+                        .iter()
+                        .zip(fan.children)
+                        .filter(|(_, child)| child.enabled)
+                        .map(|(d, _)| Self::angle_diff(angle, d.y.atan2(d.x)))
+                        .fold(f32::MAX, f32::min);
+                    let blocked = Self::angle_diff(angle, back.y.atan2(back.x)) < 67.5f32.to_radians()
+                        && nearest_child > 22.5f32.to_radians();
+                    if fan.trigger_rect.contains(p) || v.length() <= dead_zone || blocked {
+                        return None;
+                    }
+                    Self::pick_button(fan.children, v, &fan_dirs)
+                });
+            }
+            None => {
+                self.hovered_index = level_pick;
+                self.fan_hover = None;
+
+                // A fan-out opens once the pointer has reached its button (as far out as
+                // the ring) and rested on it for `sub_pies.fan_out.delay`.
+                let reached = current_mouse_pos.is_some_and(|p| (p - center).length() >= radius);
+                if self.fan_suppressed.is_some() && !(reached && level_pick == self.fan_suppressed) {
+                    self.fan_suppressed = None; // the pointer has left that button
+                }
+                match level_pick.filter(|&i| reached && self.fan_suppressed != Some(i) && self.opens_fan(&buttons[i])) {
+                    Some(i) => {
+                        let since = match self.fan_pending {
+                            Some((j, since)) if j == i => since,
+                            _ => now,
+                        };
+                        self.fan_pending = Some((i, since));
+                        let remaining = self.settings.sub_pies.fan_out.delay.as_secs_f64() - (now - since);
+                        if remaining <= 0.0 {
+                            self.open_fan(i);
+                            ctx.request_repaint(); // the fan is laid out and drawn next frame
+                        } else {
+                            repaint_after(ctx, remaining);
+                        }
+                    }
+                    None => self.fan_pending = None,
+                }
+            }
+        }
+
+        // Hover timer (replace-style sub-pies): resting on a button that leads to another
+        // pie (a sub-pie button, or a back button inside a sub-pie) long enough goes there.
+        // The button the pointer already points at when a level opens is ignored until the
+        // pointer leaves it, so a resting pointer cannot bounce between levels: after going
+        // back, whatever it rests on; after descending, a back button (the way it came).
+        // A sub-pie button under the pointer after descending is not ignored: the timer
+        // starts at once and navigation flows through the levels.
+        if std::mem::take(&mut self.level_fresh) {
+            let forward = self.entered_forward;
+            self.inert_hover = self.hovered_index.filter(|&i| !forward || buttons[i].is_back());
+        } else if self.inert_hover != self.hovered_index {
+            self.inert_hover = None;
+        }
+        let mut timer_pick = None;
+        if let Some(delay) = self.settings.sub_pies.hover_delay
+            && self.fan.is_none()
+        {
+            let in_sub_pie = !self.path.is_empty();
+            let navigates = |b: &PieButton| {
+                (!b.children().is_empty() && !self.opens_fan(b)) || (b.is_back() && in_sub_pie)
+            };
+            let target = self.hovered_index.filter(|&i| self.inert_hover != Some(i) && navigates(&buttons[i]));
+            match (target, self.hover_since) {
+                (Some(i), Some((j, since))) if i == j => {
+                    let remaining = delay.as_secs_f64() - (now - since);
+                    if remaining <= 0.0 {
+                        // Decided now, acted on once this frame's buttons are drawn: the
+                        // level then changes without a frame that shows no buttons.
+                        self.hover_since = None;
+                        timer_pick = Some(i);
+                    } else {
+                        repaint_after(ctx, remaining);
+                    }
+                }
+                (Some(i), _) => {
+                    self.hover_since = Some((i, now));
+                    repaint_after(ctx, delay.as_secs_f64());
+                }
+                (None, _) => self.hover_since = None,
+            }
+        }
+
         // Center highlight — progress driven by mouse distance from center.
-        if self.settings.center_indicator.highlight_shape != PieMenuHighlightShape::None
-            && self.settings.animations.center_highlight_show
+        let indicator = &self.settings.center_indicator;
+        if let Some(highlight_radius) = indicator.highlight_radius
+            && !indicator.highlight_shape.is_none()
         {
             let progress = current_mouse_pos
-                .filter(|_| self.selected_index.is_some())
+                .filter(|_| self.hovered_index.is_some())
                 .map(|p| {
                     let distance = (p - center).length();
-                    let threshold = self.settings.mouse_trigger_threshold;
-                    let max_dist = self.settings.layout_radius;
-                    ((distance - threshold) / (max_dist - threshold)).clamp(0.0, 1.0)
+                    ((distance - dead_zone) / (radius - dead_zone)).clamp(0.0, 1.0)
                 })
                 .unwrap_or(0.0);
 
-            let base_angle = if self.settings.animations.center_highlight_snapping {
-                self.selected_index
-                    .and_then(|idx| buttons.get(idx))
-                    .map(|b| {
-                        let v = Self::direction_vec(&Self::eff(&b.direction, mirror), shape_factor);
-                        v.y.atan2(v.x)
-                    })
+            // With a fan open the highlight stays on the fan's button.
+            let base_angle = if indicator.highlight_snapping || fan.is_some() {
+                self.hovered_index
+                    .and_then(|idx| dirs.get(idx))
+                    .map(|v| v.y.atan2(v.x))
                     .unwrap_or(0.0)
             } else {
                 current_mouse_pos
@@ -970,752 +1492,234 @@ impl PieMenu {
                     .unwrap_or(0.0)
             };
 
-            let arc_angle = self.settings.center_indicator.highlight_angle * progress;
+            let arc_angle = indicator.highlight_angle * progress;
             let start_angle = base_angle - arc_angle / 2.0;
-            let angle_range = start_angle..(start_angle + arc_angle);
-
-            let stroke_color = self
-                .settings
-                .center_indicator
-                .highlight_stroke
-                .color
-                .gamma_multiply(progress);
-            let fill_color = self
-                .settings
-                .center_indicator
-                .highlight_fill_color
-                .gamma_multiply(progress);
-            let colored_stroke = Stroke::new(
-                self.settings.center_indicator.highlight_stroke.width,
-                stroke_color,
-            );
-            let highlight_radius = self.settings.center_indicator.highlight_radius.get();
-            let shape = self.settings.center_indicator.highlight_shape;
-
-            let needs_arc = matches!(
-                shape,
-                PieMenuHighlightShape::Arc
-                    | PieMenuHighlightShape::ArcSlice
-                    | PieMenuHighlightShape::ArcCircle
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-            let needs_slice = matches!(
-                shape,
-                PieMenuHighlightShape::Slice
-                    | PieMenuHighlightShape::SliceCircle
-                    | PieMenuHighlightShape::ArcSlice
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-            let needs_circle = matches!(
-                shape,
-                PieMenuHighlightShape::Circle
-                    | PieMenuHighlightShape::ArcCircle
-                    | PieMenuHighlightShape::SliceCircle
-                    | PieMenuHighlightShape::ArcSliceCircle
-            );
-
-            let arc_arg = needs_arc.then(|| ArcValues {
-                angle_range: angle_range.clone(),
+            highlight_shapes::paint(&painter, highlight_shapes::Highlight {
+                shape: indicator.highlight_shape,
                 center,
                 radius: highlight_radius,
-                resolution: 10.0,
-                stroke: colored_stroke,
-            });
-            let slice_arg = needs_slice.then(|| {
-                let inner_arc = matches!(
-                    shape,
-                    PieMenuHighlightShape::Slice | PieMenuHighlightShape::SliceCircle
-                )
-                .then(|| ArcValues {
-                    angle_range: angle_range.clone(),
-                    center,
-                    radius: highlight_radius,
-                    resolution: 10.0,
-                    stroke: colored_stroke,
-                });
-                SliceValues {
-                    arc_values: inner_arc,
-                    stroke: None,
-                    fill_color,
-                }
-            });
-            let circle_arg = needs_circle.then(|| CircleValues {
-                offset_angle: base_angle,
-                offset_radius: highlight_radius,
-                offset_center: center,
-                circle_radius: self.settings.center_indicator.highlight_circle_radius,
-                stroke: colored_stroke,
-                fill_color,
-            });
-
-            painter.highlight_shape(shape, arc_arg, slice_arg, circle_arg);
-        }
-
-        // Draw menu title above the center indicator
-        if self.settings.label.display {
-            if let Some(label) = title {
-                let pad = &self.settings.label.padding;
-                let galley = painter.layout_no_wrap(
-                    label.to_string(),
-                    self.settings.label.text_font.clone(),
-                    self.settings.label.text_color,
-                );
-                let text_size = galley.size();
-                let bg_w = text_size.x + pad.left + pad.right;
-                let bg_h = text_size.y + pad.top + pad.bottom;
-                let above_offset =
-                    self.settings.center_indicator.background_radius.get() + bg_h / 2.0 + 4.0;
-                let label_center = center - Vec2::new(0.0, above_offset);
-                let bg_rect = Rect::from_center_size(label_center, Vec2::new(bg_w, bg_h));
-
-                if self.settings.label.background_color != Color32::TRANSPARENT {
-                    painter.rect_filled(bg_rect, 3.0, self.settings.label.background_color);
-                }
-                if self.settings.label.background_stroke.width > 0.0
-                    && self.settings.label.background_stroke.color != Color32::TRANSPARENT
-                {
-                    painter.rect_stroke(
-                        bg_rect,
-                        3.0,
-                        self.settings.label.background_stroke,
-                        egui::StrokeKind::Outside,
-                    );
-                }
-                painter.galley(
-                    bg_rect.min + Vec2::new(pad.left, pad.top),
-                    galley,
-                    self.settings.label.text_color,
-                );
-            }
-        }
-
-        // Draw buttons via caller-provided closure inside floating Areas
-        // Resolved once per frame for the view handed to the render closure.
-        let mnemonics = self.mnemonics(buttons);
-        let number_hints: Vec<Option<NumberHint>> = buttons
-            .iter()
-            .map(|b| if self.settings.number_hints.show { None } else { self.number_hint(b) })
-            .collect();
-        let (text_color, body_font) = {
-            let style = ctx.global_style();
-            (
-                style.visuals.text_color(),
-                style.text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default(),
-            )
-        };
-
-        for (idx, button) in buttons.iter().enumerate() {
-            let dir_vec = Self::direction_vec(&Self::eff(&button.direction, mirror), shape_factor);
-            let dir_norm = dir_vec.normalized();
-
-            // Push the button outward so its inner face/corner sits on the layout circle.
-            // Each axis is offset independently: X by ±hw, Y by ±hh, based on the sign of
-            // the direction. This keeps NE/NW at the same Y and SE/SW at the same Y even
-            // when button widths differ, and the inner corner still lands exactly on the circle.
-            let cached_size = self.button_sizes[idx];
-            let hw = cached_size.x / 2.0;
-            let hh = cached_size.y / 2.0;
-            // Use 0.5 as threshold: diagonal components are ~0.707, cardinal near-zero
-            // components are floating-point noise (~1e-17) and must not contribute.
-            let sx = if dir_norm.x > 0.5 {
-                1.0
-            } else if dir_norm.x < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-            let sy = if dir_norm.y > 0.5 {
-                1.0
-            } else if dir_norm.y < -0.5 {
-                -1.0
-            } else {
-                0.0
-            };
-
-            let button_center =
-                center + dir_vec * self.settings.layout_radius + Vec2::new(hw * sx, hh * sy);
-            let is_hovered = self.selected_index == Some(idx);
-
-            // Reveal animation: movement and opacity progress, each 0..1.
-            let anim = &self.settings.animations;
-            let elapsed = self.shown_at.map(|at| at.elapsed().as_secs_f32());
-            let progress = |d: Duration| {
-                elapsed.map_or(1.0, |e| (e / d.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0))
-            };
-            let (move_t, opacity) = match anim.reveal {
-                RevealAnimation::None => (1.0, 1.0),
-                RevealAnimation::Fade => (1.0, progress(anim.reveal_duration)),
-                RevealAnimation::SlideOut => (
-                    progress(anim.reveal_duration),
-                    anim.slide_fade.map_or(1.0, progress),
+                angle_range: start_angle..(start_angle + arc_angle),
+                dot_angle: base_angle,
+                dot_radius: indicator.highlight_circle_radius,
+                stroke: Stroke::new(
+                    indicator.highlight_stroke.width,
+                    indicator.highlight_stroke.color.gamma_multiply(progress),
                 ),
-            };
-            if move_t < 1.0 || opacity < 1.0 {
-                ctx.request_repaint();
-            }
-            let button_center = if move_t < 1.0 {
-                let eased = 1.0 - (1.0 - move_t).powi(3);
-                // Interpolate the radius and (optionally) the shape factor, then lay the
-                // button out as if that were the final layout, scaled about the centre.
-                // With a start radius of 0 this collapses every button onto the centre.
-                let end_radius = self.settings.layout_radius;
-                let radius = anim.slide_start_radius + (end_radius - anim.slide_start_radius) * eased;
-                let start_sf = anim.slide_start_shape_factor.unwrap_or(shape_factor);
-                let sf = start_sf + (shape_factor - start_sf) * eased;
-                let scale = if end_radius > 0.0 { radius / end_radius } else { 1.0 };
-                let offset = Self::direction_vec(&Self::eff(&button.direction, mirror), sf) * end_radius
-                    + Vec2::new(hw * sx, hh * sy);
-                center + offset * scale
-            } else {
-                button_center
-            };
-            let area_pos = button_center - cached_size / 2.0;
-
-            if self.settings.number_hints.show && self.settings.input.use_numpad_keys {
-                let hints = &self.settings.number_hints;
-                let (x, align) = if self.hint_on_right(&Self::eff(&button.direction, mirror)) {
-                    (button_center.x + hw + hints.spacing, egui::Align2::LEFT_CENTER)
-                } else {
-                    (button_center.x - hw - hints.spacing, egui::Align2::RIGHT_CENTER)
-                };
-                let color = hints
-                    .color
-                    .unwrap_or_else(|| ctx.global_style().visuals.weak_text_color());
-                let digit = self.hint_digit(&Self::eff(&button.direction, mirror));
-                painter.text(
-                    Pos2::new(x, button_center.y),
-                    align,
-                    digit,
-                    hints.font.clone(),
-                    color.gamma_multiply(opacity),
-                );
-            }
-
-            let response = egui::Area::new(self.id.with(idx))
-                .order(egui::Order::Tooltip)
-                // egui's own area fade is always off: Fade replaces it, None means none.
-                .fade_in(false)
-                .fixed_pos(area_pos)
-                .show(ctx, |ui| {
-                    if opacity < 1.0 {
-                        ui.set_opacity(opacity);
-                    }
-                    // Buttons are single-line. An Area keeps last frame's size as its max
-                    // width, so content that grows (a number hint added, a label changed)
-                    // would wrap instead of widening the button. Don't wrap; let it grow.
-                    // Explicit newlines still work, and the closure can override this.
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    render_button(ui, &ButtonView {
-                        idx,
-                        hovered: is_hovered,
-                        enabled: button.enabled,
-                        button,
-                        mnemonic: mnemonics[idx],
-                        number_hint: number_hints[idx].clone(),
-                        text_color,
-                        body_font: body_font.clone(),
-                    })
-                });
-
-            self.button_sizes[idx] = response.response.rect.size();
+                fill: indicator.highlight_fill_color.gamma_multiply(progress),
+            });
         }
+
+        // Draw the title above the center indicator
+        let title_style = &self.settings.title;
+        if title_style.show
+            && let Some(title) = &self.title
+        {
+            let pad = title_style.padding;
+            let galley = painter.layout_no_wrap(title.clone(), title_style.text_font.clone(), title_style.text_color);
+            let box_size = galley.size() + pad.sum();
+            // Sits just above the background circle, or the centre when there is none.
+            let above_offset =
+                self.settings.center_indicator.background_radius.unwrap_or(0.0) + box_size.y / 2.0 + 4.0;
+            let bg_rect = Rect::from_center_size(center - Vec2::new(0.0, above_offset), box_size);
+
+            if title_style.background_color != Color32::TRANSPARENT {
+                painter.rect_filled(bg_rect, 3.0, title_style.background_color);
+            }
+            if title_style.background_stroke.width > 0.0
+                && title_style.background_stroke.color != Color32::TRANSPARENT
+            {
+                painter.rect_stroke(bg_rect, 3.0, title_style.background_stroke, egui::StrokeKind::Outside);
+            }
+            painter.galley(bg_rect.min + pad.left_top(), galley, title_style.text_color);
+        }
+
+        // Draw the level's buttons, then the open fan's around its button. The caches are
+        // taken out of `self` while its settings are borrowed for drawing.
+        let path = self.path.clone();
+        let mut sizes = self.ring_sizes.remove(&ring).unwrap_or_default();
+        let mut centers = std::mem::take(&mut self.button_centers);
+        let cluster_items = self.draw_level(
+            ctx,
+            now,
+            &LevelDraw {
+                buttons,
+                center,
+                radius,
+                shown_at: self.shown_at,
+                hovered: self.hovered_index,
+                // While the dimming eases out after a fan closed, its button stays the lit one.
+                dim_except: fan.as_ref().map(|f| f.trigger).or(self.last_fan.filter(|_| dim > 0.0)),
+                dim_opacity,
+                // The root pie and sub-pies have their own amounts.
+                emphasis: if path.is_empty() {
+                    self.settings.animations.hover_emphasis
+                } else {
+                    self.settings.animations.sub_pie_hover_emphasis
+                },
+                // A broken-out level keeps the Areas the fan drew its buttons in.
+                id: ring,
+                path_prefix: &path,
+                opacity_scale: 1.0,
+            },
+            &mut sizes,
+            Some(&mut centers),
+            render_button,
+        );
+        self.ring_sizes.insert(ring, sizes);
+        self.button_centers = centers;
+
+        // After a break-out: the whole main ring, the opener included (lit), fades out where
+        // it was; once the fade is over nothing of it is drawn any more.
+        if let Some(b) = self.breakout.take() {
+            if fade < 1.0 && b.opener < parent.len() {
+                let up = &path[..path.len().saturating_sub(1)];
+                let parent_ring = self.level_ring_id(up);
+                self.ensure_ring_sizes(parent_ring, parent.len());
+                let mut parent_sizes = self.ring_sizes.remove(&parent_ring).unwrap_or_default();
+                let draw = LevelDraw {
+                    buttons: parent,
+                    center: b.parent_center,
+                    radius: b.parent_radius,
+                    shown_at: None,
+                    hovered: Some(b.opener),
+                    dim_except: Some(b.opener),
+                    dim_opacity: DIMMED_OPACITY,
+                    emphasis: if up.is_empty() {
+                        self.settings.animations.hover_emphasis
+                    } else {
+                        self.settings.animations.sub_pie_hover_emphasis
+                    },
+                    id: parent_ring,
+                    path_prefix: up,
+                    opacity_scale: 1.0 - fade,
+                };
+                self.draw_level(ctx, now, &draw, &mut parent_sizes, None, render_button);
+                self.ring_sizes.insert(parent_ring, parent_sizes);
+            }
+            self.breakout = Some(b);
+        }
+
+        if let Some(fan) = &fan {
+            let shown_at = *self.fan_shown_at.get_or_insert(now);
+            let mut fan_path = path.clone();
+            fan_path.push(fan.trigger);
+            let mut sizes = self.ring_sizes.remove(&fan_ring).unwrap_or_default();
+            // Only tests look at where the fan's buttons ended up.
+            let mut fan_centers: Option<Vec<Pos2>> = cfg!(test).then(Vec::new);
+            self.draw_level(
+                ctx,
+                now,
+                &LevelDraw {
+                    buttons: fan.children,
+                    center: fan.center,
+                    radius: fan.radius,
+                    shown_at: Some(shown_at),
+                    hovered: self.fan_hover,
+                    dim_except: None,
+                    dim_opacity: 1.0,
+                    emphasis: self.settings.animations.sub_pie_hover_emphasis,
+                    id: fan_ring,
+                    path_prefix: &fan_path,
+                    opacity_scale: 1.0,
+                },
+                &mut sizes,
+                fan_centers.as_mut(),
+                render_button,
+            );
+            self.ring_sizes.insert(fan_ring, sizes);
+            #[cfg(test)]
+            {
+                self.fan_centers = fan_centers.unwrap_or_default();
+            }
+        }
+
+        if let Some(i) = timer_pick {
+            return LevelEvent::Pick(i);
+        }
+
+        // A cluster item under the pointer: it wins over the angle-based pick (an item can
+        // reach into another button's sector). Not while a fan is open, which has the
+        // pointer to itself.
+        let item_at = |p: Pos2, clicked_only: bool| {
+            cluster_items
+                .iter()
+                .find(|it| {
+                    it.enabled
+                        && (it.clicked || !clicked_only)
+                        && it.rect.contains(p)
+                        && buttons.get(it.button).is_some_and(|b| {
+                            // A declared item can also be disabled by its declaration.
+                            b.enabled
+                                && b.is_cluster()
+                                && b.cluster_items().iter().all(|d| d.number != it.n || d.enabled)
+                        })
+                })
+                .map(|it| LevelEvent::ClusterPick(it.button, it.n))
+        };
 
         // Primary click selection — runs after render so closures (e.g. checkboxes)
         // receive the click event before we consume it.
+        let opener = self.settings.sub_pies.fan_out.opener_action;
         if self.settings.input.select_on_primary_click && ctx.input(|i| i.pointer.primary_clicked())
         {
-            return match current_mouse_pos {
-                Some(p) if (p - center).length() > self.settings.mouse_trigger_threshold => self
-                    .selected_index
-                    .map_or(PieMenuResponse::None, PieMenuResponse::Selected),
-                Some(_) => PieMenuResponse::None,
-                None => PieMenuResponse::Dismissed,
+            if fan.is_none()
+                && let Some(event) = current_mouse_pos.and_then(|p| item_at(p, true))
+            {
+                return event;
+            }
+            return match (current_mouse_pos, &fan) {
+                // In an open fan a click selects the highlighted child, if any.
+                // A click on the opening button breaks the fan out (or closes it, as set);
+                // a click on nothing else (the blocked sector) closes the fan.
+                (Some(p), Some(fan)) => match self.fan_hover {
+                    Some(child) => LevelEvent::FanPick(fan.trigger, child),
+                    None if fan.trigger_rect.contains(p) && opener == FanOpenerAction::BreakOut => LevelEvent::BreakOut(fan.trigger),
+                    None => LevelEvent::CloseFan,
+                },
+                (Some(p), None) if (p - center).length() > dead_zone => {
+                    self.hovered_index.map_or(LevelEvent::None, LevelEvent::Pick)
+                }
+                // A click in the centre of the root dismisses (in a sub-pie it went back a
+                // level before this point); a pinned menu is never dismissed by the pointer.
+                (Some(_), None) if self.path.is_empty() && !self.pinned => LevelEvent::Dismissed,
+                (Some(_), None) => LevelEvent::None,
+                // A click elsewhere: nothing for a pinned menu, otherwise it dismisses.
+                (None, _) if self.pinned => LevelEvent::None,
+                (None, _) => LevelEvent::Dismissed,
             };
         }
 
-        // Key-hold release (mouse_shown is true here, so menu was visible)
+        // Key-hold release (visible is true here, so menu was visible)
         if !key_down && !self.release_handled {
             self.release_handled = true;
-            if let Some(mouse_pos) = current_mouse_pos {
-                if (mouse_pos - center).length() <= self.settings.mouse_trigger_threshold {
-                    return PieMenuResponse::Dismissed;
-                } else if let Some(idx) = self.selected_index {
-                    return PieMenuResponse::Selected(idx);
+            if let Some(fan) = &fan {
+                // Released on a fan child: select it. Released on the fan's button: break
+                // out into a sub-pie, or cancel, as set. Released over nothing: cancel, as
+                // releasing in the centre does.
+                if let Some(child) = self.fan_hover {
+                    return LevelEvent::FanPick(fan.trigger, child);
                 }
+                if current_mouse_pos.is_some_and(|p| fan.trigger_rect.contains(p)) && opener == FanOpenerAction::BreakOut {
+                    return LevelEvent::BreakOut(fan.trigger);
+                }
+                return LevelEvent::Dismissed;
+            } else if let Some(mouse_pos) = current_mouse_pos {
+                if let Some(event) = item_at(mouse_pos, false) {
+                    return event;
+                }
+                if (mouse_pos - center).length() <= dead_zone {
+                    return LevelEvent::Dismissed;
+                } else if let Some(idx) = self.hovered_index {
+                    return LevelEvent::Pick(idx);
+                }
+                // Nothing to select (every button disabled): cancel rather than strand the menu.
+                return LevelEvent::Dismissed;
+            } else {
+                // No pointer at release (it left the window): cancel.
+                return LevelEvent::Dismissed;
             }
         }
 
-        // Disable label text selection for the next frame. Placed after all rendering
-        // so buttons in this frame see the restored style (set at the top of show()).
-        // Restored at the top of show() on the closing frame.
-        ctx.all_styles_mut(|s| s.interaction.selectable_labels = false);
-
-        PieMenuResponse::None
-    }
-}
-
-/// Build a [`LayoutJob`] that renders `text` with the first case-insensitive
-/// occurrence of `mnemonic` underlined — suitable for use as a pie menu button
-/// label when you want to surface keyboard shortcuts visually.
-///
-/// The rest of the text uses `format` unchanged. The underline color is
-/// derived from `format.color`.  If `mnemonic` does not appear in `text`
-/// the whole string is rendered with `format` and no underline.
-///
-/// # Example
-/// ```ignore
-/// ui.label(mnemonic_text("Copy", 'c', TextFormat {
-///     color: Color32::WHITE,
-///     font_id: FontId::default(),
-///     ..Default::default()
-/// }));
-/// ```
-pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    append_mnemonic_text(&mut job, text, mnemonic, format);
-    job
-}
-
-fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: char, format: TextFormat) {
-    let mnemonic_folded = fold_char(mnemonic);
-    let split = text
-        .char_indices()
-        .find(|(_, c)| fold_char(*c) == mnemonic_folded);
-
-    match split {
-        None => {
-            job.append(text, 0.0, format);
-        }
-        Some((byte_idx, c)) => {
-            let before = &text[..byte_idx];
-            let after = &text[byte_idx + c.len_utf8()..];
-            let ch_str = &text[byte_idx..byte_idx + c.len_utf8()];
-
-            let underline_format = TextFormat {
-                underline: Stroke::new(1.0, format.color),
-                ..format.clone()
-            };
-
-            if !before.is_empty() {
-                job.append(before, 0.0, format.clone());
-            }
-            job.append(ch_str, 0.0, underline_format);
-            if !after.is_empty() {
-                job.append(after, 0.0, format);
-            }
-        }
-    }
-}
-
-/// Case-folds `c` and normalises letter variants that share a key:
-/// Hebrew final forms (ך→כ …) and Arabic alef variants (أ إ آ ٱ → ا).
-fn fold_char(c: char) -> char {
-    let c = c.to_lowercase().next().unwrap_or(c);
-    match c {
-        'ך' => 'כ',
-        'ם' => 'מ',
-        'ן' => 'נ',
-        'ף' => 'פ',
-        'ץ' => 'צ',
-        'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
-        _ => c,
-    }
-}
-
-/// Combining marks (Arabic/Hebrew points, accents) are never mnemonic candidates.
-fn is_combining_mark(c: char) -> bool {
-    matches!(c as u32,
-        0x0300..=0x036F | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
-        | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06DC | 0x06DF..=0x06E4
-        | 0x06E7..=0x06E8 | 0x06EA..=0x06ED)
-}
-
-fn is_mnemonic_letter(c: char) -> bool {
-    c.is_alphabetic() && !is_combining_mark(c)
-}
-
-fn char_to_key(c: char) -> Option<Key> {
-    match c.to_ascii_lowercase() {
-        'a' => Some(Key::A),
-        'b' => Some(Key::B),
-        'c' => Some(Key::C),
-        'd' => Some(Key::D),
-        'e' => Some(Key::E),
-        'f' => Some(Key::F),
-        'g' => Some(Key::G),
-        'h' => Some(Key::H),
-        'i' => Some(Key::I),
-        'j' => Some(Key::J),
-        'k' => Some(Key::K),
-        'l' => Some(Key::L),
-        'm' => Some(Key::M),
-        'n' => Some(Key::N),
-        'o' => Some(Key::O),
-        'p' => Some(Key::P),
-        'q' => Some(Key::Q),
-        'r' => Some(Key::R),
-        's' => Some(Key::S),
-        't' => Some(Key::T),
-        'u' => Some(Key::U),
-        'v' => Some(Key::V),
-        'w' => Some(Key::W),
-        'x' => Some(Key::X),
-        'y' => Some(Key::Y),
-        'z' => Some(Key::Z),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod mnemonic_tests {
-    use super::*;
-
-    fn btn(label: &str) -> PieButton {
-        PieButton::new(PieDirection::North).with_label(label)
-    }
-
-    #[test]
-    fn auto_off_only_explicit_keys() {
-        let b = vec![btn("Copy"), btn("Cut").with_mnemonic('C'), btn("Paste").without_mnemonic()];
-        assert_eq!(resolve_mnemonics(&b, false), vec![None, Some('c'), None]);
-    }
-
-    #[test]
-    fn explicit_kept_and_not_duplicated() {
-        let b = vec![btn("Copy"), btn("Cut").with_mnemonic('c'), btn("Paste")];
-        // 'c' is reserved by the explicit key, so Copy takes its next letter.
-        assert_eq!(resolve_mnemonics(&b, true), vec![Some('o'), Some('c'), Some('p')]);
-    }
-
-    #[test]
-    fn none_never_gets_one_and_reserves_nothing() {
-        let b = vec![btn("Copy").without_mnemonic(), btn("Cut")];
-        assert_eq!(resolve_mnemonics(&b, true), vec![None, Some('c')]);
-    }
-
-    #[test]
-    fn reshuffles_so_everyone_gets_one() {
-        // Greedy would give "Ab" 'a' and leave "A" with nothing.
-        assert_eq!(resolve_mnemonics(&[btn("Ab"), btn("A")], true), vec![Some('b'), Some('a')]);
-    }
-
-    #[test]
-    fn preference_order_initials_then_remaining_letters_left_to_right() {
-        let pick = |reserved: &[char]| {
-            let mut b: Vec<PieButton> = reserved.iter().map(|&c| btn("").with_mnemonic(c)).collect();
-            b.push(btn("Select All Items"));
-            *resolve_mnemonics(&b, true).last().unwrap()
-        };
-        assert_eq!(pick(&[]), Some('s')); // 1st word initial
-        assert_eq!(pick(&['s']), Some('a')); // 2nd word initial
-        assert_eq!(pick(&['s', 'a']), Some('i')); // 3rd word initial
-        assert_eq!(pick(&['s', 'a', 'i']), Some('e')); // then letters in order: s,e,l,...
-        assert_eq!(pick(&['s', 'a', 'i', 'e']), Some('l'));
-    }
-
-    #[test]
-    fn exhausted_gets_none() {
-        assert_eq!(resolve_mnemonics(&[btn("A"), btn("A")], true)[1], None);
-    }
-
-    #[test]
-    fn all_auto_demo_labels_are_distinct() {
-        let labels = ["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Word wrap"];
-        let b: Vec<PieButton> = labels.iter().map(|l| btn(l)).collect();
-        let r = resolve_mnemonics(&b, true);
-        let mut got: Vec<char> = r.iter().flatten().copied().collect();
-        assert_eq!(got.len(), labels.len(), "everyone gets one: {r:?}");
-        got.sort();
-        got.dedup();
-        assert_eq!(got.len(), labels.len(), "no duplicates: {r:?}");
-    }
-
-    #[test]
-    fn empty_label_gets_none() {
-        assert_eq!(resolve_mnemonics(&[btn("")], true), vec![None]);
-    }
-}
-
-#[cfg(test)]
-mod highlight_tests {
-    use super::*;
-
-    #[test]
-    fn arc_points_are_finite_for_degenerate_input() {
-        use crate::highlight_shapes::HighlightPainter;
-        let ctx = egui::Context::default();
-        let painter = ctx.layer_painter(egui::LayerId::background());
-        let c = Pos2::ZERO;
-        assert!(painter.arc_calculate_points(c, f32::NAN, 10.0, 0.0..1.0).is_empty());
-        for p in painter.arc_calculate_points(c, 15.0, 10.0, 1.0..1.0) {
-            assert!(p.x.is_finite() && p.y.is_finite());
-        }
-    }
-}
-
-#[cfg(test)]
-mod pin_tests {
-    use super::*;
-
-    #[test]
-    fn reveal_shows_menu_immediately_and_open_resets_it() {
-        let mut m = PieMenu::new();
-        m.open(Pos2::new(5.0, 5.0));
-        assert!(!m.mouse_shown);
-        m.reveal();
-        assert!(m.mouse_shown && m.shown_at.is_some());
-        m.open(Pos2::ZERO);
-        assert!(!m.mouse_shown);
-    }
-
-    #[test]
-    fn revealed_menu_stays_visible_without_key_or_mouse() {
-        let ctx = egui::Context::default();
-        let buttons = vec![PieButton::new(PieDirection::North)];
-        let mut m = PieMenu::new();
-        m.settings.block_background = false;
-        m.open(Pos2::new(100.0, 100.0));
-        m.reveal();
-        let mut resp = PieMenuResponse::None;
-        let mut out = ctx.run_ui(Default::default(), |ui| {
-            resp = m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |ui, _| {
-                ui.label("x");
-            });
-        });
-        out.textures_delta.clear();
-        assert!(matches!(resp, PieMenuResponse::None));
-        assert!(m.mouse_shown);
-    }
-}
-
-#[cfg(test)]
-mod button_view_tests {
-    use super::*;
-
-    fn label(prefix: &str, mnemonic: Option<char>) -> LabelText {
-        LabelText {
-            prefix: prefix.to_string(),
-            text: "Copy".to_string(),
-            mnemonic,
-            color: Color32::WHITE,
-            font: FontId::default(),
-        }
-    }
-
-    #[test]
-    fn plain_label_is_one_section() {
-        assert_eq!(label("", None).to_job().sections.len(), 1);
-    }
-
-    #[test]
-    fn mnemonic_is_underlined_and_prefix_is_not() {
-        let job = label("X ", Some('p')).to_job();
-        assert_eq!(job.text, "X Copy");
-        // egui merges equal adjacent formats: "X Co" | "p" (underlined) | "y"
-        assert_eq!(job.sections.len(), 3);
-        assert!(job.sections[1].format.underline != Stroke::NONE);
-        let underlined: Vec<_> = job.sections.iter().filter(|s| s.format.underline != Stroke::NONE).collect();
-        assert_eq!(underlined.len(), 1);
-    }
-
-    #[test]
-    fn overrides_apply() {
-        let l = label("", None).color(Color32::RED).font(FontId::monospace(20.0));
-        let job = l.to_job();
-        assert_eq!(job.sections[0].format.color, Color32::RED);
-        assert_eq!(job.sections[0].format.font_id, FontId::monospace(20.0));
-    }
-}
-
-#[cfg(test)]
-mod subpie_tests {
-    use super::*;
-
-    #[test]
-    fn resolve_level_walks_path() {
-        let root = vec![
-            PieButton::new(PieDirection::North),
-            PieButton::new(PieDirection::East).with_children(vec![
-                PieButton::new(PieDirection::West),
-                PieButton::new(PieDirection::South).with_children(vec![PieButton::new(PieDirection::North)]),
-            ]),
-        ];
-        assert_eq!(PieMenu::resolve_level(&root, &[]).unwrap().len(), 2);
-        assert_eq!(PieMenu::resolve_level(&root, &[1]).unwrap().len(), 2);
-        assert_eq!(PieMenu::resolve_level(&root, &[1, 1]).unwrap().len(), 1);
-        assert!(PieMenu::resolve_level(&root, &[0]).unwrap().is_empty());
-        assert!(PieMenu::resolve_level(&root, &[5]).is_none());
-    }
-
-    #[test]
-    fn restart_level_recentres_and_shows() {
-        let mut m = PieMenu::new();
-        m.restart_level(Some(Pos2::new(10.0, 20.0)), false);
-        assert_eq!(m.position, Pos2::new(10.0, 20.0));
-        assert!(m.mouse_shown && m.release_handled);
-        m.restart_level(None, true);
-        assert!(!m.release_handled);
-    }
-}
-
-#[cfg(test)]
-mod selection_tests {
-    use super::*;
-
-    fn btns() -> Vec<PieButton> {
-        vec![
-            PieButton::new(PieDirection::West),
-            PieButton::new(PieDirection::NorthWest),
-            PieButton::new(PieDirection::East),
-        ]
-    }
-
-    fn pick(b: &[PieButton], v: Vec2) -> Option<usize> {
-        PieMenu::pick_button(b, v, 0.0, false)
-    }
-
-    #[test]
-    fn west_sector_covers_both_sides_of_the_axis() {
-        let b = btns();
-        // Slightly above and below the pure-west axis must both pick West (index 0).
-        assert_eq!(pick(&b, Vec2::new(-10.0, -1.0)), Some(0));
-        assert_eq!(pick(&b, Vec2::new(-10.0, 1.0)), Some(0));
-        assert_eq!(pick(&b, Vec2::new(-10.0, -6.0)), Some(1)); // beyond 22.5deg -> NW
-    }
-
-    #[test]
-    fn empty_sectors_snap_to_the_closest_button() {
-        let b = btns(); // W, NW, E
-        assert_eq!(pick(&b, Vec2::new(-1.0, -10.0)), Some(1)); // north, slightly west -> NW
-        assert_eq!(pick(&b, Vec2::new(10.0, 10.0)), Some(2)); // south-east -> E
-    }
-
-    #[test]
-    fn disabled_buttons_are_skipped() {
-        let mut b = btns();
-        b[0].enabled = false;
-        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), Some(1)); // next nearest
-        b[1].enabled = false;
-        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), Some(2));
-        b[2].enabled = false;
-        assert_eq!(pick(&b, Vec2::new(-10.0, 0.0)), None);
-    }
-
-    fn lab(d: PieDirection, label: &str) -> PieButton {
-        PieButton::new(d).with_label(label)
-    }
-
-    #[test]
-    fn problems_detect_same_direction_and_duplicate_mnemonics() {
-        let b = vec![
-            lab(PieDirection::North, "Copy").with_mnemonic('c'),
-            lab(PieDirection::North, "Cut").with_mnemonic('x'),
-            lab(PieDirection::East, "Cat").with_mnemonic('c'),
-        ];
-        let p = button_problems(&b, &resolve_mnemonics(&b, true));
-        assert_eq!(
-            p,
-            vec![
-                ButtonProblem::SharedDirection { first: 0, second: 1, direction: PieDirection::North },
-                ButtonProblem::DuplicateMnemonic { first: 0, second: 2, key: 'c' },
-            ]
-        );
-        assert_eq!(p[1].buttons(), [0, 2]);
-        assert!(p[1].to_string().contains("mnemonic 'c'"));
-    }
-
-    #[test]
-    fn problems_ignore_disabled_buttons_and_distinct_levels() {
-        let b = vec![
-            lab(PieDirection::North, "Copy").with_mnemonic('c'),
-            lab(PieDirection::East, "Cat").with_mnemonic('c').with_enabled(false),
-        ];
-        assert!(button_problems(&b, &resolve_mnemonics(&b, true)).is_empty());
-        // Another level may reuse the same direction and key: checked separately.
-        let other = vec![lab(PieDirection::North, "Cut").with_mnemonic('c')];
-        assert!(button_problems(&other, &resolve_mnemonics(&other, true)).is_empty());
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "are both in direction")]
-    fn show_asserts_on_buttons_sharing_a_direction() {
-        let ctx = egui::Context::default();
-        let buttons = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
-        let mut m = PieMenu::new();
-        m.settings.show_behavior = ShowBehavior::Instant;
-        m.open(Pos2::new(100.0, 100.0));
-        let _ = ctx.run_ui(Default::default(), |ui| {
-            m.show(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, None, |_, _| {});
-        });
-    }
-
-    #[test]
-    fn mirror_applies_to_picking() {
-        let b = btns(); // W, NW, E
-        // Mirrored: the East button is displayed on the west side.
-        assert_eq!(PieMenu::pick_button(&b, Vec2::new(-10.0, 0.0), 0.0, true), Some(2));
-        assert_eq!(PieMenu::pick_button(&b, Vec2::new(10.0, 0.0), 0.0, true), Some(0));
-    }
-
-    #[test]
-    fn disabled_buttons_get_no_generated_mnemonic() {
-        let b = vec![PieButton::new(PieDirection::North).with_label("Copy").with_enabled(false)];
-        assert_eq!(resolve_mnemonics(&b, true), vec![None]);
-    }
-}
-
-#[cfg(test)]
-mod unicode_tests {
-    use super::*;
-
-    fn one(label: &str, explicit: &[char]) -> Option<char> {
-        let mut b: Vec<PieButton> = explicit
-            .iter()
-            .map(|&c| PieButton::new(PieDirection::East).with_mnemonic(c))
-            .collect();
-        b.push(PieButton::new(PieDirection::North).with_label(label));
-        resolve_mnemonics(&b, true).last().copied().flatten()
-    }
-
-    #[test]
-    fn other_scripts_get_mnemonics() {
-        assert_eq!(one("Копировать", &[]), Some('к'));
-        assert_eq!(one("نسخ ملف", &[]), Some('ن'));
-        assert_eq!(one("نسخ ملف", &['ن']), Some('م')); // next word initial
-        assert_eq!(one("העתק", &[]), Some('ה'));
-        assert_eq!(one("Ärger", &[]), Some('ä'));
-    }
-
-    #[test]
-    fn skips_combining_marks_and_folds_variants() {
-        assert_eq!(one("\u{064E}بيت", &[]), Some('ب')); // fatha is skipped
-        assert_eq!(fold_char('ך'), fold_char('כ'));
-        assert_eq!(fold_char('أ'), fold_char('ا'));
-        assert_eq!(fold_char('É'), 'é');
-    }
-
-    #[test]
-    fn mnemonic_text_unicode_underline() {
-        let job = mnemonic_text("Файл", 'Ф', TextFormat::default());
-        // Mnemonic is the first char: underlined "Ф" + remainder (no "before" section).
-        assert_eq!(job.sections.len(), 2);
-    }
-
-    #[test]
-    fn mirror_swaps_horizontal_only() {
-        assert_eq!(PieDirection::East.mirrored(), PieDirection::West);
-        assert_eq!(PieDirection::NorthWest.mirrored(), PieDirection::NorthEast);
-        assert_eq!(PieDirection::South.mirrored(), PieDirection::South);
-    }
-
-    #[test]
-    fn hint_follows_mirrored_layout() {
-        let mut m = PieMenu::new();
-        let east = PieButton::new(PieDirection::East);
-        assert_eq!(m.number_hint(&east).unwrap().text, "6");
-        m.settings.mirror_horizontal = true;
-        assert_eq!(m.number_hint(&east).unwrap().text, "4"); // East is shown on the west side
-        assert!(!m.number_hint(&east).unwrap().on_right); // Trailing = left when mirrored
+        LevelEvent::None
     }
 }
