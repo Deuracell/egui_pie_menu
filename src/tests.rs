@@ -151,6 +151,84 @@ mod open_state_tests {
         m.open(CENTER);
         assert!(m.is_open() && !m.is_pinned() && !m.visible);
     }
+
+    #[test]
+    fn configure_applies_changes_and_composes_in_any_order() {
+        let menu = PieMenu::new().with_title("Edit").with_id("x").configure(|s| {
+            s.layout.radius = 120.0;
+            s.input.auto_mnemonics = true;
+        });
+        assert_eq!(menu.settings.layout.radius, 120.0);
+        assert!(menu.settings.input.auto_mnemonics);
+        assert_eq!(menu.title.as_deref(), Some("Edit"));
+        assert_eq!(menu.id, egui::Id::new("x"));
+        // Everything else untouched.
+        let mut expected = PieMenuSettings::default();
+        expected.layout.radius = 120.0;
+        expected.input.auto_mnemonics = true;
+        assert_eq!(format!("{:?}", menu.settings), format!("{expected:?}"));
+
+        // After `with_settings`, it edits those settings; before it, they are replaced.
+        let base = PieMenuSettings { mirror_horizontal: true, ..Default::default() };
+        let menu = PieMenu::new().with_settings(base.clone()).configure(|s| s.layout.radius = 50.0).with_title("T");
+        assert!(menu.settings.mirror_horizontal);
+        assert_eq!(menu.settings.layout.radius, 50.0);
+        assert_eq!(menu.title.as_deref(), Some("T"));
+        let menu = PieMenu::new().configure(|s| s.layout.radius = 50.0).with_settings(base);
+        assert_eq!(menu.settings.layout.radius, 100.0);
+    }
+
+    #[test]
+    fn blender_like_differs_from_the_default_in_exactly_three_fields() {
+        let b = PieMenuSettings::blender_like();
+        let d = PieMenuSettings::default();
+        assert!(!b.input.select_on_primary_click && d.input.select_on_primary_click);
+        assert_eq!(b.text_color, Some(Color32::WHITE));
+        assert_eq!(b.number_hints.color, Some(Color32::WHITE));
+        // Undoing those three gives the default again, compared through Debug.
+        let mut undone = b;
+        undone.input.select_on_primary_click = true;
+        undone.text_color = None;
+        undone.number_hints.color = None;
+        assert_eq!(format!("{undone:?}"), format!("{d:?}"));
+    }
+
+    #[test]
+    fn blender_like_menu_ignores_a_click_but_selects_on_key_release() {
+        let ctx = egui::Context::default();
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy")];
+        let run = |m: &mut PieMenu, pointer: Option<Pos2>, key_down: bool, events: Vec<egui::Event>| {
+            let mut resp = PieMenuResponse::None;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                resp = m.show_with_pointer(ui.ctx(), &buttons, pointer, key_down, |ui, _| {
+                    ui.label("x");
+                });
+            });
+            out.textures_delta.clear();
+            resp
+        };
+        let mut m = PieMenu::new().with_settings(PieMenuSettings::blender_like());
+        m.open(CENTER);
+        m.reveal();
+        assert_eq!(run(&mut m, Some(ABOVE), true, vec![]), PieMenuResponse::None);
+        assert_eq!(m.hovered(), Some(0));
+        assert_eq!(run(&mut m, Some(ABOVE), true, click(ABOVE)), PieMenuResponse::None);
+        assert!(m.is_open(), "a primary click is ignored");
+        assert_eq!(run(&mut m, Some(ABOVE), false, vec![]), PieMenuResponse::Selected(0));
+        assert!(!m.is_open());
+
+        // The default menu selects on the same click.
+        let mut m = PieMenu::new();
+        m.open(CENTER);
+        m.reveal();
+        assert_eq!(run(&mut m, Some(ABOVE), true, vec![]), PieMenuResponse::None);
+        assert_eq!(run(&mut m, Some(ABOVE), true, click(ABOVE)), PieMenuResponse::Selected(0));
+    }
 }
 
 mod subpie_tests {
@@ -2993,5 +3071,40 @@ mod first_frame_tests {
                 assert_no_pop(&frames, l, reveal, "second visit");
             }
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde_tests {
+    use super::*;
+    use serde::de::IntoDeserializer;
+    use serde::de::value::{Error, MapDeserializer};
+
+    fn assert_serde<T: serde::Serialize + serde::de::DeserializeOwned>() {}
+
+    #[test]
+    fn settings_implement_serialize_and_deserialize() {
+        assert_serde::<PieMenuSettings>();
+        assert_serde::<PieMenuLayoutSettings>();
+        assert_serde::<PieMenuInput>();
+        assert_serde::<ShowBehavior>();
+        assert_serde::<HighlightShape>();
+        assert_serde::<HoverEmphasis>();
+    }
+
+    #[test]
+    fn an_empty_map_deserializes_to_the_default() {
+        let map = MapDeserializer::<_, Error>::new(std::iter::empty::<(&str, bool)>());
+        let settings = <PieMenuSettings as serde::Deserialize>::deserialize(map).unwrap();
+        assert_eq!(format!("{settings:?}"), format!("{:?}", PieMenuSettings::default()));
+    }
+
+    #[test]
+    fn a_partial_map_sets_only_what_it_names() {
+        let map = MapDeserializer::<_, Error>::new([("mirror_horizontal", true)].into_iter().map(|(k, v)| (k, v.into_deserializer())));
+        let settings = <PieMenuSettings as serde::Deserialize>::deserialize(map).unwrap();
+        assert!(settings.mirror_horizontal);
+        let expected = PieMenuSettings { mirror_horizontal: true, ..Default::default() };
+        assert_eq!(format!("{settings:?}"), format!("{expected:?}"));
     }
 }

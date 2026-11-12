@@ -20,8 +20,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (serde feature)
+        run: cargo clippy --all-targets --features serde -- -D warnings
       - name: Tests
         run: cargo test
+      - name: Tests (serde feature)
+        run: cargo test --features serde
       - name: Docs
         run: cargo doc --no-deps
         env:
