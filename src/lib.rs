@@ -517,6 +517,26 @@ impl PieMenu {
         self.fan.map(|trigger| (trigger, self.fan_hover))
     }
 
+    /// Opens the fan-out of button `trigger` of the level being shown as if the pointer had
+    /// reached it (no `fan_out.delay`), or closes the open fan (`None`). No effect unless the
+    /// menu is open; re-opening the fan already open does nothing (its animation is not restarted).
+    /// If `trigger` does not open a fan, the next `show` closes it (the existing "gone" rule).
+    /// Afterwards the usual rules apply: a real pointer elsewhere in the parent closes it at once;
+    /// with `show_with_pointer(.., None, ..)` it stays open. Meant for previews and editors.
+    pub fn set_open_fan_out(&mut self, trigger: Option<usize>) {
+        if !self.is_open {
+            return;
+        }
+        match trigger {
+            Some(t) => {
+                if self.fan != Some(t) {
+                    self.open_fan(t);
+                }
+            }
+            None => self.close_fan(),
+        }
+    }
+
     /// Test helper: where each button of the open fan was drawn last frame.
     #[cfg(test)]
     pub(crate) fn fan_centers_for_test(&self) -> &[Pos2] {

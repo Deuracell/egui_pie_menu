@@ -1978,6 +1978,122 @@ mod fan_out_tests {
             assert_eq!(PieDirection::ALL.iter().filter(|d| parent.blocks_fan_out(**d)).count(), 3);
         }
     }
+
+    // ── set_open_fan_out ──────────────────────────────────────────────────────
+
+    fn pinned_rig() -> Rig {
+        let mut rig = Rig::new(buttons());
+        rig.menu.pin(CENTER);
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[]);
+        rig
+    }
+
+    #[test]
+    fn set_open_fan_out_opens_and_stays_open_without_a_pointer() {
+        let mut rig = pinned_rig();
+        assert_eq!(rig.menu.open_fan_out(), None);
+        rig.menu.set_open_fan_out(Some(0));
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        for _ in 0..10 {
+            rig.time += 0.05;
+            rig.frame(None, true, &[]);
+        }
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        assert_eq!(rig.menu.fan_centers_for_test().len(), 3);
+        assert!(rig.menu.path().is_empty() && rig.menu.is_pinned());
+    }
+
+    #[test]
+    fn set_open_fan_out_is_closed_by_a_real_pointer_on_another_button() {
+        let mut rig = pinned_rig();
+        rig.menu.set_open_fan_out(Some(0));
+        rig.frame(None, true, &[]);
+        assert!(rig.menu.open_fan_out().is_some());
+        // North (index 1) of the parent ring.
+        rig.frame(Some(CENTER + Vec2::new(0.0, -90.0)), true, &[]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    #[test]
+    fn set_open_fan_out_on_a_button_without_a_fan_closes_on_the_next_show() {
+        for bad in [1usize, 7, usize::MAX] {
+            let mut rig = pinned_rig();
+            rig.menu.set_open_fan_out(Some(bad));
+            assert_eq!(rig.menu.open_fan_out(), Some((bad, None)));
+            rig.frame(None, true, &[]);
+            assert_eq!(rig.menu.open_fan_out(), None, "trigger {bad}");
+            rig.frame(None, true, &[]);
+            assert_eq!(rig.menu.open_fan_out(), None);
+        }
+    }
+
+    #[test]
+    fn set_open_fan_out_none_closes_and_a_closed_menu_is_untouched() {
+        let mut rig = pinned_rig();
+        rig.menu.set_open_fan_out(Some(0));
+        rig.frame(None, true, &[]);
+        rig.menu.set_open_fan_out(None);
+        assert_eq!(rig.menu.open_fan_out(), None);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+
+        let mut closed = PieMenu::new();
+        closed.set_open_fan_out(Some(0));
+        assert_eq!(closed.open_fan_out(), None);
+        assert!(!closed.is_open());
+    }
+
+    #[test]
+    fn set_open_fan_out_again_does_not_restart_the_fan() {
+        let mut rig = pinned_rig();
+        rig.menu.set_open_fan_out(Some(0));
+        rig.time = 1.0;
+        rig.frame(None, true, &[]);
+        let shown = rig.menu.fan_shown_at;
+        assert!(shown.is_some());
+        rig.menu.set_open_fan_out(Some(0));
+        rig.time = 2.0;
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.fan_shown_at, shown);
+        // Another trigger does restart it.
+        rig.menu.set_open_fan_out(Some(1));
+        assert_eq!(rig.menu.fan_shown_at, None);
+    }
+
+    #[test]
+    fn set_open_fan_out_works_in_a_replace_level_and_a_broken_out_level() {
+        let root = vec![PieButton::new(PieDirection::East).with_label("Sub").with_children(vec![
+            PieButton::new(PieDirection::NorthEast).with_label("More").with_fan_out(vec![
+                PieButton::new(PieDirection::North).with_label("A"),
+                PieButton::new(PieDirection::East).with_label("B"),
+            ]),
+            PieButton::new(PieDirection::West).with_label("Plain"),
+        ])];
+        let mut rig = Rig::new(root);
+        rig.menu.pin(CENTER);
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[Key::Num6]);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.path(), &[0]);
+        rig.menu.set_open_fan_out(Some(0));
+        for _ in 0..5 {
+            rig.frame(None, true, &[]);
+        }
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        assert_eq!(rig.menu.fan_centers_for_test().len(), 2);
+        assert_eq!(rig.menu.path(), &[0]);
+
+        // A broken-out level: the fan of the default rig, broken out, then a plain trigger.
+        let mut rig = fan_rig(true);
+        break_out(&mut rig, true);
+        rig.frame(Some(AT_RING), true, &[]);
+        assert!(rig.menu.breakout.is_some());
+        rig.menu.set_open_fan_out(Some(2));
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.open_fan_out(), None, "a plain button of the broken-out level opens no fan");
+        assert_eq!(rig.menu.path(), &[0]);
+    }
 }
 
 mod view_color_tests {
