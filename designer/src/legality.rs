@@ -2,10 +2,10 @@
 //! directions and kinds a button may take, what adding, removing and converting do, how
 //! mnemonics and item numbers stay unique. Every operation either leaves
 //! [`tree_problems`] empty (when it was empty before) or refuses with a reason.
-use super::KindChoice;
-use crate::mnemonic::{fold_char, is_mnemonic_letter, resolve_all};
-use crate::settings::*;
-use crate::{ButtonProblem, ClusterItem, Mnemonic, PieButton, PieButtonKind, PieMenu};
+use crate::KindChoice;
+use egui_pie_menu::mnemonic::{fold_char, is_mnemonic_letter};
+use egui_pie_menu::settings::*;
+use egui_pie_menu::{ButtonProblem, ClusterItem, Mnemonic, PieButton, PieButtonKind, PieMenu};
 
 // ---------------------------------------------------------------------------------------
 // Navigating the tree
@@ -217,7 +217,7 @@ pub(crate) fn set_direction(
 pub(crate) fn allowed_kinds(buttons: &[PieButton], settings: &PieMenuSettings, path: &[usize]) -> Vec<KindChoice> {
     let Some((_, parent)) = path.split_last() else { return Vec::new() };
     let Some(button) = button_at(buttons, path) else { return Vec::new() };
-    let current = super::kind_choice(button);
+    let current = crate::kind_choice(button);
     KindChoice::ALL
         .into_iter()
         .filter(|k| {
@@ -236,7 +236,7 @@ pub(crate) fn allowed_kinds(buttons: &[PieButton], settings: &PieMenuSettings, p
 /// is `with_fan_out`; a replace-style one follows the menu (`None`) unless the menu's own style
 /// is a fan-out, when it is pinned to [`SubPieStyle::Replace`].
 pub(crate) fn new_sub_pie_for(dir: PieDirection, fan: bool, menu_style: SubPieStyle) -> PieButton {
-    let mut b = super::new_sub_pie(dir, fan);
+    let mut b = crate::new_sub_pie(dir, fan);
     if !fan && menu_style == SubPieStyle::FanOut {
         b = b.with_sub_pie_style(Some(SubPieStyle::Replace));
     }
@@ -263,7 +263,7 @@ pub(crate) fn convert_kind_in(
     settings: &PieMenuSettings,
     stash: &mut Stash,
 ) -> bool {
-    if super::kind_choice(button) == to {
+    if crate::kind_choice(button) == to {
         return false;
     }
     let mut dropped = false;
@@ -568,7 +568,8 @@ pub(crate) fn set_mnemonic(
                     button.label.clone()
                 }
             };
-            let (per_button, per_item) = resolve_all(&probe, settings.input.auto_mnemonics);
+            let menu = problem_menu_for(settings);
+            let (per_button, per_item) = (menu.mnemonics(&probe), menu.cluster_mnemonics(&probe));
             let taken: Vec<char> = per_button.iter().flatten().chain(per_item.iter().flatten().flatten()).copied().collect();
             let c = first_free_key(&label, &taken).ok_or("no free letter left")?;
             Mnemonic::Key(c)
@@ -699,7 +700,7 @@ pub fn set_menu_sub_pie_style(
             if let PieButtonKind::SubPie { children, style } = &mut b.kind {
                 if style.is_none()
                     && !children.is_empty()
-                    && !crate::button::fan_out_problems(direction, children, &menu.mnemonics(children)).is_empty()
+                    && !menu.fan_out_problems(direction, children).is_empty()
                 {
                     *style = Some(SubPieStyle::Replace);
                     pinned.push(name_of(&label));
@@ -725,7 +726,7 @@ pub fn set_menu_sub_pie_style(
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
-    use crate::{ClusterItem, PieButton};
+    use egui_pie_menu::{ClusterItem, PieButton};
 
     fn labels(level: &[PieButton]) -> Vec<&str> {
         level.iter().map(|b| b.label.as_str()).collect()

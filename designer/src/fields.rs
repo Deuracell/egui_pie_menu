@@ -2,11 +2,11 @@
 //! sections ([`SettingsGroup`], [`group_editor`]) and the all-in-one [`settings_editor`].
 //! The fields themselves ([`SettingsField`], [`SettingsGroup`], [`field_label`]) are the
 //! core crate's (`egui_pie_menu::settings_fields`).
-use super::bindings::{BindTarget, Bindings};
+use crate::bindings::{BindTarget, Bindings};
 #[allow(unused_imports)] // doc links
-use super::bindings::binding_details;
-pub use crate::settings_fields::*;
-use crate::settings::*;
+use crate::bindings::binding_details;
+pub use egui_pie_menu::settings_fields::*;
+use egui_pie_menu::settings::*;
 use egui::{Color32, FontFamily, FontId, Margin, Stroke, Ui};
 use std::ops::RangeInclusive;
 use std::time::Duration;
@@ -544,7 +544,7 @@ pub fn field_editor_bound(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsF
     if !field.is_bindable() {
         return field_editor(ui, s, field);
     }
-    super::bindings::bound_row(ui, bindings, &BindTarget::Field(field), |ui| field_editor(ui, s, field))
+    crate::bindings::bound_row(ui, bindings, &BindTarget::Field(field), |ui| field_editor(ui, s, field))
 }
 
 /// [`group_editor`] drawing its fields with [`field_editor_bound`].
@@ -574,7 +574,7 @@ pub fn settings_editor(ui: &mut Ui, s: &mut PieMenuSettings) -> bool {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
-    use super::super::settings_entries;
+    use crate::settings_entries;
     use super::*;
     use egui::Context;
     use std::collections::HashSet;

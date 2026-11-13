@@ -2,7 +2,7 @@
 //! the program's variables), the "Id" row, and the expression scanner of the generated code.
 //! The bindings themselves ([`Bindings`], [`Variables`]) are the core crate's
 //! (`egui_pie_menu::values`): a program uses them without the dev tool.
-pub use crate::values::*;
+pub use egui_pie_menu::values::*;
 use egui::{Color32, RichText, Ui};
 
 // ---------------------------------------------------------------------------------------
@@ -229,7 +229,7 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
 /// An "Id" row for the button or cluster item `key`: a text field and, when your program
 /// registers the `actions` it handles, a picker of them and a warning for an id that is not
 /// one. Returns `true` if the id changed.
-pub fn id_editor(ui: &mut Ui, ids: &mut crate::ButtonIds, key: &crate::IdKey, actions: &crate::Actions) -> bool {
+pub fn id_editor(ui: &mut Ui, ids: &mut egui_pie_menu::ButtonIds, key: &egui_pie_menu::IdKey, actions: &egui_pie_menu::Actions) -> bool {
     let mut id = match key.item {
         Some(n) => ids.item(&key.path, n),
         None => ids.button(&key.path),
@@ -301,7 +301,7 @@ pub(crate) fn bound_row(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarge
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PieMenuSettings, SettingsField};
+    use egui_pie_menu::{PieMenuSettings, SettingsField};
     use egui::{FontId, Stroke};
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
         let mut every_on = PieMenuSettings::default();
         every_on.number_hints.color = Some(Color32::WHITE);
         every_on.text_color = Some(Color32::WHITE);
-        let entries = super::super::settings_entries(&every_on);
+        let entries = crate::settings_entries(&every_on);
         for f in bindable {
             let code = &entries.iter().find(|(p, _)| p == f.path()).expect("an entry per field").1;
             assert_eq!(f.is_optional_value(), code.starts_with("Some(") || code == "None", "{f:?}: {code}");

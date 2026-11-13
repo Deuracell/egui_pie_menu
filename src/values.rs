@@ -649,7 +649,7 @@ impl SettingsField {
     }
 
     /// Whether the field is an `Option` (a binding's expression gives the inner value).
-    pub(crate) fn is_optional_value(self) -> bool {
+    pub fn is_optional_value(self) -> bool {
         use SettingsField as F;
         matches!(
             self,

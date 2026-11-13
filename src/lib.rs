@@ -47,10 +47,9 @@ pub mod settings_fields;
 pub mod values;
 #[cfg(feature = "toml")]
 pub mod catalog;
-pub mod dev_tool;
 mod highlight_shapes;
 mod layout;
-mod mnemonic;
+pub mod mnemonic;
 #[cfg(test)]
 mod tests;
 
@@ -348,6 +347,13 @@ impl PieMenu {
     pub fn configure(mut self, f: impl FnOnce(&mut PieMenuSettings)) -> Self {
         f(&mut self.settings);
         self
+    }
+
+    /// The problems `children` would have as the fan-out of a button at `direction`
+    /// (children in the directions facing the parent, sub-pies or clusters among them, two
+    /// in one direction, a mnemonic used twice): empty if the sub-pie can open as a fan-out.
+    pub fn fan_out_problems(&self, direction: PieDirection, children: &[PieButton]) -> Vec<ButtonProblem> {
+        fan_out_problems(direction, children, &self.mnemonics(children))
     }
 
     /// [`PieMenu::check_buttons`] for every level of a tree: the root and each sub-pie,

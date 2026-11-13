@@ -1,12 +1,12 @@
 //! The button tree ([`button_tree`]) and the inspector of the selected node
 //! ([`button_inspector`]), and what to preview for a selection ([`preview_target`]).
-use super::bindings::{BindTarget, Bindings, bound_row, id_editor};
-use crate::{Actions, ButtonIds, IdKey};
-use super::fields::*;
-use super::legality::*;
-use super::{KindChoice, kind_choice};
-use crate::settings::*;
-use crate::{ButtonProblem, Mnemonic, PieButton, PieButtonKind};
+use crate::bindings::{BindTarget, Bindings, bound_row, id_editor};
+use egui_pie_menu::{Actions, ButtonIds, IdKey};
+use crate::fields::*;
+use crate::legality::*;
+use crate::{KindChoice, kind_choice};
+use egui_pie_menu::settings::*;
+use egui_pie_menu::{ButtonProblem, Mnemonic, PieButton, PieButtonKind};
 use egui::collapsing_header::CollapsingState;
 use egui::{Color32, RichText, Ui};
 use std::collections::HashMap;
@@ -188,7 +188,7 @@ pub fn relevant_fields(settings: &PieMenuSettings, kind: SelectionKind) -> Vec<S
 
 /// What a live preview of a [`Selection`] should show: which level to display, which fan to
 /// hold open, what to highlight. Feed it to the menu (descend to `level_path`,
-/// [`crate::PieMenu::set_open_fan_out`] with `fan_trigger`) and your render closure.
+/// [`egui_pie_menu::PieMenu::set_open_fan_out`] with `fan_trigger`) and your render closure.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PreviewTarget {
     /// The sub-pie button whose children form the ring to show (empty: the root ring).
@@ -350,7 +350,7 @@ fn tree_node(ui: &mut Ui, ctx: &TreeCtx, button: &PieButton, path: &[usize], sel
 /// A collapsible tree of the buttons: the menu at the top, buttons as "NE · Paste Special ▸"
 /// (direction, label, a glyph for sub-pie `▸`, fan-out `»`, cluster `≡` and back `◂`), their
 /// children below, a cluster's items as leaves. A red warning sign marks a button whose subtree
-/// has a [`crate::PieMenu::check_buttons`] problem. Clicking selects; the selection changes in
+/// has a [`egui_pie_menu::PieMenu::check_buttons`] problem. Clicking selects; the selection changes in
 /// `selection`, and the way to a newly selected node opens.
 ///
 /// `settings` decides what a sub-pie without a style of its own is (the menu-wide style) and
@@ -362,7 +362,7 @@ pub fn button_tree(ui: &mut Ui, settings: &PieMenuSettings, buttons: &[PieButton
 /// [`button_tree`] (with an optional search `filter`, as in [`button_tree_filtered`]) that
 /// also marks the buttons at `marked` (and the nodes above them) with a warning sign, like a
 /// button problem: e.g. the buttons whose id the program does not handle
-/// ([`crate::Actions::unregistered`]; a cluster item's mark goes on its cluster).
+/// ([`egui_pie_menu::Actions::unregistered`]; a cluster item's mark goes on its cluster).
 pub fn button_tree_marked(
     ui: &mut Ui,
     settings: &PieMenuSettings,
@@ -420,7 +420,7 @@ fn tree(
 // The inspector
 // ---------------------------------------------------------------------------------------
 
-pub use crate::TreeEdit;
+pub use egui_pie_menu::TreeEdit;
 
 /// What [`button_inspector`] did this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1128,7 +1128,7 @@ fn inspect(
 
 /// A tree editor over the real [`PieButton`] data: [`button_tree`] and [`button_inspector`]
 /// (without the menu-wide settings section) stacked, with the selection kept in egui's memory.
-/// Buttons involved in a [`crate::PieMenu::check_buttons`] problem are marked in the tree.
+/// Buttons involved in a [`egui_pie_menu::PieMenu::check_buttons`] problem are marked in the tree.
 /// `auto_mnemonics` should be the menu's `input.auto_mnemonics`. Returns `true` if the buttons
 /// changed. For a layout of your own (tree on one side, inspector on another, a preview) use
 /// the two pieces directly.
@@ -1148,7 +1148,7 @@ pub fn buttons_editor(ui: &mut Ui, buttons: &mut Vec<PieButton>, auto_mnemonics:
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
-    use crate::ClusterItem;
+    use egui_pie_menu::ClusterItem;
     use egui::Context;
     use SettingsField as F;
 
@@ -1394,7 +1394,7 @@ mod tests {
 
     #[test]
     fn the_bound_inspector_draws_and_keeps_bindings() {
-        use super::super::bindings::{Binding, BindingMode};
+        use crate::bindings::{Binding, BindingMode};
         let mut buttons = tree();
         let mut bindings = Bindings::new();
         // Every node's label, a cluster item's and a settings field bound.

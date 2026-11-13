@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
-use egui_pie_menu::dev_tool::{
+use egui_pie_menu_designer::{
     BindTarget, Bindings, Selection, Variables, button_tree_marked, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
     field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui_pie_menu demo",
+        "Pie Designer",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([1600.0, 900.0]).with_min_inner_size([900.0, 600.0]),
             ..Default::default()
@@ -80,6 +80,14 @@ const LANGS: &[Lang] = &[
     // Persian: Persian-only letters (پ چ ژ گ), Farsi yeh/keheh (ی ک) and Persian digits.
     Lang { name: "فارسی", rtl: true, digits: HintDigits::Persian,
         labels: ["کپی", "چسباندن ویژه", "انجام مجدد", "ذخیره با نام…", "حذف دائمی", "برش", "واگرد", "شکستن خط"] },
+];
+
+/// The example menus of the core crate (`examples/menus`), built in: a base menu, a plugin
+/// extending it, and a user's removals and changes.
+const EXAMPLE_MENUS: [(&str, &str); 3] = [
+    ("edit.toml", include_str!("../../examples/menus/edit.toml")),
+    ("plugin.toml", include_str!("../../examples/menus/plugin.toml")),
+    ("user.toml", include_str!("../../examples/menus/user.toml")),
 ];
 
 /// The menu title in each of `LANGS`.
@@ -321,6 +329,25 @@ impl Demo {
                 return;
             }
         }
+        self.open_catalog(catalog);
+    }
+
+    /// Opens the example menus built into the designer: `edit.toml` and `plugin.toml`, and
+    /// with `user` the user's changes in `user.toml` as well.
+    fn open_examples(&mut self, user: bool) {
+        let mut catalog = MenuCatalog::new();
+        for (name, text) in EXAMPLE_MENUS.iter().filter(|(n, _)| user || *n != "user.toml") {
+            if let Err(e) = catalog.add_toml(name, text) {
+                self.toml_note = e.to_string();
+                return;
+            }
+        }
+        self.menu_name = "edit".to_string();
+        self.open_catalog(catalog);
+    }
+
+    /// Builds the menu named in the TOML tab (else the first one) from `catalog` and opens it.
+    fn open_catalog(&mut self, catalog: MenuCatalog) {
         let names: Vec<String> = catalog.menu_names().map(str::to_string).collect();
         let Some(name) = names.iter().find(|n| **n == self.menu_name).or(names.first()).cloned() else {
             self.toml_note = "The files define no menu.".to_string();
@@ -363,7 +390,7 @@ impl Demo {
             ui.label("Menu").on_hover_text("The menu's name in the files ([menu.<name>]); Open builds this one if the files have it.");
             ui.add(egui::TextEdit::singleline(&mut self.menu_name).desired_width(140.0));
             ui.end_row();
-            ui.label("Files").on_hover_text("Separated by commas. Open merges them in order; Save writes the first.");
+            ui.label("Files").on_hover_text("Files on disk, separated by commas. Open merges them in order; Save writes the first.");
             ui.add(egui::TextEdit::singleline(&mut self.toml_files).desired_width(f32::INFINITY));
             ui.end_row();
         });
@@ -374,6 +401,16 @@ impl Demo {
             if ui.button("Save").on_hover_text("Writes the menu below to the first file").clicked() {
                 self.save_toml();
             }
+            ui.separator();
+            ui.label("Examples:");
+            if ui.button("Edit + plugin").on_hover_text("The built-in example menus: a base menu and a plugin extending it").clicked() {
+                self.open_examples(false);
+            }
+            if ui.button("+ user").on_hover_text("The same, with a user's file that removes and changes buttons").clicked() {
+                self.open_examples(true);
+            }
+        });
+        ui.horizontal(|ui| {
             ui.checkbox(&mut self.share_plugin, "Share plugin on")
                 .on_hover_text("The demo's plugin.share* actions are visible only while this is on: the example plugin's Share button comes and goes.");
         });
@@ -406,7 +443,7 @@ impl Demo {
             bindings: Bindings::new(),
             ids: ButtonIds::new(),
             menu_name: "edit".to_string(),
-            toml_files: "examples/menus/edit.toml, examples/menus/plugin.toml".to_string(),
+            toml_files: String::new(),
             toml_note: String::new(),
             history: History::default(),
             share_plugin: true,
@@ -690,10 +727,10 @@ impl VectorIcon {
 
 /// The embedded image icons: 24x24 white-on-transparent PNGs, tinted when drawn.
 const IMAGE_ICONS: &[(&str, &[u8])] = &[
-    ("Circle", include_bytes!("assets/circle.png")),
-    ("Notch", include_bytes!("assets/notch.png")),
-    ("Triangle", include_bytes!("assets/triangle.png")),
-    ("Heart", include_bytes!("assets/heart.png")),
+    ("Circle", include_bytes!("../assets/circle.png")),
+    ("Notch", include_bytes!("../assets/notch.png")),
+    ("Triangle", include_bytes!("../assets/triangle.png")),
+    ("Heart", include_bytes!("../assets/heart.png")),
 ];
 
 /// Decodes the embedded PNGs (with the `image` crate) and uploads each once as a texture.
@@ -2010,17 +2047,17 @@ impl eframe::App for Demo {
                 match self.code_tab {
                     CodeTab::Menu => {
                         let title = (!self.title.is_empty()).then_some(self.title.as_str());
-                        let code = egui_pie_menu::dev_tool::menu_to_code_bound(title, &self.menu.settings, &self.buttons, &self.bindings);
-                        egui_pie_menu::dev_tool::code_view(ui, &code);
+                        let code = egui_pie_menu_designer::menu_to_code_bound(title, &self.menu.settings, &self.buttons, &self.bindings);
+                        egui_pie_menu_designer::code_view(ui, &code);
                     }
                     CodeTab::Draw => {
                         let code = draw_code(&self.buttons, &self.decor);
-                        egui_pie_menu::dev_tool::code_view(ui, &code);
+                        egui_pie_menu_designer::code_view(ui, &code);
                     }
                     CodeTab::Toml => {
                         self.toml_files_row(ui);
                         let code = self.definition().to_toml();
-                        egui_pie_menu::dev_tool::code_view(ui, &code);
+                        egui_pie_menu_designer::code_view(ui, &code);
                     }
                 }
             });
@@ -2238,8 +2275,7 @@ mod tests {
         assert_eq!(buttons.len(), 8);
         // Fan-out as the menu-wide style: the library pins what cannot fan out.
         let mut fan = buttons.clone();
-        let mut s = s;
-        let notice = egui_pie_menu::dev_tool::set_menu_sub_pie_style(&mut s, &mut fan, SubPieStyle::FanOut);
+        let notice = egui_pie_menu_designer::set_menu_sub_pie_style(&mut s, &mut fan, SubPieStyle::FanOut);
         assert!(notice.is_some_and(|n| n.contains("Paste Special")), "the back button faces the parent");
         assert!(tree_problems(&s, &fan).is_empty());
         // Every button of the tree has a decoration.
@@ -2324,8 +2360,8 @@ mod tests {
         assert_eq!(TITLES.len(), LANGS.len());
         for lang in 0..LANGS.len() {
             let vars = app_variables(&egui::Visuals::dark(), lang);
-            assert_eq!(vars.get("i18n.edit"), Some(&egui_pie_menu::dev_tool::VarValue::Text(TITLES[lang].to_string())));
-            assert_eq!(vars.get("i18n.undo"), Some(&egui_pie_menu::dev_tool::VarValue::Text(LANGS[lang].labels[6].to_string())));
+            assert_eq!(vars.get("i18n.edit"), Some(&egui_pie_menu_designer::VarValue::Text(TITLES[lang].to_string())));
+            assert_eq!(vars.get("i18n.undo"), Some(&egui_pie_menu_designer::VarValue::Text(LANGS[lang].labels[6].to_string())));
             assert_eq!(vars.code_for("i18n.undo"), "tr(\"undo\")", "generated code reads it with tr");
             assert_eq!(vars.code_for("theme.accent"), "theme.accent");
         }
@@ -2405,7 +2441,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut demo = Demo::new(&ctx);
         frames(&mut demo, |d, ui| d.toml_files_row(ui));
-        demo.open_toml();
+        demo.open_examples(false);
         assert!(demo.toml_note.starts_with("Opened `edit`"), "{}", demo.toml_note);
         // The one reference the demo does not answer: the plugin's Print, on purpose.
         assert!(
@@ -2455,8 +2491,7 @@ mod tests {
         assert_eq!(after.ids, before.ids);
         assert_eq!(after.bindings, before.bindings);
         // With the user's file as well: its removals and changes.
-        demo.toml_files = "examples/menus/edit.toml, examples/menus/plugin.toml, examples/menus/user.toml".to_string();
-        demo.open_toml();
+        demo.open_examples(true);
         refresh(&mut demo);
         assert!(demo.ids.find("edit.paste_special").is_none());
         assert!(demo.ids.find("edit.select_all").is_some_and(|k| demo.buttons[k.path[0]].enabled), "an action the demo handles");

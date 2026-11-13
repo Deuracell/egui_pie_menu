@@ -151,7 +151,7 @@ menu.settings = serde_json::from_str(&json)?;
 - [Menus from TOML files](#menus-from-toml-files): define and extend menus after compile time, ids for the buttons
 - [Settings](#settings): every setting group, reveal animation, hover emphasis, highlight shapes
 - [Right-to-left and non-Latin scripts](#right-to-left-and-non-latin-scripts): mirroring, digits, mnemonics
-- [Running the demo](#running-the-demo)
+- [Examples and Pie Designer](#examples-and-pie-designer)
 - [Upgrading from v0.36.0](#upgrading-from-v0360): every breaking change with before and after
 
 ## Buttons
@@ -200,7 +200,7 @@ Number keys are consumed by the menu, so the digit does not also reach other han
 
 In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
 
-To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, `DuplicateItemNumber` / `DuplicateItemMnemonic` for cluster items (see "Clusters"; `MnemonicOwner` names a button or an item), plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
+To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, `DuplicateItemNumber` / `DuplicateItemMnemonic` for cluster items (see "Clusters"; `MnemonicOwner` names a button or an item), plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). Pie Designer uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed. `menu.check_tree(&buttons)` checks every level of a tree at once (the root and each sub-pie), with the path of each level that has a problem.
 
 ## Drawing your buttons
 
@@ -269,7 +269,7 @@ Disabled buttons are greyed out with egui's `Visuals::gray_out` either way. (The
 
 ### Icons and images
 
-The library draws no icons: the render closure does, so a button can show whatever egui can draw. Three ways (the `examples/demo.rs` "Icons" section shows all of them):
+The library draws no icons: the render closure does, so a button can show whatever egui can draw. Three ways (Pie Designer's "Icons" section shows all of them):
 
 ```rust
 // 1. Text or emoji prefix, un-underlined and in the label's colour.
@@ -479,7 +479,7 @@ With `settings.sub_pies.hover_delay`, resting the pointer on any button that lea
 
 If the buttons change while a sub-pie is open so that its level no longer exists or has no buttons, the menu falls back to the root level. A pinned menu returns to its root level after a leaf selection.
 
-The demo's "Paste Special" button opens a sub-pie that works in both styles; the "Sub-pies" section switches the menu's style, and the button editor can give any button a sub-pie (to any depth) and its own style.
+Pie Designer's "Paste Special" button opens a sub-pie that works in both styles; the "Sub-pies" section switches the menu's style, and the button editor can give any button a sub-pie (to any depth) and its own style.
 
 ## Clusters
 
@@ -522,7 +522,7 @@ menu.show(ctx, &buttons, key_down, |ui, b| {
 - A cluster is not allowed inside a fan-out (`NestedInFanOut`); it works at the root, inside a replace-style sub-pie and in pinned menus. It has no children.
 - A cluster is never highlighted by the pie, so the widgets inside use egui's native hover and press look; do not call `b.use_pie_hover` there.
 
-The demo's button editor has a "Cluster" checkbox on every button (layout, spacing, item labels and mnemonic keys); tick it and open the menu to try it.
+Pie Designer's button editor has a "Cluster" checkbox on every button (layout, spacing, item labels and mnemonic keys); tick it and open the menu to try it.
 
 ## Pinned / persistent menus
 
@@ -675,7 +675,7 @@ id = "edit.copy"
 
 ```
 
-The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible) and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value.
+The names are plain keys of your app's [`Variables`](#variables-values-from-your-program), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible) and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value.
 
 A number is the value as written in the file (pixels, factors, angles in radians) and a duration is in milliseconds:
 
@@ -688,6 +688,23 @@ reveal_duration = { var = "prefs.animation_ms", default = 150 }
 ```
 
 The rest (switches such as `title.show`, choices such as `reveal`) are literals only; a reference there is an error naming the setting.
+
+#### Variables: values from your program
+
+`egui_pie_menu::values::Variables` holds your program's values by name, each of a kind: `color`, `stroke`, `font`, `text`, `number` (a duration in milliseconds) and `flag` (true or false). Build it from your program's state and hand it to the menu; the parts of the menu that refer to a name take its value:
+
+```rust
+use egui_pie_menu::values::Variables;
+
+let mut vars = Variables::new();
+vars.color("theme.accent", theme.accent)
+    .font("theme.title_font", theme.title_font.clone())
+    .text("i18n.copy", tr("copy"))
+    .number("prefs.pie_radius", prefs.pie_radius);
+edit.apply_variables(vars, &mut menu);   // labels into edit.buttons; settings and title into menu
+```
+
+Calling it every frame is fine: it writes only what changed. The value a part had before your program's replaced it is kept as its fallback (`Bindings::fallback`), so a menu written back with `to_toml` keeps the file's own defaults. For menus built in code, `Bindings` (which part takes which variable) and `Bindings::apply` do the same without the `toml` feature.
 
 **Actions: what the program handles, and their state.** Whether a button is enabled or shown is not something a file can know: it is the state of the *action* behind it, which only the program has. So files never say `enabled` or `visible`; the program registers the actions it handles, by id, with their state, and every button and cluster item with that id follows:
 
@@ -746,7 +763,7 @@ A menu's `title` and `settings` apply when it is built as a menu of its own. Whe
 
 **Errors.** `build` fails, with the file and the button named, if two buttons of a menu share a direction (after changes and removals), a `change` gives a cluster item a direction or the like, a button opens a menu no file defines, menus open each other in a circle, or the tree has a problem `check_buttons` reports (a mnemonic used twice, a fan-out child facing the parent, ..). Debug builds therefore never assert on a menu that built.
 
-**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. Whether buttons are enabled or visible is the program's state and is not written. A reference keeps the file's own default, not the value your program put in: a menu saved while the program runs in Russian keeps `default = "Copy"`. The demo's "TOML" tab uses it to show, open and save menus.
+**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. Whether buttons are enabled or visible is the program's state and is not written. A reference keeps the file's own default, not the value your program put in: a menu saved while the program runs in Russian keeps `default = "Copy"`. Pie Designer's "TOML" tab uses it to show, open and save menus.
 
 ## Settings
 
@@ -829,131 +846,6 @@ menu.settings.animations.hover_duration = Duration::from_millis(100);    // easi
 
 `shift` is in pixels outward: the button's layer moves, in whole physical pixels. `scale` is the growth (`1.0` = none): it is applied to the content, never by scaling the layer (egui draws text as glyph images, so a layer scale blurs it). `b.label_text()` already uses it for the font size, which keeps the text crisp, and the button grows with its text. Anything else only grows if your closure scales it by `b.scale()` (icons, paddings, minimum sizes); custom fixed-size widgets stay as they are otherwise.
 
-### Dev tool
-
-The `dev_tool` module is a set of embeddable pieces, with no window of its own. Put them in your own side panels, tune the menu live, and copy the generated code into your project.
-
-The buttons editor is a tree plus an inspector. Everything it offers is legal: a direction that is taken (or, in a fan-out, faces the parent) is greyed out with the reason, a fan-out holds only plain and back buttons, "Remove" is hidden where it would leave an empty menu, sub-pie or cluster, and a mnemonic key or cluster item number that another button holds is refused. Turning a button into another kind keeps what it dropped aside, and converting back restores it; turning a replace-style sub-pie into a fan-out drops its back buttons that face the parent.
-
-| Piece | What it does |
-|---|---|
-| `settings_editor(ui, &mut settings) -> bool` | controls for every settings field, one collapsing header per `SettingsGroup` |
-| `field_editor(ui, &mut settings, SettingsField) -> bool` / `group_editor(ui, &mut settings, SettingsGroup) -> bool` | one field (drag values with units, reset to default, optional fields as a checkbox that remembers its last value), or one section (fields that do not apply, such as the slide settings without `SlideOut`, are left out); `SettingsField::ALL`, `SettingsGroup::fields()`, `field_label()` for building your own panels or a search |
-| `button_tree(ui, &settings, &buttons, &mut Selection)` | collapsible tree of the buttons (`NE · Paste Special ▸`); a red warning sign marks a button whose subtree has a `check_buttons` problem |
-| `button_tree_filtered(ui, &settings, &buttons, &mut Selection, &filter)` | the tree showing only the buttons a predicate accepts and the ones above them (a search); the way to every match stays open |
-| `button_inspector(ui, &mut settings, &mut buttons, &mut Selection, extras) -> InspectorOutput` | identity, keys and contents of the selected node, your own controls (`extras`), and the menu-wide settings that affect it (`relevant_fields`); `InspectorOutput::edits` (`TreeEdit::Removed`/`Dropped`/`Added`) lets you keep per-button data of your own in step |
-| `preview_target(&buttons, &settings, &Selection) -> PreviewTarget` | which level to show, which fan to open (`PieMenu::set_open_fan_out`) and what to highlight for a selection |
-| `buttons_editor(ui, &mut buttons, auto_mnemonics) -> bool` | tree and inspector stacked, with the selection kept in egui memory |
-| `set_menu_sub_pie_style(&mut settings, &mut buttons, style) -> Option<String>` | sets the menu-wide sub-pie style; going to a fan-out pins the sub-pies that cannot fan out to replace style and says which |
-| `code_view(ui, &code)` | read-only monospace code area with a "Copy" button |
-| `menu_to_code(title, &settings, &buttons) -> String` | a complete snippet: `use` lines, `let buttons = vec![..];`, `PieMenu::new()` with the `.configure(..)` closure, and a commented `show` skeleton |
-| `buttons_to_code(&buttons)` / `settings_to_code(&settings)` | the two halves on their own; `settings_to_code` lists only what differs from the default |
-
-```rust
-use egui_pie_menu::dev_tool::*;
-
-egui::Panel::left("editor").show(ui, |ui| {
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        settings_editor(ui, &mut self.menu.settings);
-        buttons_editor(ui, &mut self.buttons, self.menu.settings.input.auto_mnemonics);
-    });
-});
-egui::Panel::right("code").show(ui, |ui| {
-    let code = menu_to_code(Some("Edit"), &self.menu.settings, &self.buttons);
-    code_view(ui, &code);
-});
-```
-
-For a live preview of the selected node (what the demo's Configure mode does), compute `preview_target(&buttons, &settings, &selection)` each frame, keep one `PieMenu` per `level_path` (pinned at the centre of your canvas), call `set_open_fan_out(target.fan_trigger)` on it, and draw `show_with_pointer(ctx, level_buttons, None, true, ..)` with `target.highlight` and `target.item` outlined by your render closure. Pass the preview a clone of the settings with `sub_pies.hover_delay = None`, `input.use_mnemonic_keys = false` and no `pinned_dismiss_inputs`, and a tree that has no `check_buttons` problems (debug builds assert on them when a level opens).
-
-Generated output (a small menu with a changed radius and mnemonics on):
-
-```rust
-use egui_pie_menu::*;
-
-let buttons = vec![
-    PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c'),
-    PieButton::new(PieDirection::East).with_label("More").with_children(vec![
-        PieButton::back(PieDirection::West),
-        PieButton::new(PieDirection::North).with_label("Paste"),
-    ]),
-];
-
-let menu = PieMenu::new()
-    .with_title("Edit")
-    .configure(|s| {
-        s.layout.radius = 120.0;
-        s.input.auto_mnemonics = true;
-    });
-```
-
-The generated code is verified by tests: the code for a rich button tree and for settings with a change in every group is compiled as real Rust (via macros) and has to rebuild exactly the edited buttons and settings. Code that needs `Duration` (durations in the settings) comes with `use std::time::Duration;`.
-
-#### Bindings: values from your app
-
-Colours, strokes, fonts, labels and the title often come from your app rather than a literal: a theme colour, a translated label, a live count. The ⛓ button at the end of such a row binds it to a name: one of your app's variables (below), such as `theme.accent` or `i18n.edit.copy`. The value stays editable and is the fallback, and what the editor and the preview show until your app supplies the variable. A [TOML file](#menus-from-toml-files) keeps the name; generated Rust code reads the variable with its Rust expression. Without a registered variable, the name can be any Rust expression for the generated code (`format!("Undo ({n})")`).
-
-For generated code, each binding reads its value either once or every frame (TOML files have no modes: a loaded menu takes your app's values whenever you apply them):
-
-- **Build**: once, where the menu is built. The expression takes the literal's place: `s.title.text_color = theme.accent;`, `.with_label(tr("edit.copy"))`, `.with_title(tr("menu.edit"))`.
-- **Live**: every frame. The menu is built with the value (a live settings field is left out of `configure`), and a block to run before `show` assigns the expression: `menu.settings.title.text_color = theme.accent;`, `buttons[1].label = format!("Undo ({n})");` (a button inside a sub-pie through `button_at_mut(&mut buttons, &[1, 0])`, a cluster item through `cluster_item_mut(number)`). A live label is assigned, so it has to be a `String`, and it can change its automatic mnemonic key as the text changes.
-
-For an optional setting (`text_color`, the number hint colour) the expression is the inner value and the code wraps it in `Some(..)`. A `// needs in scope: theme, tr` line lists the names the expressions use. An empty expression is ignored (the code keeps the literal).
-
-**Variables from your app.** Register your app's values each frame (`color`, `stroke`, `font`, `text`, `number`, and `flag` for true or false), each under a plain name, and, where generated code should read it differently from the name, with `.code(..)`: the Rust expression for the variable registered just before. Below a bound row, an "app value" picker then lists the variables of the right kind (with a colour swatch). A value bound to one shows the variable's real current value: its editor is greyed out and follows your app (switch your theme or language and the editors and the preview change with it). Typing a variable of the wrong kind (a font for a colour) is flagged.
-
-```rust
-let mut vars = Variables::new();
-vars.color("theme.accent", self.theme.accent)
-    .stroke("theme.outline", self.theme.outline)
-    .font("theme.title_font", self.theme.title_font.clone())
-    .text("i18n.edit.copy", tr("edit.copy")).code("tr(\"edit.copy\")");
-self.bindings.set_variables(vars);
-// Before drawing the editors and the preview:
-self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
-self.bindings.apply_title(&mut self.title);
-```
-
-`apply` keeps the value each target had before your app's replaced it (`Bindings::fallback`), so a file saved afterwards keeps its defaults. A name that is not one of your registered variables is flagged below the row (a TOML file would keep the fallback for it). Labels of buttons and cluster items can be bound as well as the settings and the title. Whether a button is enabled or visible is not bound: it is the state of its action ([Actions](#menus-from-toml-files)); the inspector's checkboxes are for trying it out. (For generated Rust code, `BindTarget::Enabled` / `Visible` can still be set from your own code.)
-
-The variables are not saved with the bindings (they are your app's state); register them again every frame.
-
-| Piece | What it does |
-|---|---|
-| `Bindings` / `BindTarget` / `Binding` / `BindingMode` | the bindings of one menu, owned by you like the `Selection`; a target is a settings field (`SettingsField::is_bindable`: colours, strokes, fonts, numbers, durations), the title, a button's label, `enabled` or `visible` (by path) or a cluster item's label or `enabled` (by path and number). With the `serde` feature they serialize |
-| `field_editor_bound` / `group_editor_bound` | `field_editor` / `group_editor` with the ⛓ toggle on bindable fields and the expression and Build / Live below a bound one |
-| `button_inspector_bound(.., &mut bindings, &mut ids, &actions, extras)` | `button_inspector` with the ⛓ toggle on labels, and an "Id" row (`id_editor`) for buttons and cluster items; it keeps bindings and ids with their buttons as the tree changes (`follow`, `prune`, `renumber_item` on `Bindings` / `ButtonIds` for doing that yourself) |
-| `binding_toggle` / `binding_details` | the two halves of a bound row, for your own rows (the demo's "Menu title") |
-| `Variables` / `VarValue` / `VarKind` | your app's values by name (`color`, `stroke`, `font`, `text`, `flag`), with `code` for the Rust expression of generated code (`code_for`); `Bindings::set_variables`, `apply` / `apply_title` (write the variable values in, keeping `fallback`s), `variable_for`, `code_expr` |
-| `id_editor(ui, &mut ids, &key, &actions)` | an "Id" row for a button or cluster item, with a picker of the actions your program handles and a warning for an id that is none of them |
-| `button_tree_marked(.., filter, &marked)` | `button_tree` (optionally filtered) that marks the buttons at `marked` with ⚠, e.g. those without an action (`Actions::unregistered`) |
-| `menu_to_code_bound` | `menu_to_code` with the bindings; also `settings_to_code_bound`, `buttons_to_code_bound`, `live_bindings_code`, `free_identifiers` |
-
-```rust
-let out = button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, &mut ids, &["edit.copy", "edit.undo"], |_, _, _| {});
-// ...
-let code = menu_to_code_bound(Some("Edit"), &settings, &buttons, &bindings);
-```
-
-```rust
-use egui_pie_menu::*;
-// needs in scope: tr, history, theme
-
-let mut buttons = vec![
-    PieButton::new(PieDirection::North).with_label(tr("copy")),
-    PieButton::new(PieDirection::South).with_label("Undo"),
-];
-
-let mut menu = PieMenu::new()
-    .with_title(tr("edit"));
-
-// each frame, before show (live bindings):
-menu.settings.title.text_color = theme.accent;
-buttons[1].label = format!("Undo ({})", history.len());
-```
-
-The bound code is compiled in the tests too, with a stand-in `theme` and `tr`.
-
 ### Highlight shapes
 
 `HighlightShape` controls what is drawn at the center indicator when a direction is active. It has three independent components:
@@ -975,27 +867,26 @@ menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, cir
 
 - `menu.settings.mirror_horizontal = true` flips the layout (East↔West, diagonals follow). Number keys and number hints follow the displayed positions, and `HintSide::Trailing` then means left of the label. Off by default.
 - The mnemonic underline works in right-to-left words: egui (no bidi) lays separately formatted text pieces out left to right, so the library feeds the split word in reverse and, for Arabic-script labels, adds zero-width joiners at the cuts so letters keep their joined forms.
-- In the render closure `b.rtl` is true while mirrored: lay out your own widgets in reverse (the demo puts a checkbox's box right of its text). `b.label_text().prefix(icon)` already puts the icon on the right.
+- In the render closure `b.rtl` is true while mirrored: lay out your own widgets in reverse (Pie Designer puts a checkbox's box right of its text). `b.label_text().prefix(icon)` already puts the icon on the right.
 - `number_hints.digits = HintDigits::ArabicIndic` shows ٠١٢…, `HintDigits::Persian` shows ۰۱۲… (Persian/Urdu), instead of 0123….
 - Mnemonics work for any alphabetic script: they match typed characters, so they work with the active keyboard layout, and mnemonic generation and `mnemonic_text` are Unicode-aware (case folded; Hebrew final forms, Arabic alef variants, and Persian/Arabic yeh and kaf count as the same key; combining marks are skipped).
-- **Text rendering is egui's job.** As of egui 0.36 text is shaped (Arabic letters join), but there is **no bidi** support, so mixed left-to-right/right-to-left labels display in the wrong order, and egui's default fonts do not include Arabic or Hebrew glyphs — add a font via `ctx.set_fonts` (the demo loads system fonts). Keep each label single-script until egui gains bidi.
+- **Text rendering is egui's job.** As of egui 0.36 text is shaped (Arabic letters join), but there is **no bidi** support, so mixed left-to-right/right-to-left labels display in the wrong order, and egui's default fonts do not include Arabic or Hebrew glyphs — add a font via `ctx.set_fonts` (the Pie Designer embeds them). Keep each label single-script until egui gains bidi.
 - **Status: basic RTL support, further work tabled.** Mirroring, digits, mnemonic matching and underlining, icon and checkbox side are handled. Multi-word right-to-left labels still show their words in left-to-right order (egui has no bidi). Contributions welcome: the [`unicode-bidi`](https://crates.io/crates/unicode-bidi) crate could compute the visual word order so the library feeds egui the words already reordered (the same trick `append_mnemonic_text` uses for the mnemonic's word). Once egui moves to a bidi-aware text stack (Parley / cosmic-text), the workarounds should be removed instead; the test `rtl_mnemonics_render_like_the_unsplit_label` compares against egui's own layout and should flag that change.
 
-## Running the demo
+## Examples and Pie Designer
+
+Two short examples show the library in code:
 
 ```sh
-cargo run --example demo
+cargo run --example basic        # a menu built in code: sub-pie, cluster, handling the selection
+cargo run --example toml_menus   # menus from TOML files: variables, actions, ids
 ```
 
-  Right-click anywhere in the window (or hold Space) to open the menu. The demo is also the dev tool, in three panes:
+**Pie Designer** (the `egui_pie_menu_designer` crate in this repository) is the place to try everything the menu can do and to design menus visually: every setting, the button tree with an inspector, a live preview, and the result as TOML or as Rust code. Its editors are also a library you can embed in your own program's tools. See [designer/README.md](designer/README.md).
 
-- Left, in two tabs, with one search box that filters both (the tab that is not showing carries the number of hits, for example "Buttons (3)"):
-  - **Menu**: one collapsing section per `SettingsGroup`, drawn with `group_editor`'s widgets (`field_editor_bound`: colours, strokes and fonts carry a ⛓ toggle to bind them to an expression of your app, see [Bindings](#bindings-values-from-your-app); the demo registers `theme.*` colours from egui's Dark / Light visuals and `i18n.*` labels and title in the chosen language, read by generated code with `tr("..")`, as variables), plus a few rows of the demo's own, tagged "demo" where they only change how the demo draws its buttons (number hints, button height, sub-pie look, markers, sample icons) and not the menu code. Choosing a fan-out as the menu-wide sub-pie style pins the sub-pies that cannot fan out to replace style (`set_menu_sub_pie_style`) and says which.
-  - **Buttons**: `button_tree` above, `button_inspector_bound` below (labels can be bound too) with the demo's own "Appearance" group (icon, tooltip, colour, checkbox, cluster layout) among its controls and, at the end, the menu-wide settings that affect the selected node. The demo keeps that appearance data in a table keyed by button path and follows `InspectorOutput::edits`.
-- Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
-  - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
-  - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row (`id_editor`, offering the demo's actions) names a button or cluster item for the file, and the last action shows the id of what was selected. Open reports the references the demo does not answer (`check_references`). The demo registers its actions as a program would (`Actions`): its pretend undo history, run by the ids it gets, enables Undo and Redo only when there is something to undo or redo, and the "Share plugin on" switch of the TOML tab shows and hides the plugin's buttons. The plugin's Print has an id the demo does not handle, on purpose: it is disabled, marked ⚠ in the tree (`button_tree_marked`) and drawn in the error colour (`unhandled_color`). Add `examples/menus/user.toml` to the files to see a user's `remove` and `change`.
+```sh
+cargo run -p egui_pie_menu_designer
+```
 
 ## Upgrading from v0.36.0
 
@@ -1083,18 +974,24 @@ Nothing below needs changes in existing code:
 - `ButtonView` helpers: `path`, `text_color()`, `scale()`, `use_pie_hover()`, `opens_sub_pie()`.
 - The `layout` and `sub_pies` setting groups, and demo icons ([Icons and images](#icons-and-images)).
 
-### Added after v0.36.1
+### New in v0.37.0
 
-Additive; nothing to change in existing code:
+One change can need an edit in existing code:
+
+- `PieButton` has a new public field, `visible` (below). Code that builds buttons with the builders (`PieButton::new(..).with_label(..)`) is unaffected; a `PieButton { .. }` struct literal needs `visible: true` (or `..` from another button).
+
+Everything else is additive:
 
 - `PieMenu::configure`: change the settings in a closure.
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
-- The optional `toml` feature: menus in TOML files, loaded and merged at runtime (`catalog::MenuCatalog`, `MenuDefinition`), with ids for the buttons (`ButtonIds`), `remove` / `change` by id, and the program's actions setting buttons' state (`Actions`) ([Menus from TOML files](#menus-from-toml-files)).
+- The optional `toml` feature: menus in TOML files, loaded and merged at runtime (`catalog::MenuCatalog`, `MenuDefinition`), with ids for the buttons (`ButtonIds`), `remove` / `change` by id, values from the program by name, and the program's actions setting buttons' state (`Actions`) ([Menus from TOML files](#menus-from-toml-files)).
+- `values`: `Variables` (the program's values by name) and `Bindings` (which parts of a menu take them); `settings_fields`: `SettingsField` / `SettingsGroup`, every setting by path.
 - `PieButton::visible` / `with_visible`: hidden buttons keep their place but are not drawn or picked.
-- The `dev_tool` module: embeddable editors for the settings (`settings_editor`, `group_editor`, `field_editor`) and for a `PieButton` tree (`button_tree`, `button_tree_filtered`, `button_inspector`, `buttons_editor`), `preview_target` for a live preview, `set_menu_sub_pie_style`, and code generators ([Dev tool](#dev-tool)).
-- Dev tool bindings: bind colours, strokes, fonts, labels and the title to expressions of your app, read once or every frame, and register your app's values as `Variables` so the editors offer and show them ([Bindings](#bindings-values-from-your-app)). With them, `button_at` / `button_at_mut` (a button by path) and `PieButton::children_mut` / `cluster_item_mut`.
+- `button_at` / `button_at_mut` (a button by path), `PieButton::children_mut` / `cluster_item_mut`.
+- `PieMenu::check_tree` (every level of a tree), `PieMenu::fan_out_problems` (could this sub-pie open as a fan-out), and the `mnemonic` module's `fold_char` / `is_mnemonic_letter`.
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
+- Pie Designer, a crate of its own in this repository (`egui_pie_menu_designer`): the editors and the app ([Examples and Pie Designer](#examples-and-pie-designer)). The demo of v0.36.1 is now part of it; the core has two short examples instead.
 
 ## License
 

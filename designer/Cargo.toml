@@ -1,0 +1,23 @@
+[package]
+name = "egui_pie_menu_designer"
+version = "0.1.0"
+edition = "2024"
+description = "Pie Designer: design egui_pie_menu menus visually, and get TOML or Rust code"
+license = "MIT"
+repository = "https://github.com/Deuracell/egui_pie_menu"
+readme = "README.md"
+keywords = ["egui", "pie-menu", "radial", "designer", "editor"]
+categories = ["gui", "development-tools"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "pie-designer"
+path = "src/main.rs"
+
+[dependencies]
+egui_pie_menu = { path = "..", version = "0.37.0", features = ["toml"] }
+egui = "0.36.2"
+eframe = "0.36.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

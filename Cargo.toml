@@ -1,6 +1,6 @@
 [package]
 name = "egui_pie_menu"
-version = "0.36.2"
+version = "0.37.0"
 edition = "2024"
 description = "A radial (pie) menu widget for egui, inspired by Blender's pie menus"
 license = "MIT"
@@ -19,7 +19,9 @@ serde = ["dep:serde", "egui/serde"]
 toml = ["serde", "dep:toml"]
 
 [dev-dependencies]
-# The demo and the tests use the TOML menus.
+# The examples and the tests use the TOML menus.
 egui_pie_menu = { path = ".", features = ["toml"] }
 eframe = "0.36.2"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[workspace]
+members = [".", "designer"]
