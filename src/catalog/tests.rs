@@ -42,7 +42,8 @@ fn settings_round_trip_through_toml_text() {
         let table = settings_to_table(&s);
         let text = toml::to_string(&table).unwrap();
         let back: Table = toml::from_str(&text).unwrap();
-        let rebuilt = settings_from_table(&back).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        let (rebuilt, refs) = settings_from_table(&back).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert!(refs.is_empty());
         assert_eq!(format!("{rebuilt:?}"), format!("{s:?}"), "\n{text}");
     }
     assert!(settings_to_table(&PieMenuSettings::default()).is_empty(), "nothing differs");
@@ -90,22 +91,21 @@ fn settings_errors() {
     assert!(bad("[title]\ncolour = \"#fff\"").contains("unknown setting `title.colour`"));
     assert!(bad("radius = 3.0").contains("unknown setting `radius`"));
     assert!(bad("[title]\ntext_color = \"#12345\"").contains("is not a colour"));
+    assert!(bad("[title]\ntext_color = \"red\"").contains("is not a colour"));
+    assert!(bad("[center_indicator]\nhighlight_stroke = { width = 1.0, color = \"blue\" }").contains("is not a colour"));
     assert!(bad("[animations]\nhover_duration = -5").contains("negative"));
     assert!(bad("[layout]\nradius = \"big\"").contains("settings"));
 }
 
 const EXAMPLE: &str = r##"
 [menu.edit]
-title = "Edit"
+title = { var = "i18n.edit", default = "Edit" }
 
 [menu.edit.settings]
 layout = { radius = 120.0 }
 title = { text_color = "#ffcc00" }
 animations = { reveal_duration = 150 }
-
-[menu.edit.bind]
-"center_indicator.highlight_fill_color" = "theme.accent"
-title = { expr = "tr(\"menu.edit\")", live = true }
+center_indicator = { highlight_fill_color = { var = "theme.accent", default = "#102030" } }
 
 [[menu.edit.button]]
 dir = "N"
@@ -126,9 +126,8 @@ items = [{ number = 1, label = "Bold", id = "fmt.bold" }, { number = 2, label = 
 
 [[menu.edit.button]]
 dir = "West"
-label = "Undo"
+label = { var = "i18n.undo", default = "Undo" }
 enabled = false
-bind_label = "tr(\"edit.undo\")"
 
 [[menu.paste_special.button]]
 dir = "N"
@@ -171,12 +170,11 @@ fn the_documented_example_builds() {
     assert_eq!(edit.ids.button(&[1, 0]), Some("paste.values"));
     assert_eq!(edit.ids.item(&[2], 1), Some("fmt.bold"));
     assert_eq!(edit.ids.selected(&edit.buttons, &[2, 1]), Some("fmt.bold"));
-    assert_eq!(edit.bindings.get(&BindTarget::Title), Some(&Binding::new("tr(\"menu.edit\")", BindingMode::Live)));
-    assert_eq!(
-        edit.bindings.get(&BindTarget::Field(SettingsField::CenterHighlightFillColor)),
-        Some(&Binding::new("theme.accent", BindingMode::Build))
-    );
-    assert_eq!(edit.bindings.get(&BindTarget::Label(vec![3])), Some(&Binding::new("tr(\"edit.undo\")", BindingMode::Build)));
+    assert_eq!(edit.bindings.get(&BindTarget::Title), Some(&var_binding("i18n.edit")));
+    assert_eq!(edit.bindings.get(&BindTarget::Field(SettingsField::CenterHighlightFillColor)), Some(&var_binding("theme.accent")));
+    assert_eq!(edit.settings.center_indicator.highlight_fill_color, Color32::from_rgb(16, 32, 48), "the default until applied");
+    assert_eq!(edit.bindings.get(&BindTarget::Label(vec![3])), Some(&var_binding("i18n.undo")));
+    assert_eq!(edit.bindings.len(), 3);
     // The sub-pie's menu builds on its own too.
     assert_eq!(catalog(&[("menus.toml", EXAMPLE)]).build("paste_special").unwrap().buttons.len(), 2);
 }
@@ -186,7 +184,7 @@ fn variables_resolve_the_bindings() {
     let mut edit = catalog(&[("menus.toml", EXAMPLE)]).build("edit").unwrap();
     let mut menu = edit.to_pie_menu();
     let mut vars = Variables::new();
-    vars.color("theme.accent", Color32::RED).text("tr(\"menu.edit\")", "Bearbeiten").text("tr(\"edit.undo\")", "Rückgängig");
+    vars.color("theme.accent", Color32::RED).text("i18n.edit", "Bearbeiten").text("i18n.undo", "Rückgängig");
     assert!(edit.apply_variables(vars.clone(), &mut menu));
     assert_eq!(menu.title.as_deref(), Some("Bearbeiten"));
     assert_eq!(menu.settings.center_indicator.highlight_fill_color, Color32::RED);
@@ -197,6 +195,40 @@ fn variables_resolve_the_bindings() {
     let mut menu = plain.to_pie_menu();
     assert!(!plain.apply_variables(Variables::new(), &mut menu));
     assert_eq!(menu.title.as_deref(), Some("Edit"));
+}
+
+#[test]
+fn references_without_defaults_and_merged_over() {
+    let base = r##"
+        [menu.m]
+        title = { var = "i18n.title" }
+        settings = { text_color = { var = "theme.text" }, title = { text_font = { var = "theme.font", default = { size = 20.0, family = "Monospace" } } } }
+        [[menu.m.button]]
+        dir = "N"
+        label = { var = "i18n.copy" }
+        [[menu.m.button]]
+        dir = "S"
+        items = [{ number = 1, label = { var = "i18n.bold", default = "B" } }]
+    "##;
+    let m = catalog(&[("base.toml", base)]).build("m").unwrap();
+    assert_eq!(m.title.as_deref(), Some("i18n.title"), "text without a default shows the name");
+    assert_eq!(m.buttons[0].label, "i18n.copy");
+    assert_eq!(m.buttons[1].cluster_items()[0].label, "B");
+    assert_eq!(m.settings.text_color, PieMenuSettings::default().text_color, "a setting without a default keeps the library's");
+    assert_eq!(m.settings.title.text_font, FontId::monospace(20.0));
+    assert_eq!(m.bindings.len(), 5);
+    // A later file's literal replaces the reference (later wins, key by key).
+    let over = r##"
+        [menu.m]
+        title = "Fixed"
+        settings = { text_color = "#ffffff" }
+    "##;
+    let m = catalog(&[("base.toml", base), ("over.toml", over)]).build("m").unwrap();
+    assert_eq!(m.title.as_deref(), Some("Fixed"));
+    assert_eq!(m.settings.text_color, Some(Color32::WHITE));
+    assert!(m.bindings.get(&BindTarget::Title).is_none());
+    assert!(m.bindings.get(&BindTarget::Field(SettingsField::TextColor)).is_none());
+    assert!(m.bindings.get(&BindTarget::Field(SettingsField::TitleTextFont)).is_some(), "untouched keys keep theirs");
 }
 
 #[test]
@@ -255,7 +287,11 @@ fn file_errors() {
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nstyle = \"fan_out\"").contains("`style` needs `opens`"));
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nmnemonic = \"ab\"").contains("neither one character"));
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nitems = []\nmnemonic = \"a\"").contains("no mnemonic of its own"));
-    assert!(add("[menu.a.bind]\n\"layout.radius\" = \"x\"").contains("bindable"));
+    assert!(add("[menu.a.settings.layout]\nradius = { var = \"x\" }").contains("`layout.radius` cannot come from a variable"));
+    assert!(add("[menu.a.settings.title]\ntext_color = { var = \"x\", defualt = \"#fff\" }").contains("defualt"));
+    let red = add("[menu.a.settings.title]\ntext_color = { var = \"x\", default = \"red\" }");
+    assert!(red.contains("colour"), "{red}");
+    assert!(add("[[menu.a.button]]\ndir = \"N\"\nlabel = { name = \"x\" }").contains("label"));
     assert!(add("[menu.a.settings]\nradius = 1.0").contains("unknown setting `radius`"));
     assert!(add("[menu.a\n").starts_with("f.toml: "), "a TOML syntax error names the file");
 }
@@ -303,10 +339,13 @@ fn rich_definition() -> MenuDefinition {
     ids.set(IdKey { path: vec![2, 1, 1], item: None }, "deep.leaf");
     ids.set(IdKey { path: vec![3], item: Some(3) }, "fmt.italic");
     let mut bindings = Bindings::new();
-    bindings.set(BindTarget::Title, Binding::new("tr(\"edit\")", BindingMode::Build));
-    bindings.set(BindTarget::Field(SettingsField::TitleTextColor), Binding::new("theme.accent", BindingMode::Live));
-    bindings.set(BindTarget::Label(vec![1, 0]), Binding::new("tr(\"values\")", BindingMode::Build));
-    bindings.set(BindTarget::ItemLabel(vec![3], 1), Binding::new("tr(\"bold\")", BindingMode::Live));
+    // Files keep names, not modes: these come back as Build.
+    bindings.set(BindTarget::Title, var_binding("i18n.edit"));
+    bindings.set(BindTarget::Field(SettingsField::TitleTextColor), var_binding("theme.accent"));
+    bindings.set(BindTarget::Field(SettingsField::CenterHighlightStroke), var_binding("theme.outline"));
+    bindings.set(BindTarget::Field(SettingsField::TextColor), var_binding("theme.text"));
+    bindings.set(BindTarget::Label(vec![1, 0]), var_binding("i18n.values"));
+    bindings.set(BindTarget::ItemLabel(vec![3], 1), var_binding("i18n.bold"));
     let mut settings = rich_settings();
     settings.sub_pies.style = SubPieStyle::Replace; // the tree's sub-pies are not all legal fan-outs
     MenuDefinition { name: "edit".into(), title: Some("Edit".into()), settings, buttons, ids, bindings }
@@ -322,9 +361,19 @@ fn definitions_round_trip_through_toml() {
     assert_eq!(back.title, def.title);
     assert_eq!(back.ids, def.ids);
     assert_eq!(back.bindings, def.bindings);
+    // References are written in place, with the current value as the default.
+    assert!(text.contains("title = { var = \"i18n.edit\", default = \"Edit\" }"), "{text}");
+    assert!(text.contains("text_color = { var = \"theme.accent\", default = \"#ffcc00\" }"), "{text}");
+    assert!(text.contains("highlight_stroke = { var = \"theme.outline\", default = { width = 2.5, color = \"#0a141e\" } }"), "{text}");
+    assert!(text.contains("label = { var = \"i18n.values\", default = \"Values\" }"), "{text}");
+    assert!(!text.contains("live") && !text.contains("bind"), "{text}");
+    // A Live binding is written as a plain reference (modes are for generated code).
+    let mut live = rich_definition();
+    live.bindings.set(BindTarget::Label(vec![1, 0]), Binding::new("i18n.values", BindingMode::Live));
+    assert_eq!(live.to_toml(), text);
     // One line per value, several tables one per line.
-    assert!(text.contains("highlight_stroke = { width = 2.5, color = \"#0a141e\" }"), "{text}");
-    assert!(text.contains("items = [\n    { number = 1, label = \"Bold\""), "{text}");
+    assert!(text.contains("hover_emphasis = { shift = 2.0, scale = 1.1 }"), "{text}");
+    assert!(text.contains("items = [\n    { number = 1, label = { var = \"i18n.bold\", default = \"Bold\" }"), "{text}");
     // The root menu first, sub-pies named after their labels, unique.
     assert!(text.starts_with("[menu.edit]"), "{text}");
     for name in ["[[menu.paste_special.button]]", "[[menu.more.button]]", "[[menu.deeper.button]]", "[[menu.paste_special_2.button]]"] {

@@ -67,8 +67,8 @@ impl BindTarget {
                 "egui::Stroke::new(2.0, theme.accent)"
             }
             BindTarget::Field(_) => "theme.accent",
-            BindTarget::Title => "tr(\"menu.edit\")",
-            BindTarget::Label(_) | BindTarget::ItemLabel(..) => "tr(\"edit.copy\")",
+            BindTarget::Title => "i18n.menu.edit",
+            BindTarget::Label(_) | BindTarget::ItemLabel(..) => "i18n.edit.copy",
         }
     }
 }
@@ -171,6 +171,12 @@ impl Bindings {
 
     pub fn iter(&self) -> impl Iterator<Item = (&BindTarget, &Binding)> {
         self.entries.iter().map(|(t, b)| (t, b))
+    }
+
+    /// What generated code writes for `target` bound in `mode`: the binding's name or
+    /// expression, translated through [`Variables::code`] when it names a variable.
+    pub fn code_expr(&self, target: &BindTarget, mode: BindingMode) -> Option<&str> {
+        self.expr(target, mode).map(|e| self.variables.code_for(e))
     }
 
     /// Keeps the bindings `keep` accepts (e.g. `|t, _| t.path().is_none()` drops every label
@@ -339,6 +345,10 @@ impl VarValue {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Variables {
     entries: Vec<(String, VarValue)>,
+    /// The Rust expression of a name, for generated code (by name).
+    code: Vec<(String, String)>,
+    /// The entry registered last (what [`Variables::code`] applies to).
+    last: Option<usize>,
 }
 
 impl Variables {
@@ -354,13 +364,21 @@ impl Variables {
         self.entries.len()
     }
 
-    /// Registers (or replaces) `name`, the expression that reads the value in your code.
+    /// Registers (or replaces) the variable `name`: a plain key such as `theme.accent` or
+    /// `i18n.edit.copy`, which TOML files and bindings refer to.
     pub fn set(&mut self, name: impl Into<String>, value: VarValue) -> &mut Self {
         let name = name.into();
-        match self.entries.iter_mut().find(|(n, _)| *n == name) {
-            Some((_, v)) => *v = value,
-            None => self.entries.push((name, value)),
-        }
+        let i = match self.entries.iter().position(|(n, _)| *n == name) {
+            Some(i) => {
+                self.entries[i].1 = value;
+                i
+            }
+            None => {
+                self.entries.push((name, value));
+                self.entries.len() - 1
+            }
+        };
+        self.last = Some(i);
         self
     }
 
@@ -380,8 +398,24 @@ impl Variables {
         self.set(name, VarValue::Text(value.into()))
     }
 
+    /// The Rust expression that reads the variable registered last, for the generated code
+    /// (`.text("i18n.edit.copy", tr("edit.copy")).code("tr(\"edit.copy\")")`). Without it the
+    /// generated code uses the name itself, which suits names like `theme.accent`.
+    pub fn code(&mut self, expr: impl Into<String>) -> &mut Self {
+        if let Some(name) = self.last.and_then(|i| self.entries.get(i)).map(|(n, _)| n.clone()) {
+            self.code.retain(|(n, _)| *n != name);
+            self.code.push((name, expr.into()));
+        }
+        self
+    }
+
     pub fn get(&self, name: &str) -> Option<&VarValue> {
         self.entries.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
+    /// What the generated code writes for `name`: its [`Variables::code`], else `name`.
+    pub fn code_for<'a>(&'a self, name: &'a str) -> &'a str {
+        self.code.iter().find(|(n, _)| n == name).map_or(name, |(_, c)| c.as_str())
     }
 
     /// All variables, in the order they were registered.
@@ -530,9 +564,9 @@ fn last_expr_id(ui: &Ui, target: &BindTarget) -> egui::Id {
 pub fn binding_toggle(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget) -> bool {
     let bound = bindings.get(target).is_some();
     let hover = if bound {
-        "Bound: the generated code uses the expression below. Click to unbind."
+        "Bound: the value comes from your app (the name below). Click to unbind."
     } else {
-        "Bind to a value from your app: the generated code uses an expression (such as theme.accent) instead of this value."
+        "Bind to a value from your app, by name (such as theme.accent): TOML files keep the name, generated code reads it."
     };
     if !ui.selectable_label(bound, LINK.to_string()).on_hover_text(hover).clicked() {
         return false;
@@ -561,17 +595,24 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
         .map(VarValue::kind)
         .filter(|k| *k != kind);
     let from_app = bindings.variable_for(target).is_some();
+    let code = bindings
+        .get(target)
+        .and_then(Binding::active_expr)
+        .map(|e| bindings.variables.code_for(e))
+        .filter(|c| bindings.get(target).and_then(Binding::active_expr) != Some(*c))
+        .map(str::to_string);
     let Some(binding) = bindings.get_mut(target) else {
         return false;
     };
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.add_space(ui.spacing().indent);
-        ui.label(RichText::new("code:").weak())
-            .on_hover_text("The Rust expression the generated code uses. The value above stays as the preview value.");
+        ui.label(RichText::new("from:").weak()).on_hover_text(
+            "A variable your app registers, by name (TOML files refer to it). Without one, generated code can still use any Rust expression typed here. The value above is the fallback.",
+        );
         for (mode, name, hover) in [
-            (BindingMode::Build, "Build", "Read once, where the menu is built (theme at startup, language)."),
-            (BindingMode::Live, "Live", "Read every frame, in a block that runs before show (theme toggle, \"Undo (3)\")."),
+            (BindingMode::Build, "Build", "Generated code reads it once, where the menu is built (theme at startup, language). TOML files have no modes: a loaded menu takes your app's values whenever you apply them."),
+            (BindingMode::Live, "Live", "Generated code reads it every frame, in a block that runs before show (theme toggle, \"Undo (3)\"). TOML files have no modes."),
         ] {
             if ui.selectable_label(binding.mode == mode, name).on_hover_text(hover).clicked() && binding.mode != mode {
                 binding.mode = mode;
@@ -605,14 +646,18 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
     }
     let mismatch;
     let (note, warn) = if binding.active_expr().is_none() {
-        (Some("No expression yet: the code uses the value."), true)
+        (Some("No name yet: the value above is used."), true)
     } else if let Some(k) = other_kind {
         mismatch = format!("That is {} of your app; this needs {}.", k.name(), kind.name());
         (Some(mismatch.as_str()), true)
     } else if binding.mode == BindingMode::Live && matches!(target, BindTarget::Label(_) | BindTarget::ItemLabel(..)) {
         (Some("A live label can change its automatic mnemonic key as the text changes."), true)
     } else if from_app {
-        (Some("From your app: the value above follows it."), false)
+        mismatch = match &code {
+            Some(c) => format!("From your app: the value above follows it. In generated code: {c}"),
+            None => "From your app: the value above follows it.".to_string(),
+        };
+        (Some(mismatch.as_str()), false)
     } else {
         (None, false)
     };

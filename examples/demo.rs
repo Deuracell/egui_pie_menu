@@ -89,8 +89,8 @@ const TITLES: [&str; 5] = ["Edit", "Правка", "עריכה", "تحرير", "
 const LABEL_KEYS: [&str; 8] = ["copy", "paste_special", "redo", "save_as", "delete", "cut", "undo", "word_wrap"];
 
 /// What the demo offers the dev tool to bind to, as an app would: `theme.*` from egui's
-/// current visuals (so the Dark / Light switch changes them) and `tr("..")` for the labels and
-/// the title in the current language.
+/// current visuals (so the Dark / Light switch changes them) and `i18n.*` for the labels and
+/// the title in the current language, which generated code reads with `tr("..")`.
 fn app_variables(visuals: &egui::Visuals, lang: usize) -> Variables {
     let mut vars = Variables::new();
     vars.color("theme.accent", visuals.selection.bg_fill)
@@ -101,9 +101,9 @@ fn app_variables(visuals: &egui::Visuals, lang: usize) -> Variables {
         .color("theme.warn", visuals.warn_fg_color)
         .stroke("theme.outline", egui::Stroke::new(2.0, visuals.selection.stroke.color))
         .font("theme.title_font", egui::FontId::proportional(18.0));
-    vars.text("tr(\"edit\")", TITLES[lang]);
+    vars.text("i18n.edit", TITLES[lang]).code("tr(\"edit\")");
     for (key, label) in LABEL_KEYS.iter().zip(LANGS[lang].labels) {
-        vars.text(format!("tr(\"{key}\")"), label);
+        vars.text(format!("i18n.{key}"), label).code(format!("tr(\"{key}\")"));
     }
     vars
 }
@@ -2216,8 +2216,10 @@ mod tests {
         assert_eq!(TITLES.len(), LANGS.len());
         for lang in 0..LANGS.len() {
             let vars = app_variables(&egui::Visuals::dark(), lang);
-            assert_eq!(vars.get("tr(\"edit\")"), Some(&VarValue::Text(TITLES[lang].to_string())));
-            assert_eq!(vars.get("tr(\"undo\")"), Some(&VarValue::Text(LANGS[lang].labels[6].to_string())));
+            assert_eq!(vars.get("i18n.edit"), Some(&VarValue::Text(TITLES[lang].to_string())));
+            assert_eq!(vars.get("i18n.undo"), Some(&VarValue::Text(LANGS[lang].labels[6].to_string())));
+            assert_eq!(vars.code_for("i18n.undo"), "tr(\"undo\")", "generated code reads it with tr");
+            assert_eq!(vars.code_for("theme.accent"), "theme.accent");
         }
         let (light, dark) = (app_variables(&egui::Visuals::light(), 0), app_variables(&egui::Visuals::dark(), 0));
         assert_ne!(light.get("theme.panel"), dark.get("theme.panel"), "the theme switch changes the theme variables");
