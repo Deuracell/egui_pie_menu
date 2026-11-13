@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pie Designer</title>
+    <meta name="description" content="Design egui_pie_menu pie menus in the browser, and get them as TOML or Rust code." />
+    <!-- trunk: build the `pie-designer` binary for the web -->
+    <link data-trunk rel="rust" data-bin="pie-designer" data-wasm-opt="z" />
+    <style>
+        html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1b1b; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #loading {
+            position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: #aaa; font: 16px system-ui, sans-serif; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="pie_designer"></canvas>
+    <div id="loading">Loading Pie Designer…</div>
+</body>
+</html>

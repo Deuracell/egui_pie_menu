@@ -7,6 +7,18 @@
 - A live preview of the selected button, sub-pie or fan-out.
 - The result as TOML ([menus from TOML files](../README.md#menus-from-toml-files)) or as Rust code, with values bound to your program's variables.
 
+## In the browser
+
+Pie Designer also runs as a web page, built by the repository's `Pages` workflow (`.github/workflows/pages.yml`) on every push to `main` and published with GitHub Pages. To build it yourself:
+
+```sh
+cargo install trunk            # once
+rustup target add wasm32-unknown-unknown
+cd designer && trunk serve     # http://127.0.0.1:8080; `trunk build --release` writes dist/
+```
+
+The web page is the same app with one difference: a browser cannot read or write files by path, so the "Files" field and Open / Save are replaced by dropping TOML files on the page (several at once are merged) and a Download button. The example menus are built in, and so is the font for the right-to-left languages (DejaVu Sans, see `assets/fonts/LICENSE-DejaVu.txt`).
+
 ## The app
 
 ```sh
@@ -21,7 +33,7 @@ Right-click anywhere in the window (or hold Space) to open the menu. The app has
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the app never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
   - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the app's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](../README.md#menus-from-toml-files), with the menu's name, files on disk to open (separated by commas, merged in order) and Open / Save (Save writes the first file). The **Examples** buttons open the example menus of [`examples/menus`](../examples/menus), built in: "Edit + plugin" (a base menu and a plugin extending it) and "+ user" (with a user's file that removes and changes buttons). The inspector's "Id" row (`id_editor`, offering the app's actions) names a button or cluster item for the file, and the last action shows the id of what was selected. Open reports the references the app does not answer (`check_references`). The app registers its actions as a program would (`Actions`): its pretend undo history, run by the ids it gets, enables Undo and Redo only when there is something to undo or redo, and the "Share plugin on" switch of the TOML tab shows and hides the plugin's buttons. The plugin's Print has an id the app does not handle, on purpose: it is disabled, marked ⚠ in the tree (`button_tree_marked`) and drawn in the error colour (`unhandled_color`).
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the app's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](../README.md#menus-from-toml-files), with the menu's name, files on disk to open (separated by commas, merged in order) and Open / Save (Save writes the first file). TOML files dropped on the window open too (on the web, that and Download replace the files on disk). The **Examples** buttons open the example menus of [`examples/menus`](../examples/menus), built in: "Edit + plugin" (a base menu and a plugin extending it) and "+ user" (with a user's file that removes and changes buttons). The inspector's "Id" row (`id_editor`, offering the app's actions) names a button or cluster item for the file, and the last action shows the id of what was selected. Open reports the references the app does not answer (`check_references`). The app registers its actions as a program would (`Actions`): its pretend undo history, run by the ids it gets, enables Undo and Redo only when there is something to undo or redo, and the "Share plugin on" switch of the TOML tab shows and hides the plugin's buttons. The plugin's Print has an id the app does not handle, on purpose: it is disabled, marked ⚠ in the tree (`button_tree_marked`) and drawn in the error colour (`unhandled_color`).
 
 ## The editors, as a library
 
