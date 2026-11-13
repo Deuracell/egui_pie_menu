@@ -1,8 +1,12 @@
 # The base Edit menu. examples/menus/plugin.toml adds to it: open both together
 # (the demo's "TOML" tab, or MenuCatalog::add_file once per file).
 
+# Most values are plain literals. Those your program supplies are references by
+# name, { var = "..", default = ".." }: the demo registers theme.* (from egui's
+# Dark / Light look) and i18n.* (the labels in the chosen language).
+
 [menu.edit]
-title = "Edit"
+title = { var = "i18n.edit", default = "Edit" }
 
 [menu.edit.settings]
 input = { auto_mnemonics = true }
@@ -13,17 +17,14 @@ radius = 110.0
 [menu.edit.settings.animations]
 reveal_duration = 150  # milliseconds
 
-[menu.edit.bind]
-# Names of the app's variables (the demo registers theme.* and tr("..")).
-title = 'tr("edit")'
-"center_indicator.highlight_fill_color" = "theme.accent"
+[menu.edit.settings.center_indicator]
+highlight_fill_color = { var = "theme.accent", default = "#8000ff" }
 
 [[menu.edit.button]]
 dir = "N"
-label = "Copy"
+label = { var = "i18n.copy", default = "Copy" }
 id = "edit.copy"
 mnemonic = "c"
-bind_label = 'tr("copy")'
 
 [[menu.edit.button]]
 dir = "NE"
@@ -33,21 +34,18 @@ opens = "paste_special"
 
 [[menu.edit.button]]
 dir = "E"
-label = "Redo"
+label = { var = "i18n.redo", default = "Redo" }
 id = "edit.redo"
-bind_label = 'tr("redo")'
 
 [[menu.edit.button]]
 dir = "SW"
-label = "Cut"
+label = { var = "i18n.cut", default = "Cut" }
 id = "edit.cut"
-bind_label = 'tr("cut")'
 
 [[menu.edit.button]]
 dir = "W"
-label = "Undo"
+label = { var = "i18n.undo", default = "Undo" }
 id = "edit.undo"
-bind_label = { expr = 'tr("undo")', live = true }
 
 [[menu.edit.button]]
 dir = "NW"

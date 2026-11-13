@@ -189,10 +189,10 @@ pub fn settings_changes_bound(s: &PieMenuSettings, bindings: &Bindings) -> Vec<S
         .zip(default)
         .filter_map(|((path, value), (_, was))| {
             let field = SettingsField::ALL.into_iter().find(|f| f.path() == path);
-            if field.is_some_and(|f| bindings.expr(&BindTarget::Field(f), BindingMode::Live).is_some()) {
+            if field.is_some_and(|f| bindings.code_expr(&BindTarget::Field(f), BindingMode::Live).is_some()) {
                 return None;
             }
-            match field.and_then(|f| bindings.expr(&BindTarget::Field(f), BindingMode::Build).map(|e| (f, e))) {
+            match field.and_then(|f| bindings.code_expr(&BindTarget::Field(f), BindingMode::Build).map(|e| (f, e))) {
                 Some((f, expr)) => Some(format!("s.{path} = {};", field_value_code(f, expr))),
                 None => (value != was).then(|| format!("s.{path} = {value};")),
             }
@@ -255,7 +255,7 @@ fn mnemonic_code(m: Mnemonic) -> String {
 }
 
 fn item_code(item: &ClusterItem, path: &[usize], bindings: &Bindings) -> String {
-    let label = match bindings.expr(&BindTarget::ItemLabel(path.to_vec(), item.number), BindingMode::Build) {
+    let label = match bindings.code_expr(&BindTarget::ItemLabel(path.to_vec(), item.number), BindingMode::Build) {
         Some(expr) => expr.to_string(),
         None => format!("{:?}", item.label),
     };
@@ -276,7 +276,7 @@ fn button_expr(b: &PieButton, ind: usize, path: &mut Vec<usize>, bindings: &Bind
         _ => format!("PieButton::new({dir})"),
     };
     let default_label = if b.is_back() { "Back" } else { "" };
-    if let Some(expr) = bindings.expr(&BindTarget::Label(path.clone()), BindingMode::Build) {
+    if let Some(expr) = bindings.code_expr(&BindTarget::Label(path.clone()), BindingMode::Build) {
         s += &format!(".with_label({expr})");
     } else if b.label != default_label {
         s += &format!(".with_label({:?})", b.label);
@@ -352,7 +352,7 @@ pub fn buttons_to_code_bound(buttons: &[PieButton], bindings: &Bindings) -> Stri
 /// ```
 pub fn live_bindings_code(buttons: &[PieButton], bindings: &Bindings) -> Vec<String> {
     let mut out = Vec::new();
-    let live = |t: &BindTarget| bindings.expr(t, BindingMode::Live).map(str::to_string);
+    let live = |t: &BindTarget| bindings.code_expr(t, BindingMode::Live).map(str::to_string);
     if let Some(expr) = live(&BindTarget::Title) {
         out.push(format!("menu.title = Some({expr});"));
     }
@@ -414,7 +414,7 @@ pub fn menu_to_code_bound(title: Option<&str>, settings: &PieMenuSettings, butto
     let mut names: Vec<String> = Vec::new();
     for (target, binding) in bindings.iter() {
         let used = target.path().is_none_or(|p| crate::button_at(buttons, p).is_some());
-        if let Some(expr) = binding.active_expr().filter(|_| used) {
+        if let Some(expr) = binding.active_expr().filter(|_| used).map(|e| bindings.variables().code_for(e)) {
             for name in free_identifiers(expr) {
                 if !names.contains(&name) {
                     names.push(name);
@@ -434,7 +434,7 @@ pub fn menu_to_code_bound(title: Option<&str>, settings: &PieMenuSettings, butto
     }
     let mut_menu = if live.iter().any(|l| l.starts_with("menu.")) { "mut " } else { "" };
     out += &format!("let {mut_menu}menu = PieMenu::new()");
-    if let Some(expr) = bindings.expr(&BindTarget::Title, BindingMode::Build) {
+    if let Some(expr) = bindings.code_expr(&BindTarget::Title, BindingMode::Build) {
         out += &format!("\n    .with_title({expr})");
     } else if let Some(t) = title {
         out += &format!("\n    .with_title({t:?})");
@@ -1080,6 +1080,28 @@ buttons[1].label = format!(\"Undo ({})\", history.len());\n\
         // Without bindings it is the plain snippet.
         let plain = menu_to_code(Some("Edit"), &PieMenuSettings::default(), &buttons);
         assert_eq!(menu_to_code_bound(Some("Edit"), &PieMenuSettings::default(), &buttons, &Bindings::new()), plain);
+    }
+
+    #[test]
+    fn variable_names_become_their_code() {
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy"), PieButton::new(PieDirection::South).with_label("Undo")];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Label(vec![0]), "i18n.copy", BindingMode::Build);
+        bind(&mut b, BindTarget::Label(vec![1]), "i18n.undo", BindingMode::Live);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextColor), "theme.accent", BindingMode::Build);
+        let mut vars = Variables::new();
+        vars.text("i18n.copy", "Kopieren").code("tr(\"copy\")").text("i18n.undo", "Rückgängig").code("tr(\"undo\")");
+        vars.color("theme.accent", Color32::RED);
+        b.set_variables(vars);
+        let code = menu_to_code_bound(None, &PieMenuSettings::default(), &buttons, &b);
+        assert!(code.contains("// needs in scope: tr, theme\n"), "{code}");
+        assert!(code.contains(".with_label(tr(\"copy\"))"), "{code}");
+        assert!(code.contains("s.title.text_color = theme.accent;"), "the name itself when it has no code: {code}");
+        assert!(code.contains("buttons[1].label = tr(\"undo\");"), "{code}");
+        assert!(!code.contains("i18n"), "{code}");
+        // An unregistered name is written as it is.
+        b.set_variables(Variables::new());
+        assert!(menu_to_code_bound(None, &PieMenuSettings::default(), &buttons, &b).contains(".with_label(i18n.copy)"));
     }
 
     #[test]
