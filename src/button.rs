@@ -142,6 +142,11 @@ pub struct PieButton {
     /// mnemonic) and gets no generated mnemonic. It is still drawn by your closure;
     /// check [`ButtonView::enabled`] to grey it out.
     pub enabled: bool,
+    /// A hidden button is not drawn, and cannot be picked or reached by its keys (like a
+    /// disabled one); it keeps its place in the tree (its path, and its direction, which no
+    /// other button of the level may share). For buttons that come and go, such as a
+    /// plugin's that is switched off.
+    pub visible: bool,
 }
 
 impl PieButton {
@@ -153,6 +158,7 @@ impl PieButton {
             label: String::new(),
             kind: PieButtonKind::Action,
             enabled: true,
+            visible: true,
         }
     }
 
@@ -222,6 +228,17 @@ impl PieButton {
     /// Whether this is a cluster ([`PieButtonKind::Cluster`]).
     pub fn is_cluster(&self) -> bool {
         matches!(self.kind, PieButtonKind::Cluster(_))
+    }
+
+    /// Shows or hides this button. See [`PieButton::visible`].
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    /// Whether the button can be picked: enabled and visible.
+    pub(crate) fn live(&self) -> bool {
+        self.enabled && self.visible
     }
 
     /// Enables or disables this button. See [`PieButton::enabled`].
@@ -415,7 +432,7 @@ pub(crate) fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>])
     }
     let mut keys: Vec<(char, usize)> = Vec::new();
     for (i, (b, m)) in buttons.iter().zip(mnemonics).enumerate() {
-        let (true, Some(c)) = (b.enabled, *m) else { continue };
+        let (true, Some(c)) = (b.live(), *m) else { continue };
         if let Some((_, first)) = keys.iter().find(|(k, _)| *k == c) {
             problems.push(ButtonProblem::DuplicateMnemonic { first: *first, second: i, key: c });
         } else {
@@ -448,7 +465,7 @@ pub(crate) fn item_problems(
                     owners.push((c, MnemonicOwner::Item { cluster: i, item: k }));
                 }
             }
-        } else if let (true, Some(c)) = (b.enabled, mnemonics[i]) {
+        } else if let (true, Some(c)) = (b.live(), mnemonics[i]) {
             owners.push((c, MnemonicOwner::Button(i)));
         }
     }

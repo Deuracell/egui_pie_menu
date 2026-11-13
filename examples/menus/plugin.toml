@@ -9,6 +9,7 @@ dir = "S"
 label = "Share"
 id = "plugin.share"
 opens = "share"
+visible = { var = "plugins.share", default = true }   # the program switches the plugin
 
 [[menu.paste_special.button]]
 dir = "SE"

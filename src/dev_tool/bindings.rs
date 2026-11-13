@@ -28,20 +28,30 @@ pub enum BindTarget {
     Enabled(Vec<usize>),
     /// Whether the cluster item with this number, in the cluster at this path, is enabled.
     ItemEnabled(Vec<usize>, usize),
+    /// Whether the button at this path is shown ([`PieButton::visible`]).
+    Visible(Vec<usize>),
 }
 
 impl BindTarget {
     /// The path of the button this target belongs to (`None` for a field or the title).
     pub fn path(&self) -> Option<&[usize]> {
         match self {
-            BindTarget::Label(p) | BindTarget::ItemLabel(p, _) | BindTarget::Enabled(p) | BindTarget::ItemEnabled(p, _) => Some(p),
+            BindTarget::Label(p)
+            | BindTarget::ItemLabel(p, _)
+            | BindTarget::Enabled(p)
+            | BindTarget::ItemEnabled(p, _)
+            | BindTarget::Visible(p) => Some(p),
             BindTarget::Field(_) | BindTarget::Title => None,
         }
     }
 
     fn path_mut(&mut self) -> Option<&mut Vec<usize>> {
         match self {
-            BindTarget::Label(p) | BindTarget::ItemLabel(p, _) | BindTarget::Enabled(p) | BindTarget::ItemEnabled(p, _) => Some(p),
+            BindTarget::Label(p)
+            | BindTarget::ItemLabel(p, _)
+            | BindTarget::Enabled(p)
+            | BindTarget::ItemEnabled(p, _)
+            | BindTarget::Visible(p) => Some(p),
             BindTarget::Field(_) | BindTarget::Title => None,
         }
     }
@@ -72,9 +82,10 @@ impl BindTarget {
         match self {
             BindTarget::Field(F::CenterBackgroundStroke | F::CenterHighlightStroke | F::TitleBackgroundStroke) => VarKind::Stroke,
             BindTarget::Field(F::TitleTextFont) => VarKind::Font,
+            BindTarget::Field(f) if f.is_number() => VarKind::Number,
             BindTarget::Field(_) => VarKind::Color,
             BindTarget::Title | BindTarget::Label(_) | BindTarget::ItemLabel(..) => VarKind::Text,
-            BindTarget::Enabled(_) | BindTarget::ItemEnabled(..) => VarKind::Bool,
+            BindTarget::Enabled(_) | BindTarget::ItemEnabled(..) | BindTarget::Visible(_) => VarKind::Bool,
         }
     }
 
@@ -83,6 +94,8 @@ impl BindTarget {
         use SettingsField as F;
         match self {
             BindTarget::Field(F::TitleTextFont) => "theme.title_font",
+            BindTarget::Field(f) if f.is_duration() => "prefs.animation_ms",
+            BindTarget::Field(f) if f.is_number() => "prefs.pie_radius",
             BindTarget::Field(F::CenterBackgroundStroke | F::CenterHighlightStroke | F::TitleBackgroundStroke) => {
                 "egui::Stroke::new(2.0, theme.accent)"
             }
@@ -90,6 +103,7 @@ impl BindTarget {
             BindTarget::Title => "i18n.menu.edit",
             BindTarget::Label(_) | BindTarget::ItemLabel(..) => "i18n.edit.copy",
             BindTarget::Enabled(_) | BindTarget::ItemEnabled(..) => "app.can_undo",
+            BindTarget::Visible(_) => "plugins.share",
         }
     }
 }
@@ -344,12 +358,13 @@ fn current_value(s: &PieMenuSettings, buttons: &[PieButton], target: &BindTarget
             F::CenterHighlightStroke => VarValue::Stroke(s.center_indicator.highlight_stroke),
             F::TitleBackgroundStroke => VarValue::Stroke(s.title.background_stroke),
             F::TitleTextFont => VarValue::Font(s.title.text_font.clone()),
-            _ => return None,
+            f => VarValue::Number(number_field(s, *f)?),
         },
         BindTarget::Title => return None,
         BindTarget::Label(p) => VarValue::Text(crate::button_at(buttons, p)?.label.clone()),
         BindTarget::ItemLabel(p, n) => VarValue::Text(item(p, *n)?.label.clone()),
         BindTarget::Enabled(p) => VarValue::Bool(crate::button_at(buttons, p)?.enabled),
+        BindTarget::Visible(p) => VarValue::Bool(crate::button_at(buttons, p)?.visible),
         BindTarget::ItemEnabled(p, n) => VarValue::Bool(item(p, *n)?.enabled),
     })
 }
@@ -360,6 +375,7 @@ fn write_value(settings: &mut PieMenuSettings, buttons: &mut [PieButton], target
         (BindTarget::Field(f), v) => set_field(settings, *f, v),
         (BindTarget::Label(p), VarValue::Text(t)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.label, t)),
         (BindTarget::Enabled(p), VarValue::Bool(on)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.enabled, on)),
+        (BindTarget::Visible(p), VarValue::Bool(on)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.visible, on)),
         (BindTarget::ItemLabel(p, n), VarValue::Text(t)) => {
             crate::button_at_mut(buttons, p).and_then(|b| b.cluster_item_mut(*n)).is_some_and(|i| set_if_changed(&mut i.label, t))
         }
@@ -384,8 +400,63 @@ fn set_field(s: &mut PieMenuSettings, field: SettingsField, value: &VarValue) ->
         (F::CenterHighlightStroke, VarValue::Stroke(st)) => set_if_changed(&mut s.center_indicator.highlight_stroke, st),
         (F::TitleBackgroundStroke, VarValue::Stroke(st)) => set_if_changed(&mut s.title.background_stroke, st),
         (F::TitleTextFont, VarValue::Font(f)) => set_if_changed(&mut s.title.text_font, f),
+        (f, VarValue::Number(n)) => set_number_field(s, f, *n),
         _ => false,
     }
+}
+
+/// The number settings: (field, getter, setter), the durations in milliseconds and the
+/// optional ones `None` when off.
+type NumberSlot = (SettingsField, fn(&PieMenuSettings) -> Option<f32>, fn(&mut PieMenuSettings, f32));
+
+fn ms(d: std::time::Duration) -> f32 {
+    d.as_secs_f32() * 1000.0
+}
+
+fn from_ms(n: f32) -> std::time::Duration {
+    std::time::Duration::from_secs_f32(n.max(0.0) / 1000.0)
+}
+
+const NUMBER_SLOTS: [NumberSlot; 19] = {
+    use SettingsField as F;
+    [
+        (F::HintSpacing, |s| Some(s.number_hints.spacing), |s, n| s.number_hints.spacing = n),
+        (F::LayoutRadius, |s| Some(s.layout.radius), |s, n| s.layout.radius = n),
+        (F::LayoutShapeFactor, |s| Some(s.layout.shape_factor), |s, n| s.layout.shape_factor = n),
+        (F::LayoutIntercardinalHeight, |s| s.layout.intercardinal_height, |s, n| s.layout.intercardinal_height = Some(n)),
+        (F::LayoutDeadZoneRadius, |s| Some(s.layout.dead_zone_radius), |s, n| s.layout.dead_zone_radius = n),
+        (F::LayoutScreenMargin, |s| Some(s.layout.screen_margin), |s, n| s.layout.screen_margin = n),
+        (F::CenterBackgroundRadius, |s| s.center_indicator.background_radius, |s, n| s.center_indicator.background_radius = Some(n)),
+        (F::CenterHighlightRadius, |s| s.center_indicator.highlight_radius, |s, n| s.center_indicator.highlight_radius = Some(n)),
+        (F::CenterHighlightAngle, |s| Some(s.center_indicator.highlight_angle), |s, n| s.center_indicator.highlight_angle = n),
+        (F::CenterHighlightCircleRadius, |s| Some(s.center_indicator.highlight_circle_radius), |s, n| {
+            s.center_indicator.highlight_circle_radius = n
+        }),
+        (F::SlideStartRadius, |s| Some(s.animations.slide_start_radius), |s, n| s.animations.slide_start_radius = n),
+        (F::SlideStartShapeFactor, |s| s.animations.slide_start_shape_factor, |s, n| s.animations.slide_start_shape_factor = Some(n)),
+        (F::FanOutRadius, |s| s.sub_pies.fan_out.radius, |s, n| s.sub_pies.fan_out.radius = Some(n)),
+        (F::DoubleTapWindow, |s| Some(ms(s.input.double_tap_window)), |s, n| s.input.double_tap_window = from_ms(n)),
+        (F::RevealDuration, |s| Some(ms(s.animations.reveal_duration)), |s, n| s.animations.reveal_duration = from_ms(n)),
+        (F::HoverDuration, |s| Some(ms(s.animations.hover_duration)), |s, n| s.animations.hover_duration = from_ms(n)),
+        (F::FanOutDelay, |s| Some(ms(s.sub_pies.fan_out.delay)), |s, n| s.sub_pies.fan_out.delay = from_ms(n)),
+        (F::SlideFade, |s| s.animations.slide_fade.map(ms), |s, n| s.animations.slide_fade = Some(from_ms(n))),
+        (F::SubPieHoverDelay, |s| s.sub_pies.hover_delay.map(ms), |s, n| s.sub_pies.hover_delay = Some(from_ms(n))),
+    ]
+};
+
+fn number_field(s: &PieMenuSettings, field: SettingsField) -> Option<f32> {
+    NUMBER_SLOTS.iter().find(|(f, ..)| *f == field).and_then(|(_, get, _)| get(s))
+}
+
+fn set_number_field(s: &mut PieMenuSettings, field: SettingsField, n: f32) -> bool {
+    let Some((_, get, set)) = NUMBER_SLOTS.iter().find(|(f, ..)| *f == field) else { return false };
+    if get(s) == Some(n) {
+        return false;
+    }
+    let before = format!("{s:?}");
+    set(s, n);
+    // A duration rounds to whole nanoseconds: "changed" only if it really did.
+    format!("{s:?}") != before
 }
 
 // ---------------------------------------------------------------------------------------
@@ -401,6 +472,9 @@ pub enum VarKind {
     Text,
     /// True or false (whether a button is enabled).
     Bool,
+    /// A number: a size, factor or angle (radians) as in the settings, a duration in
+    /// milliseconds.
+    Number,
 }
 
 impl VarKind {
@@ -411,6 +485,7 @@ impl VarKind {
             VarKind::Font => "a font",
             VarKind::Text => "text",
             VarKind::Bool => "true or false",
+            VarKind::Number => "a number",
         }
     }
 }
@@ -423,6 +498,7 @@ pub enum VarValue {
     Font(FontId),
     Text(String),
     Bool(bool),
+    Number(f32),
 }
 
 impl VarValue {
@@ -433,6 +509,7 @@ impl VarValue {
             VarValue::Font(_) => VarKind::Font,
             VarValue::Text(_) => VarKind::Text,
             VarValue::Bool(_) => VarKind::Bool,
+            VarValue::Number(_) => VarKind::Number,
         }
     }
 }
@@ -506,6 +583,12 @@ impl Variables {
         self.set(name, VarValue::Text(value.into()))
     }
 
+    /// A number, such as the user's preferred ring radius or animation time (in
+    /// milliseconds for a duration).
+    pub fn number(&mut self, name: impl Into<String>, value: f32) -> &mut Self {
+        self.set(name, VarValue::Number(value))
+    }
+
     /// A true-or-false variable, such as whether undo is possible (for `enabled`).
     pub fn flag(&mut self, name: impl Into<String>, value: bool) -> &mut Self {
         self.set(name, VarValue::Bool(value))
@@ -543,10 +626,12 @@ impl Variables {
 }
 
 impl SettingsField {
-    /// Whether the field can be bound to an expression: the colours, strokes and fonts.
+    /// Whether the field can be bound to an expression: the colours, strokes, fonts, numbers
+    /// and durations.
     pub fn is_bindable(self) -> bool {
         use SettingsField as F;
-        matches!(
+        self.is_number()
+            || matches!(
             self,
             F::HintColor
                 | F::CenterBackgroundStroke
@@ -563,7 +648,30 @@ impl SettingsField {
 
     /// Whether the field is an `Option` (a binding's expression gives the inner value).
     pub(crate) fn is_optional_value(self) -> bool {
-        matches!(self, SettingsField::HintColor | SettingsField::TextColor)
+        use SettingsField as F;
+        matches!(
+            self,
+            F::HintColor
+                | F::TextColor
+                | F::LayoutIntercardinalHeight
+                | F::CenterBackgroundRadius
+                | F::CenterHighlightRadius
+                | F::SlideStartShapeFactor
+                | F::FanOutRadius
+                | F::SlideFade
+                | F::SubPieHoverDelay
+        )
+    }
+
+    /// Whether the field is a number or a duration (bound to a [`VarKind::Number`]).
+    pub fn is_number(self) -> bool {
+        NUMBER_SLOTS.iter().any(|(f, ..)| *f == self)
+    }
+
+    /// Whether the field is a duration (a number variable gives milliseconds).
+    pub fn is_duration(self) -> bool {
+        use SettingsField as F;
+        matches!(self, F::DoubleTapWindow | F::RevealDuration | F::HoverDuration | F::FanOutDelay | F::SlideFade | F::SubPieHoverDelay)
     }
 }
 
@@ -838,6 +946,9 @@ fn var_swatch(ui: &mut Ui, value: &VarValue) {
         VarValue::Bool(on) => {
             ui.label(RichText::new(if *on { "on" } else { "off" }).small().weak());
         }
+        VarValue::Number(n) => {
+            ui.label(RichText::new(format!("{n}")).small().weak());
+        }
         VarValue::Font(_) | VarValue::Text(_) => {}
     }
 }
@@ -965,6 +1076,7 @@ mod tests {
                 VarKind::Color => VarValue::Color(Color32::from_rgb(9, 9, 9)),
                 VarKind::Stroke => VarValue::Stroke(Stroke::new(9.0, Color32::BLUE)),
                 VarKind::Font => VarValue::Font(FontId::monospace(9.0)),
+                VarKind::Number => VarValue::Number(9.0),
                 VarKind::Text | VarKind::Bool => unreachable!(),
             };
             let mut s = PieMenuSettings::default();
@@ -1090,8 +1202,18 @@ mod tests {
     #[test]
     fn bindable_fields() {
         let bindable: Vec<SettingsField> = SettingsField::ALL.into_iter().filter(|f| f.is_bindable()).collect();
-        assert_eq!(bindable.len(), 10);
-        assert!(!SettingsField::LayoutRadius.is_bindable());
-        assert!(bindable.iter().all(|f| !f.is_optional_value() || f.path().ends_with("color")));
+        assert_eq!(bindable.len(), 10 + 19);
+        assert!(SettingsField::LayoutRadius.is_bindable() && SettingsField::LayoutRadius.is_number());
+        assert!(!SettingsField::ShowBehavior.is_bindable() && !SettingsField::TitleShow.is_bindable());
+        assert!(SettingsField::SlideFade.is_duration() && SettingsField::SlideFade.is_optional_value());
+        // Optional exactly where the settings' value is an Option (its code is Some(..) / None).
+        let mut every_on = PieMenuSettings::default();
+        every_on.number_hints.color = Some(Color32::WHITE);
+        every_on.text_color = Some(Color32::WHITE);
+        let entries = super::super::settings_entries(&every_on);
+        for f in bindable {
+            let code = &entries.iter().find(|(p, _)| p == f.path()).expect("an entry per field").1;
+            assert_eq!(f.is_optional_value(), code.starts_with("Some(") || code == "None", "{f:?}: {code}");
+        }
     }
 }

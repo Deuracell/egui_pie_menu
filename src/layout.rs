@@ -127,7 +127,7 @@ impl PieMenu {
         d.min(TAU - d)
     }
 
-    /// Index of the enabled button the pointer vector `mouse_vec` (from the menu
+    /// Index of the enabled, visible button the pointer vector `mouse_vec` (from the menu
     /// centre) points at, or `None`. `dirs[i]` is button `i`'s displayed layout vector
     /// ([`Self::layout_vec`]). Empty directions are skipped: the pointer snaps to the
     /// closest available button. On an exact tie (e.g. straight down between East and
@@ -138,7 +138,7 @@ impl PieMenu {
         buttons
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.enabled)
+            .filter(|(_, b)| b.live())
             .map(|(idx, _)| (idx, Self::angle_diff(angle, dirs[idx].y.atan2(dirs[idx].x))))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(idx, _)| idx)

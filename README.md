@@ -194,6 +194,8 @@ menu.hovered(); // Option<usize>: the currently highlighted button
 
 Pointing at a direction with no (enabled) button snaps to the closest available one.
 
+A hidden button (`.with_visible(false)`, or `button.visible = false`) is not drawn at all, and is skipped like a disabled one: no pointer pick, number key or mnemonic, and its mnemonic does not clash with another's. It keeps its place in the tree, so paths and ids stay the same, and its direction, which no other button of the level may take. Use it for buttons that come and go, such as a plugin's that is switched off.
+
 Number keys are consumed by the menu, so the digit does not also reach other handlers or text fields.
 
 In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
@@ -621,7 +623,7 @@ if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |u
 }
 ```
 
-**Buttons.** `dir` is `N`, `NE`, `E`, `SE`, `S`, `SW`, `W` or `NW` (or `North`, `NorthEast`, ..). A button is a plain button, a sub-pie (`opens = "menu"`), a back button (`back = true`, labelled "Back" unless given a `label`) or a cluster (`items`, each with a `number`). Optional: `label`, `id`, `mnemonic` (one character, or `"none"`; left out: automatic), `enabled = false`, and on a sub-pie `style`. A menu's own `style` says how it opens as a sub-pie; the button's `style` wins.
+**Buttons.** `dir` is `N`, `NE`, `E`, `SE`, `S`, `SW`, `W` or `NW` (or `North`, `NorthEast`, ..). A button is a plain button, a sub-pie (`opens = "menu"`), a back button (`back = true`, labelled "Back" unless given a `label`) or a cluster (`items`, each with a `number`). Optional: `label`, `id`, `mnemonic` (one character, or `"none"`; left out: automatic), `enabled = false`, `visible = false`, and on a sub-pie `style`. A menu's own `style` says how it opens as a sub-pie; the button's `style` wins.
 
 **Ids.** `id` names a button or cluster item for your code. `MenuDefinition::ids` (a `ButtonIds`) maps paths to ids: `selected(&buttons, menu.selected_path())` after a selection, `find(id)` for the path, `button(path)` / `item(path, number)`. Unlike a path, an id stays the same when another file adds or reorders buttons.
 
@@ -651,7 +653,24 @@ id = "edit.undo"
 enabled = { var = "app.can_undo", default = true }
 ```
 
-The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible), `enabled` is true and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value. Only text, true/false, colours, strokes and fonts can be references for now; anything else is an error naming the setting.
+The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible), `enabled` and `visible` are true and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value.
+
+What can be a reference: labels and the title (text), `enabled` and `visible` (true or false), and the colours, strokes, fonts, numbers and durations of the settings. A number is the value as written in the file (pixels, factors, angles in radians) and a duration is in milliseconds:
+
+```toml
+[menu.edit.settings.layout]
+radius = { var = "prefs.pie_radius", default = 120.0 }
+
+[menu.edit.settings.animations]
+reveal_duration = { var = "prefs.animation_ms", default = 150 }
+
+[[menu.edit.button]]
+dir = "S"
+label = "Share"
+visible = { var = "plugins.share", default = false }
+```
+
+The rest (switches such as `title.show`, choices such as `reveal`) are literals only; a reference there is an error naming the setting.
 
 **Checking references.** Names and ids are only text to the file, so a typo goes unnoticed until a value stays at its default or a button does nothing. `check_references(&vars, &actions)` lists what your program does not answer: names it registers no variable for (or one of another kind, such as a font where a colour goes) and ids that are not among the actions it handles. Run it after loading, and log or show the result:
 
@@ -821,7 +840,7 @@ For generated code, each binding reads its value either once or every frame (TOM
 
 For an optional setting (`text_color`, the number hint colour) the expression is the inner value and the code wraps it in `Some(..)`. A `// needs in scope: theme, tr` line lists the names the expressions use. An empty expression is ignored (the code keeps the literal).
 
-**Variables from your app.** Register your app's values each frame (`color`, `stroke`, `font`, `text`, and `flag` for true or false), each under a plain name, and, where generated code should read it differently from the name, with `.code(..)`: the Rust expression for the variable registered just before. Below a bound row, an "app value" picker then lists the variables of the right kind (with a colour swatch). A value bound to one shows the variable's real current value: its editor is greyed out and follows your app (switch your theme or language and the editors and the preview change with it). Typing a variable of the wrong kind (a font for a colour) is flagged.
+**Variables from your app.** Register your app's values each frame (`color`, `stroke`, `font`, `text`, `number`, and `flag` for true or false), each under a plain name, and, where generated code should read it differently from the name, with `.code(..)`: the Rust expression for the variable registered just before. Below a bound row, an "app value" picker then lists the variables of the right kind (with a colour swatch). A value bound to one shows the variable's real current value: its editor is greyed out and follows your app (switch your theme or language and the editors and the preview change with it). Typing a variable of the wrong kind (a font for a colour) is flagged.
 
 ```rust
 let mut vars = Variables::new();
@@ -841,16 +860,16 @@ The variables are not saved with the bindings (they are your app's state); regis
 
 | Piece | What it does |
 |---|---|
-| `Bindings` / `BindTarget` / `Binding` / `BindingMode` | the bindings of one menu, owned by you like the `Selection`; a target is a settings field (`SettingsField::is_bindable`: colours, strokes, fonts), the title, a button label (by path) or a cluster item label (by path and number). With the `serde` feature they serialize |
+| `Bindings` / `BindTarget` / `Binding` / `BindingMode` | the bindings of one menu, owned by you like the `Selection`; a target is a settings field (`SettingsField::is_bindable`: colours, strokes, fonts, numbers, durations), the title, a button's label, `enabled` or `visible` (by path) or a cluster item's label or `enabled` (by path and number). With the `serde` feature they serialize |
 | `field_editor_bound` / `group_editor_bound` | `field_editor` / `group_editor` with the ⛓ toggle on bindable fields and the expression and Build / Live below a bound one |
-| `button_inspector_bound` | `button_inspector` with the ⛓ toggle on labels; it keeps the bindings with their buttons as the tree changes (`Bindings::follow`, `prune`, `renumber_item` for doing that yourself) |
+| `button_inspector_bound(.., &mut bindings, &mut ids, actions, extras)` | `button_inspector` with the ⛓ toggle on labels, `enabled` and `visible`, and an "Id" row (`id_editor`) for buttons and cluster items; it keeps bindings and ids with their buttons as the tree changes (`follow`, `prune`, `renumber_item` on `Bindings` / `ButtonIds` for doing that yourself) |
 | `binding_toggle` / `binding_details` | the two halves of a bound row, for your own rows (the demo's "Menu title") |
 | `Variables` / `VarValue` / `VarKind` | your app's values by name (`color`, `stroke`, `font`, `text`, `flag`), with `code` for the Rust expression of generated code (`code_for`); `Bindings::set_variables`, `apply` / `apply_title` (write the variable values in, keeping `fallback`s), `variable_for`, `code_expr` |
 | `id_editor(ui, &mut ids, &key, actions)` | an "Id" row for a button or cluster item, with a picker of the actions your program handles and a warning for an id that is none of them |
 | `menu_to_code_bound` | `menu_to_code` with the bindings; also `settings_to_code_bound`, `buttons_to_code_bound`, `live_bindings_code`, `free_identifiers` |
 
 ```rust
-let out = button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, |_, _, _| {});
+let out = button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, &mut ids, &["edit.copy", "edit.undo"], |_, _, _| {});
 // ...
 let code = menu_to_code_bound(Some("Edit"), &settings, &buttons, &bindings);
 ```
@@ -915,7 +934,7 @@ cargo run --example demo
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
   - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row (`id_editor`, offering the demo's actions) names a button for the file, and the last action shows the id of what was selected. Open reports the references the demo does not answer (`check_references`). The demo runs a pretend undo history on the ids it gets, behind the `app.can_undo` / `app.can_redo` variables: in the example menu, Undo is greyed out until something was done.
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row (`id_editor`, offering the demo's actions) names a button or cluster item for the file, and the last action shows the id of what was selected. Open reports the references the demo does not answer (`check_references`). The demo runs a pretend undo history on the ids it gets, behind the `app.can_undo` / `app.can_redo` variables: in the example menu, Undo is greyed out until something was done. The plugin's Share button is `visible = { var = "plugins.share" }`: the "Share plugin on" switch of the TOML tab shows and hides it.
 
 ## Upgrading from v0.36.0
 

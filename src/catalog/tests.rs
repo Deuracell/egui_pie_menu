@@ -287,7 +287,7 @@ fn file_errors() {
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nstyle = \"fan_out\"").contains("`style` needs `opens`"));
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nmnemonic = \"ab\"").contains("neither one character"));
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nitems = []\nmnemonic = \"a\"").contains("no mnemonic of its own"));
-    assert!(add("[menu.a.settings.layout]\nradius = { var = \"x\" }").contains("`layout.radius` cannot come from a variable"));
+    assert!(add("[menu.a.settings.title]\nshow = { var = \"x\" }").contains("`title.show` cannot come from a variable"));
     assert!(add("[menu.a.settings.title]\ntext_color = { var = \"x\", defualt = \"#fff\" }").contains("defualt"));
     let red = add("[menu.a.settings.title]\ntext_color = { var = \"x\", default = \"red\" }");
     assert!(red.contains("colour"), "{red}");
@@ -523,4 +523,87 @@ fn references_are_checked_against_the_program() {
     vars.flag("app.can_copy", true);
     let found = m.check_references(&vars, &["edit.copy", "fmt.b"]);
     assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn visible_can_be_a_reference() {
+    let base = r##"
+        [[menu.edit.button]]
+        dir = "N"
+        label = "Copy"
+        [[menu.edit.button]]
+        dir = "W"
+        label = "Old"
+        visible = false
+    "##;
+    let plugin = r##"
+        [[menu.edit.button]]
+        dir = "S"
+        label = "Share"
+        id = "plugin.share"
+        visible = { var = "plugins.share", default = false }
+    "##;
+    let mut edit = catalog(&[("base.toml", base), ("plugin.toml", plugin)]).build("edit").unwrap();
+    assert!(!edit.buttons[1].visible);
+    assert!(!edit.buttons[2].visible, "hidden until the program says the plugin is on");
+    let mut menu = edit.to_pie_menu();
+    let mut vars = Variables::new();
+    vars.flag("plugins.share", true);
+    assert!(edit.apply_variables(vars.clone(), &mut menu));
+    assert!(edit.buttons[2].visible);
+    assert!(edit.check_references(&vars, &["plugin.share"]).is_empty());
+    let found: Vec<String> = edit.check_references(&Variables::new(), &["plugin.share"]).iter().map(ToString::to_string).collect();
+    assert_eq!(found, ["`visible` of \"Share\": `plugins.share` is not a variable of the program"]);
+    let out = edit.to_toml();
+    assert!(out.contains("label = \"Old\"\nvisible = false"), "{out}");
+    assert!(out.contains("visible = { var = \"plugins.share\", default = false }"), "{out}");
+    let again = catalog(&[("again.toml", &out)]).build("edit").unwrap();
+    assert!(!again.buttons[2].visible);
+    assert_eq!(again.bindings, catalog(&[("base.toml", base), ("plugin.toml", plugin)]).build("edit").unwrap().bindings);
+}
+
+#[test]
+fn numbers_and_durations_can_be_references() {
+    let text = r##"
+        [menu.m.settings.layout]
+        radius = { var = "prefs.radius", default = 140.0 }
+        intercardinal_height = { var = "prefs.diagonal" }
+        [menu.m.settings.animations]
+        reveal_duration = { var = "prefs.anim_ms", default = 120 }
+        slide_fade = { var = "prefs.fade_ms", default = 80.5 }
+        [[menu.m.button]]
+        dir = "N"
+        label = "A"
+    "##;
+    let mut m = catalog(&[("m.toml", text)]).build("m").unwrap();
+    assert_eq!(m.settings.layout.radius, 140.0);
+    assert_eq!(m.settings.layout.intercardinal_height, None, "no default: the library's");
+    assert_eq!(m.settings.animations.reveal_duration, Duration::from_millis(120));
+    assert_eq!(m.settings.animations.slide_fade, Some(Duration::from_micros(80_500)));
+    let mut menu = m.to_pie_menu();
+    let mut vars = Variables::new();
+    vars.number("prefs.radius", 90.0).number("prefs.diagonal", 0.3).number("prefs.anim_ms", 250.0).number("prefs.fade_ms", 0.0);
+    assert!(m.apply_variables(vars.clone(), &mut menu));
+    assert_eq!(menu.settings.layout.radius, 90.0);
+    assert_eq!(menu.settings.layout.intercardinal_height, Some(0.3));
+    assert_eq!(menu.settings.animations.reveal_duration, Duration::from_millis(250));
+    assert_eq!(menu.settings.animations.slide_fade, Some(Duration::ZERO));
+    assert!(!m.apply_variables(vars, &mut menu), "unchanged values change nothing");
+    // Saved with the file's defaults; an optional one that was off has none.
+    m.settings = menu.settings.clone();
+    let out = m.to_toml();
+    assert!(out.contains("radius = { var = \"prefs.radius\", default = 140.0 }"), "{out}");
+    assert!(out.contains("intercardinal_height = { var = \"prefs.diagonal\" }"), "{out}");
+    assert!(out.contains("reveal_duration = { var = \"prefs.anim_ms\", default = 120.0 }"), "{out}");
+    assert!(out.contains("slide_fade = { var = \"prefs.fade_ms\", default = 80.5 }"), "{out}");
+    let again = catalog(&[("again.toml", &out)]).build("m").unwrap();
+    assert_eq!(format!("{:?}", again.settings), format!("{:?}", catalog(&[("m.toml", text)]).build("m").unwrap().settings));
+    // A number where text goes is reported.
+    let mut wrong = Variables::new();
+    wrong.text("prefs.radius", "big");
+    let found: Vec<String> = m.check_references(&wrong, &[] as &[&str]).iter().map(ToString::to_string).collect();
+    assert!(
+        found.contains(&"the setting `layout.radius`: `prefs.radius` is text of the program; this needs a number".to_string()),
+        "{found:?}"
+    );
 }
