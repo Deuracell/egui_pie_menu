@@ -974,7 +974,7 @@ Nothing below needs changes in existing code:
 - `ButtonView` helpers: `path`, `text_color()`, `scale()`, `use_pie_hover()`, `opens_sub_pie()`.
 - The `layout` and `sub_pies` setting groups, and demo icons ([Icons and images](#icons-and-images)).
 
-### New in v0.37.0
+### New in v0.36.2
 
 One change can need an edit in existing code:
 
