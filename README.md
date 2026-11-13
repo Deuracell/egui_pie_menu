@@ -14,6 +14,7 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 - Keyboard support: number keys 1–9 (numpad or number row) and per-button mnemonic keys with underline rendering helper
 - Quick-tap and double-tap detection with no timer required from the caller
 - The menu tracks its own open state; pinned (persistent) menus are built in
+- Menus defined in TOML files at runtime, merged across files (`toml` feature)
 
 ## Installation
 
@@ -147,6 +148,7 @@ menu.settings = serde_json::from_str(&json)?;
 - [Sub-pies](#sub-pies): replace style, fan-out, back buttons, centre modes, hover navigation, break-out
 - [Clusters](#clusters): one direction holding several clickable items
 - [Pinned / persistent menus](#pinned--persistent-menus): menus that stay open
+- [Menus from TOML files](#menus-from-toml-files): define and extend menus after compile time, ids for the buttons
 - [Settings](#settings): every setting group, reveal animation, hover emphasis, highlight shapes
 - [Right-to-left and non-Latin scripts](#right-to-left-and-non-latin-scripts): mirroring, digits, mnemonics
 - [Running the demo](#running-the-demo)
@@ -538,6 +540,109 @@ Any direction highlights a button, so without a `pointer_area` a click anywhere 
 
 Keyboard: a blocking menu (`block_background = true`, not pinned) takes keyboard focus away from any focused widget, so digits and mnemonics never end up in a text field. A non-blocking or pinned menu leaves typing alone: while egui wants keyboard input (a text field is focused), number keys and mnemonics go to that widget instead of the menu.
 
+## Menus from TOML files
+
+With the `toml` feature, menus can be defined in TOML files and loaded at runtime, so they can change without a rebuild, and other files (plugins, user overrides) can add to them.
+
+```toml
+[dependencies]
+egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", features = ["toml"] }
+```
+
+A file holds any number of menus, each under its name. A button opens another menu by naming it (`opens`), so a sub-pie can be defined in another file, and one menu can be the sub-pie of several buttons:
+
+```toml
+[menu.edit]
+title = "Edit"
+
+[menu.edit.settings.layout]
+radius = 120.0
+
+[[menu.edit.button]]
+dir = "N"
+label = "Copy"
+id = "edit.copy"
+mnemonic = "c"
+
+[[menu.edit.button]]
+dir = "E"
+label = "Paste Special"
+opens = "paste_special"   # another menu, in this file or any other
+style = "fan_out"         # optional: "replace" or "fan_out"
+
+[[menu.edit.button]]
+dir = "W"
+label = "Format"
+items = [
+    { number = 1, label = "B", id = "format.bold" },
+    { number = 2, label = "I", id = "format.italic" },
+]
+
+[[menu.paste_special.button]]
+dir = "N"
+label = "Values Only"
+id = "paste.values"
+```
+
+A second file can extend it. Here a plugin adds a button to `edit` that opens a menu of its own:
+
+```toml
+[[menu.edit.button]]
+dir = "S"
+label = "Share"
+opens = "share"
+
+[[menu.share.button]]
+dir = "N"
+back = true
+
+[[menu.share.button]]
+dir = "S"
+label = "Email"
+id = "plugin.share.email"
+```
+
+```rust
+use egui_pie_menu::catalog::MenuCatalog;
+
+let mut catalog = MenuCatalog::new();
+catalog.add_file("menus/edit.toml")?;
+catalog.add_file("plugins/share.toml")?;     // adds to `edit`
+let mut edit = catalog.build("edit")?;        // MenuDefinition
+let mut menu = edit.to_pie_menu();
+
+// each frame:
+if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |ui, b| { ui.label(b.label_text()); }) {
+    match edit.ids.selected(&edit.buttons, menu.selected_path()) {
+        Some("edit.copy") => copy(),
+        Some("plugin.share.email") => share_by_email(),
+        _ => {}
+    }
+}
+```
+
+**Buttons.** `dir` is `N`, `NE`, `E`, `SE`, `S`, `SW`, `W` or `NW` (or `North`, `NorthEast`, ..). A button is a plain button, a sub-pie (`opens = "menu"`), a back button (`back = true`, labelled "Back" unless given a `label`) or a cluster (`items`, each with a `number`). Optional: `label`, `id`, `mnemonic` (one character, or `"none"`; left out: automatic), `enabled = false`, and on a sub-pie `style`. A menu's own `style` says how it opens as a sub-pie; the button's `style` wins.
+
+**Ids.** `id` names a button or cluster item for your code. `MenuDefinition::ids` (a `ButtonIds`) maps paths to ids: `selected(&buttons, menu.selected_path())` after a selection, `find(id)` for the path, `button(path)` / `item(path, number)`. Unlike a path, an id stays the same when another file adds or reorders buttons.
+
+**Merging.** `add_toml` / `add_file` in order. A menu defined more than once (in several files, or twice in one) gets the buttons of every definition. Its `title`, `style`, `bind` keys and settings (key by key within a group) are replaced by later definitions. Two buttons in the same direction are an error naming both files. A file that fails adds nothing.
+
+**Settings** go under `[menu.<name>.settings]`, with the paths of `PieMenuSettings`, and only what differs from the default. Colours are `"#rrggbb"` or `"#rrggbbaa"`, durations are milliseconds, and `false` switches off an optional value (`background_radius = false`). Compound values are inline tables: `highlight_stroke = { width = 2.0, color = "#ffffff" }`, `text_font = { size = 18.0, family = "Monospace" }`. An unknown setting is an error.
+
+**Bindings and variables.** `[menu.<name>.bind]` binds the `title` and the colours, strokes and fonts (by path) to names of your app's [variables](#bindings-values-from-your-app). A button or cluster item binds its label with `bind_label`. A value is a name (`'tr("edit")'`) or `{ expr = "theme.accent", live = true }`. `edit.apply_variables(vars, &mut menu)` puts your app's current values in; a name without a variable keeps the value from the file.
+
+```toml
+[menu.edit.bind]
+title = 'tr("edit")'
+"center_indicator.highlight_fill_color" = "theme.accent"
+```
+
+A menu's `title`, `settings` and `bind` apply when it is built as a menu of its own. Where it opens as a sub-pie, only its buttons and `style` count.
+
+**Errors.** `build` fails, with the file and the button named, if a button opens a menu no file defines, menus open each other in a circle, or the tree has a problem `check_buttons` reports (a mnemonic used twice, a fan-out child facing the parent, ..). Debug builds therefore never assert on a menu that built.
+
+**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. The demo's "TOML" tab uses it to show, open and save menus.
+
 ## Settings
 
 All settings live on `PieMenu::settings: PieMenuSettings` and can be changed at any time. Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN` radius, zero-width strokes or arcs) draw nothing instead of panicking.
@@ -783,7 +888,7 @@ cargo run --example demo
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
   - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts.
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row names a button for the file, and the last action shows the id of what was selected.
 
 ## Upgrading from v0.36.0
 
@@ -878,6 +983,7 @@ Additive; nothing to change in existing code:
 - `PieMenu::configure`: change the settings in a closure.
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
+- The optional `toml` feature: menus in TOML files, loaded and merged at runtime (`catalog::MenuCatalog`, `MenuDefinition`), with ids for the buttons (`ButtonIds`) ([Menus from TOML files](#menus-from-toml-files)).
 - The `dev_tool` module: embeddable editors for the settings (`settings_editor`, `group_editor`, `field_editor`) and for a `PieButton` tree (`button_tree`, `button_tree_filtered`, `button_inspector`, `buttons_editor`), `preview_target` for a live preview, `set_menu_sub_pie_style`, and code generators ([Dev tool](#dev-tool)).
 - Dev tool bindings: bind colours, strokes, fonts, labels and the title to expressions of your app, read once or every frame, and register your app's values as `Variables` so the editors offer and show them ([Bindings](#bindings-values-from-your-app)). With them, `button_at` / `button_at_mut` (a button by path) and `PieButton::children_mut` / `cluster_item_mut`.
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.

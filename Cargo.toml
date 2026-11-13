@@ -12,10 +12,14 @@ categories = ["gui"]
 [dependencies]
 egui = "0.36.2"
 serde = { version = "1", optional = true, features = ["derive"] }
+toml = { version = "1", optional = true, features = ["preserve_order"] }
 
 [features]
 serde = ["dep:serde", "egui/serde"]
+toml = ["serde", "dep:toml"]
 
 [dev-dependencies]
+# The demo and the tests use the TOML menus.
+egui_pie_menu = { path = ".", features = ["toml"] }
 eframe = "0.36.2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }

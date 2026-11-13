@@ -5,8 +5,9 @@ use egui_pie_menu::dev_tool::{
     button_tree, button_tree_filtered, field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
 };
+use egui_pie_menu::catalog::{MenuCatalog, MenuDefinition};
 use egui_pie_menu::{
-    ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
+    ButtonIds, IdKey, ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
     SubPieStyle,
 };
 use std::collections::HashMap;
@@ -145,6 +146,14 @@ struct Demo {
     /// Values bound to expressions of your app (the chain buttons): the menu code uses the
     /// expression, the demo goes on showing the value.
     bindings: Bindings,
+    /// The `id` of each button, by path (the "Id" row of the inspector; saved in the TOML).
+    ids: ButtonIds,
+    /// The menu's name in the TOML files.
+    menu_name: String,
+    /// The TOML files to open, separated by commas (merged in order); Save writes the first.
+    toml_files: String,
+    /// What the last Open or Save did.
+    toml_note: String,
     /// What the canvas shows.
     mode: Mode,
     /// The last tree without problems: what Configure mode previews.
@@ -193,6 +202,98 @@ impl Demo {
         self.menu.settings.number_hints.digits = l.digits;
     }
 
+    /// The menu being edited, as a definition for the TOML files.
+    fn definition(&self) -> MenuDefinition {
+        MenuDefinition {
+            name: self.menu_name.clone(),
+            title: (!self.title.is_empty()).then(|| self.title.clone()),
+            settings: self.menu.settings.clone(),
+            buttons: self.buttons.clone(),
+            ids: self.ids.clone(),
+            bindings: self.bindings.clone(),
+        }
+    }
+
+    /// Replaces the menu being edited with `def` (the demo's own decorations start afresh).
+    fn load_definition(&mut self, def: MenuDefinition) {
+        self.menu_name = def.name;
+        self.title = def.title.unwrap_or_default();
+        self.menu.settings = def.settings;
+        self.buttons = def.buttons;
+        self.ids = def.ids;
+        let variables = self.bindings.variables().clone();
+        self.bindings = def.bindings;
+        self.bindings.set_variables(variables);
+        self.decor.clear();
+        self.selection = Selection::root();
+        self.previews.clear();
+    }
+
+    /// The comma-separated file names of the TOML tab.
+    fn toml_paths(&self) -> Vec<String> {
+        self.toml_files.split(',').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect()
+    }
+
+    /// Opens every file of the TOML tab into one catalog (later files add to and override
+    /// earlier ones) and builds the menu named in the tab (else the first one).
+    fn open_toml(&mut self) {
+        let mut catalog = MenuCatalog::new();
+        for path in self.toml_paths() {
+            if let Err(e) = catalog.add_file(&path) {
+                self.toml_note = e.to_string();
+                return;
+            }
+        }
+        let names: Vec<String> = catalog.menu_names().map(str::to_string).collect();
+        let Some(name) = names.iter().find(|n| **n == self.menu_name).or(names.first()).cloned() else {
+            self.toml_note = "The files define no menu.".to_string();
+            return;
+        };
+        match catalog.build(&name) {
+            Ok(def) => {
+                self.load_definition(def);
+                self.toml_note = format!("Opened `{name}` (the files define: {}).", names.join(", "));
+            }
+            Err(e) => self.toml_note = e.to_string(),
+        }
+    }
+
+    /// Writes the menu to the first file of the TOML tab.
+    fn save_toml(&mut self) {
+        let Some(path) = self.toml_paths().into_iter().next() else {
+            self.toml_note = "No file name.".to_string();
+            return;
+        };
+        self.toml_note = match std::fs::write(&path, self.definition().to_toml()) {
+            Ok(()) => format!("Saved `{}` to {path}.", self.menu_name),
+            Err(e) => format!("{path}: {e}"),
+        };
+    }
+
+    /// The menu name, the files, Open and Save, above the TOML.
+    fn toml_files_row(&mut self, ui: &mut egui::Ui) {
+        egui::Grid::new("toml_files").num_columns(2).show(ui, |ui| {
+            ui.label("Menu").on_hover_text("The menu's name in the files ([menu.<name>]); Open builds this one if the files have it.");
+            ui.add(egui::TextEdit::singleline(&mut self.menu_name).desired_width(140.0));
+            ui.end_row();
+            ui.label("Files").on_hover_text("Separated by commas. Open merges them in order; Save writes the first.");
+            ui.add(egui::TextEdit::singleline(&mut self.toml_files).desired_width(f32::INFINITY));
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Open").on_hover_text("Replaces the menu with the one built from the files").clicked() {
+                self.open_toml();
+            }
+            if ui.button("Save").on_hover_text("Writes the menu below to the first file").clicked() {
+                self.save_toml();
+            }
+        });
+        if !self.toml_note.is_empty() {
+            ui.label(RichText::new(&self.toml_note).small());
+        }
+        ui.separator();
+    }
+
     fn new(ctx: &egui::Context) -> Self {
         let (buttons, decor) = default_tree();
 
@@ -214,6 +315,10 @@ impl Demo {
             decor,
             selection: Selection::root(),
             bindings: Bindings::new(),
+            ids: ButtonIds::new(),
+            menu_name: "edit".to_string(),
+            toml_files: "examples/menus/edit.toml, examples/menus/plugin.toml".to_string(),
+            toml_note: String::new(),
             mode: Mode::Demo,
             snapshot: Vec::new(),
             previews: HashMap::new(),
@@ -235,6 +340,8 @@ enum CodeTab {
     Menu,
     /// A sketch of the render closure (`draw_code`).
     Draw,
+    /// The menu as a TOML file (`MenuDefinition::to_toml`), with Open and Save.
+    Toml,
 }
 
 /// The demo's pie buttons are drawn by the demo, so their height is a demo setting.
@@ -1675,6 +1782,9 @@ impl Demo {
             if ui.button("Reset buttons").clicked() {
                 (self.buttons, self.decor) = default_tree();
                 self.selection = Selection::root();
+                // Ids and label bindings belonged to the old tree's paths.
+                self.ids = ButtonIds::new();
+                self.bindings.retain(|target, _| target.path().is_none());
             }
             ui.label(RichText::new(format!("{} root buttons", self.buttons.len())).weak().small());
         });
@@ -1701,12 +1811,21 @@ impl Demo {
                 String::new()
             };
             let bindings = &mut self.bindings;
+            let ids = &mut self.ids;
             let out = button_inspector_bound(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, bindings, |ui, path, button| {
                 // Read first, write only on a change: the inspector may have reshaped the
                 // tree this frame, and the table follows only once it returns.
                 if !note.is_empty() {
                     ui.label(RichText::new(&note).small().weak());
                 }
+                ui.horizontal(|ui| {
+                    ui.label("Id").on_hover_text("Names the button for your code (MenuDefinition::ids); saved in the TOML.");
+                    let mut id = ids.button(path).unwrap_or_default().to_string();
+                    let edit = egui::TextEdit::singleline(&mut id).hint_text("edit.copy").desired_width(160.0);
+                    if ui.add(edit).changed() {
+                        ids.set(IdKey { path: path.to_vec(), item: None }, id);
+                    }
+                });
                 let mut d = decor_at(decor, path);
                 if appearance_editor(ui, button, &mut d) {
                     decor.insert(path.to_vec(), d);
@@ -1718,7 +1837,9 @@ impl Demo {
             // changes to the tree's shape need following.
             for edit in &out.edits {
                 rekey(&mut self.decor, edit);
+                self.ids.follow(edit);
             }
+            self.ids.prune(&self.buttons);
         });
     }
 }
@@ -1796,6 +1917,7 @@ impl eframe::App for Demo {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.code_tab, CodeTab::Menu, "Menu code");
                     ui.selectable_value(&mut self.code_tab, CodeTab::Draw, "Draw code");
+                    ui.selectable_value(&mut self.code_tab, CodeTab::Toml, "TOML");
                 });
                 ui.separator();
                 match self.code_tab {
@@ -1806,6 +1928,11 @@ impl eframe::App for Demo {
                     }
                     CodeTab::Draw => {
                         let code = draw_code(&self.buttons, &self.decor);
+                        egui_pie_menu::dev_tool::code_view(ui, &code);
+                    }
+                    CodeTab::Toml => {
+                        self.toml_files_row(ui);
+                        let code = self.definition().to_toml();
                         egui_pie_menu::dev_tool::code_view(ui, &code);
                     }
                 }
@@ -1955,6 +2082,7 @@ impl eframe::App for Demo {
                 PieMenuResponse::Selected(_) => {
                     // The full route from the root: "Paste Special › As Text".
                     let route = self.menu.selected_path().to_vec();
+                    let id = self.ids.selected(&self.buttons, &route).map(|id| format!("  [{id}]")).unwrap_or_default();
                     // A cluster's item: the last element is its number, not a button index.
                     let item = route.split_last().and_then(|(&n, up)| {
                         let cluster = button_at(&self.buttons, up).filter(|b| b.is_cluster())?;
@@ -1962,7 +2090,7 @@ impl eframe::App for Demo {
                         Some((up.to_vec(), label))
                     });
                     if let Some((up, label)) = item {
-                        self.last_action = format!("Selected: {} › {label}", names_along(&self.buttons, &up));
+                        self.last_action = format!("Selected: {} › {label}{id}", names_along(&self.buttons, &up));
                         return;
                     }
                     let name = names_along(&self.buttons, &route);
@@ -1970,9 +2098,9 @@ impl eframe::App for Demo {
                     self.last_action = if checkbox {
                         let d = decor_mut(&mut self.decor, &route);
                         d.checked = !d.checked;
-                        format!("Selected: {name} ({})", if d.checked { "on" } else { "off" })
+                        format!("Selected: {name} ({}){id}", if d.checked { "on" } else { "off" })
                     } else {
-                        format!("Selected: {name}")
+                        format!("Selected: {name}{id}")
                     };
                 }
                 PieMenuResponse::Dismissed => {
@@ -2154,6 +2282,40 @@ mod tests {
         }
         frames(&mut demo, |d, ui| d.buttons_tab(ui, "paste"));
         assert!(tree_problems(&demo.menu.settings, &demo.buttons).is_empty());
+    }
+
+    #[test]
+    fn toml_open_save_and_open_again() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        frames(&mut demo, |d, ui| d.toml_files_row(ui));
+        demo.open_toml();
+        assert!(demo.toml_note.starts_with("Opened `edit`"), "{}", demo.toml_note);
+        assert_eq!(demo.buttons.len(), 7, "edit.toml and plugin.toml merged");
+        assert_eq!(demo.ids.selected(&demo.buttons, &[6, 2]), Some("plugin.share.chat"));
+        assert_eq!(demo.menu.settings.layout.radius, 130.0);
+        assert!(demo.bindings.get(&BindTarget::Title).is_some());
+        // Drawn with the opened menu (tabs and the Configure previews).
+        frames(&mut demo, |d, ui| d.buttons_tab(ui, ""));
+        // Save to a file of its own and open it alone: the same menu.
+        let path = std::env::temp_dir().join(format!("pie_demo_{}.toml", std::process::id()));
+        demo.toml_files = path.display().to_string();
+        demo.ids.set(IdKey { path: vec![0], item: None }, "edit.copy_renamed");
+        let before = demo.definition();
+        demo.save_toml();
+        assert!(demo.toml_note.starts_with("Saved"), "{}", demo.toml_note);
+        demo.buttons.clear();
+        demo.open_toml();
+        let after = demo.definition();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(format!("{:?}", after.buttons), format!("{:?}", before.buttons));
+        assert_eq!(after.ids, before.ids);
+        assert_eq!(after.bindings, before.bindings);
+        // A missing file is reported, and the menu stays.
+        demo.toml_files = "no/such/file.toml".to_string();
+        demo.open_toml();
+        assert!(demo.toml_note.starts_with("no/such/file.toml: "), "{}", demo.toml_note);
+        assert_eq!(demo.buttons.len(), 7);
     }
 
     #[test]

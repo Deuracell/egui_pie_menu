@@ -1,0 +1,35 @@
+# A plugin's additions, loaded after edit.toml: a button for the Edit menu that
+# opens a menu of its own, one more entry for Paste Special, and a setting.
+
+[menu.edit.settings.layout]
+radius = 130.0   # later files win, key by key
+
+[[menu.edit.button]]
+dir = "S"
+label = "Share"
+id = "plugin.share"
+opens = "share"
+
+[[menu.paste_special.button]]
+dir = "SE"
+label = "As Image"
+id = "plugin.paste_image"
+
+[[menu.share.button]]
+dir = "N"
+back = true
+
+[[menu.share.button]]
+dir = "SE"
+label = "Email"
+id = "plugin.share.email"
+
+[[menu.share.button]]
+dir = "S"
+label = "Chat"
+id = "plugin.share.chat"
+
+[[menu.share.button]]
+dir = "SW"
+label = "Link"
+id = "plugin.share.link"

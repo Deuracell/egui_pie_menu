@@ -42,6 +42,9 @@ pub mod settings;
 pub use settings::*;
 
 mod button;
+mod button_ids;
+#[cfg(feature = "toml")]
+pub mod catalog;
 pub mod dev_tool;
 mod highlight_shapes;
 mod layout;
@@ -50,6 +53,7 @@ mod mnemonic;
 mod tests;
 
 pub use button::{ButtonProblem, ButtonView, ClusterItem, button_at, button_at_mut, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
+pub use button_ids::{ButtonIds, IdKey};
 pub use mnemonic::{Mnemonic, mnemonic_text};
 
 use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};
