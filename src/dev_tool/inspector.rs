@@ -1,7 +1,7 @@
 //! The button tree ([`button_tree`]) and the inspector of the selected node
 //! ([`button_inspector`]), and what to preview for a selection ([`preview_target`]).
 use super::bindings::{BindTarget, Bindings, bound_row, id_editor};
-use crate::{ButtonIds, IdKey};
+use crate::{Actions, ButtonIds, IdKey};
 use super::fields::*;
 use super::legality::*;
 use super::{KindChoice, kind_choice};
@@ -356,7 +356,22 @@ fn tree_node(ui: &mut Ui, ctx: &TreeCtx, button: &PieButton, path: &[usize], sel
 /// `settings` decides what a sub-pie without a style of its own is (the menu-wide style) and
 /// supplies `input.auto_mnemonics` for the problem check.
 pub fn button_tree(ui: &mut Ui, settings: &PieMenuSettings, buttons: &[PieButton], selection: &mut Selection) {
-    tree(ui, settings, buttons, selection, None);
+    tree(ui, settings, buttons, selection, None, &[]);
+}
+
+/// [`button_tree`] (with an optional search `filter`, as in [`button_tree_filtered`]) that
+/// also marks the buttons at `marked` (and the nodes above them) with a warning sign, like a
+/// button problem: e.g. the buttons whose id the program does not handle
+/// ([`crate::Actions::unregistered`]; a cluster item's mark goes on its cluster).
+pub fn button_tree_marked(
+    ui: &mut Ui,
+    settings: &PieMenuSettings,
+    buttons: &[PieButton],
+    selection: &mut Selection,
+    filter: Option<&dyn Fn(&PieButton) -> bool>,
+    marked: &[Vec<usize>],
+) {
+    tree(ui, settings, buttons, selection, filter, marked);
 }
 
 /// [`button_tree`] showing only the buttons `filter` accepts and the buttons above them (a
@@ -368,7 +383,7 @@ pub fn button_tree_filtered(
     selection: &mut Selection,
     filter: &dyn Fn(&PieButton) -> bool,
 ) {
-    tree(ui, settings, buttons, selection, Some(filter));
+    tree(ui, settings, buttons, selection, Some(filter), &[]);
 }
 
 fn tree(
@@ -377,6 +392,7 @@ fn tree(
     buttons: &[PieButton],
     selection: &mut Selection,
     filter: Option<&dyn Fn(&PieButton) -> bool>,
+    marked: &[Vec<usize>],
 ) {
     *selection = selection.clamped(buttons);
     let id = ui.id().with("pie_button_tree");
@@ -384,8 +400,10 @@ fn tree(
     let last: Option<Selection> = ui.data(|d| d.get_temp(last_id));
     let reveal = last.as_ref() != Some(&*selection);
     let problems = tree_problems(settings, buttons);
-    let ctx = TreeCtx { settings, filter, bad: problem_button_paths(&problems), reveal, id };
-    let root_title = node_title("Menu".to_string(), !problems.is_empty());
+    let mut bad = problem_button_paths(&problems);
+    bad.extend(marked.iter().cloned());
+    let ctx = TreeCtx { settings, filter, bad, reveal, id };
+    let root_title = node_title("Menu".to_string(), !problems.is_empty() || !marked.is_empty());
     if ui.selectable_label(*selection == Selection::root(), root_title).clicked() {
         *selection = Selection::root();
     }
@@ -694,8 +712,8 @@ fn button_sections(
     settings: &PieMenuSettings,
     buttons: &[PieButton],
     selection: &Selection,
-    mut bindings: Option<&mut Bindings>,
-    ids: Option<(&mut ButtonIds, &[String])>,
+    bindings: Option<&mut Bindings>,
+    ids: Option<(&mut ButtonIds, &Actions)>,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     let path = &selection.path;
@@ -715,7 +733,7 @@ fn button_sections(
             }
             false
         };
-        match bindings.as_deref_mut() {
+        match bindings {
             Some(b) => {
                 bound_row(ui, b, &BindTarget::Label(path.clone()), label_row);
             }
@@ -789,14 +807,9 @@ fn button_sections(
             }
             false
         };
-        match bindings.as_deref_mut() {
-            Some(b) => {
-                bound_row(ui, b, &BindTarget::Enabled(path.clone()), enabled_row);
-            }
-            None => {
-                ui.horizontal(enabled_row);
-            }
-        }
+        // Whether a button is enabled or visible is the program's state (by its id, through
+        // `Actions`): these checkboxes are for trying it out, not bound to anything.
+        ui.horizontal(enabled_row);
         let visible_row = |ui: &mut Ui| {
             let mut visible = button.visible;
             if ui
@@ -808,14 +821,7 @@ fn button_sections(
             }
             false
         };
-        match bindings {
-            Some(b) => {
-                bound_row(ui, b, &BindTarget::Visible(path.clone()), visible_row);
-            }
-            None => {
-                ui.horizontal(visible_row);
-            }
-        }
+        ui.horizontal(visible_row);
         if remove_block_reason(buttons, path).is_none() && ui.button("Remove").clicked() {
             intents.push(Intent::Remove);
         }
@@ -870,8 +876,8 @@ fn item_sections(
     settings: &PieMenuSettings,
     buttons: &[PieButton],
     selection: &Selection,
-    mut bindings: Option<&mut Bindings>,
-    ids: Option<(&mut ButtonIds, &[String])>,
+    bindings: Option<&mut Bindings>,
+    ids: Option<(&mut ButtonIds, &Actions)>,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     let Some(cluster) = button_at(buttons, &selection.path) else { return intents };
@@ -900,7 +906,7 @@ fn item_sections(
             }
             false
         };
-        match bindings.as_deref_mut() {
+        match bindings {
             Some(b) => {
                 bound_row(ui, b, &BindTarget::ItemLabel(selection.path.clone(), item.number), label_row);
             }
@@ -915,14 +921,7 @@ fn item_sections(
             }
             false
         };
-        match bindings {
-            Some(b) => {
-                bound_row(ui, b, &BindTarget::ItemEnabled(selection.path.clone(), item.number), enabled_row);
-            }
-            None => {
-                ui.horizontal(enabled_row);
-            }
-        }
+        ui.horizontal(enabled_row);
         if item_remove_block_reason(cluster.cluster_items().len()).is_none() && ui.button("Remove item").clicked() {
             intents.push(Intent::RemoveItem(k));
         }
@@ -972,10 +971,10 @@ pub fn button_inspector(
 }
 
 /// [`button_inspector`] that also edits what ties the menu to your program: [`Bindings`] (a
-/// bind toggle on the label, `enabled` and `visible` of a button or cluster item, with the
-/// name and Build / Live below while bound, and the menu-wide settings drawn with
-/// [`field_editor_bound`]) and the [`ButtonIds`] of buttons and cluster items (an "Id" row,
-/// [`id_editor`], offering the `actions` your program handles). Bindings and ids follow the
+/// bind toggle on the label of a button or cluster item, with the name and Build / Live below
+/// while bound, and the menu-wide settings drawn with [`field_editor_bound`]) and the
+/// [`ButtonIds`] of buttons and cluster items (an "Id" row, [`id_editor`], offering the
+/// `actions` your program handles; whether they are enabled and visible is theirs). Bindings and ids follow the
 /// tree: a removed button's go with it, later siblings' move down, a renumbered item's
 /// follow it.
 #[allow(clippy::too_many_arguments)]
@@ -986,11 +985,10 @@ pub fn button_inspector_bound(
     selection: &mut Selection,
     bindings: &mut Bindings,
     ids: &mut ButtonIds,
-    actions: &[impl AsRef<str>],
+    actions: &Actions,
     extras: impl FnMut(&mut Ui, &[usize], &mut PieButton),
 ) -> InspectorOutput {
-    let actions: Vec<String> = actions.iter().map(|a| a.as_ref().to_string()).collect();
-    inspect(ui, settings, buttons, selection, Some(bindings), Some((ids, &actions)), extras, true)
+    inspect(ui, settings, buttons, selection, Some(bindings), Some((ids, actions)), extras, true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1000,7 +998,7 @@ fn inspect(
     buttons: &mut Vec<PieButton>,
     selection: &mut Selection,
     mut bindings: Option<&mut Bindings>,
-    mut ids: Option<(&mut ButtonIds, &[String])>,
+    mut ids: Option<(&mut ButtonIds, &Actions)>,
     mut extras: impl FnMut(&mut Ui, &[usize], &mut PieButton),
     menu_wide: bool,
 ) -> InspectorOutput {
@@ -1397,6 +1395,16 @@ mod tests {
     }
 
     #[test]
+    fn the_marked_tree_draws() {
+        let t = tree();
+        let s = PieMenuSettings::default();
+        let mut sel = Selection::button([2, 1]);
+        run(|ui| button_tree_marked(ui, &s, &t, &mut sel, None, &[vec![2, 1]]));
+        run(|ui| button_tree_marked(ui, &s, &t, &mut sel, Some(&|b: &PieButton| b.label == "Deep"), &[vec![0]]));
+        assert_eq!(sel, Selection::button([2, 1]));
+    }
+
+    #[test]
     fn the_bound_inspector_draws_and_keeps_bindings() {
         use super::super::bindings::{Binding, BindingMode};
         let mut buttons = tree();
@@ -1418,7 +1426,9 @@ mod tests {
             let mut selection = sel.clone();
             let mut seen = None;
             run(|ui| {
-                seen = Some(button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, &mut ids, &["a.b"], |_, _, _| {}))
+                let mut actions = Actions::new();
+                actions.add("a.b");
+                seen = Some(button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, &mut ids, &actions, |_, _, _| {}))
             });
             assert_eq!(seen, Some(InspectorOutput::default()), "{sel:?}");
         }

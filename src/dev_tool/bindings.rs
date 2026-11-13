@@ -899,7 +899,7 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
 /// An "Id" row for the button or cluster item `key`: a text field and, when your program
 /// registers the `actions` it handles, a picker of them and a warning for an id that is not
 /// one. Returns `true` if the id changed.
-pub fn id_editor(ui: &mut Ui, ids: &mut crate::ButtonIds, key: &crate::IdKey, actions: &[impl AsRef<str>]) -> bool {
+pub fn id_editor(ui: &mut Ui, ids: &mut crate::ButtonIds, key: &crate::IdKey, actions: &crate::Actions) -> bool {
     let mut id = match key.item {
         Some(n) => ids.item(&key.path, n),
         None => ids.button(&key.path),
@@ -912,16 +912,16 @@ pub fn id_editor(ui: &mut Ui, ids: &mut crate::ButtonIds, key: &crate::IdKey, ac
         changed |= ui.add(egui::TextEdit::singleline(&mut id).hint_text("edit.copy").desired_width(140.0)).changed();
         if !actions.is_empty() {
             egui::ComboBox::from_id_salt(("pie_id_actions", key)).selected_text("\u{2026}").width(24.0).show_ui(ui, |ui| {
-                for a in actions {
-                    if ui.selectable_label(a.as_ref() == id, a.as_ref()).clicked() {
-                        id = a.as_ref().to_string();
+                for a in actions.ids() {
+                    if ui.selectable_label(a == id, a).clicked() {
+                        id = a.to_string();
                         changed = true;
                     }
                 }
             });
         }
     });
-    if !id.is_empty() && !actions.is_empty() && !actions.iter().any(|a| a.as_ref() == id) {
+    if !id.is_empty() && !actions.is_empty() && !actions.contains(&id) {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(ui.spacing().indent);
             ui.label(RichText::new("Not an action of your program.").small().color(Color32::from_rgb(220, 160, 60)));

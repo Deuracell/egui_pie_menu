@@ -1,5 +1,7 @@
-# A plugin's additions, loaded after edit.toml: a button for the Edit menu that
-# opens a menu of its own, one more entry for Paste Special, and a setting.
+# A plugin's additions: a button for the Edit menu that opens a menu of its own,
+# one more entry for Paste Special, and a setting. The program shows the plugin's
+# buttons only while the plugin is switched on (by their ids: the demo's
+# "Share plugin on" switch).
 
 [menu.edit.settings.layout]
 radius = 130.0   # later files win, key by key
@@ -9,7 +11,6 @@ dir = "S"
 label = "Share"
 id = "plugin.share"
 opens = "share"
-visible = { var = "plugins.share", default = true }   # the program switches the plugin
 
 [[menu.paste_special.button]]
 dir = "SE"
@@ -34,3 +35,10 @@ id = "plugin.share.chat"
 dir = "SW"
 label = "Link"
 id = "plugin.share.link"
+
+# The demo does not handle this action: it shows how such a button looks
+# (disabled, marked in the tree, drawn in the error colour by the demo).
+[[menu.share.button]]
+dir = "W"
+label = "Print"
+id = "plugin.share.print"

@@ -614,6 +614,7 @@ let mut edit = catalog.build("edit")?;        // MenuDefinition
 let mut menu = edit.to_pie_menu();
 
 // each frame:
+edit.apply_actions(&actions(&app));           // enabled / visible, by id (below)
 if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |ui, b| { ui.label(b.label_text()); }) {
     match edit.ids.selected(&edit.buttons, menu.selected_path()) {
         Some("edit.copy") => copy(),
@@ -623,15 +624,41 @@ if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |u
 }
 ```
 
-**Buttons.** `dir` is `N`, `NE`, `E`, `SE`, `S`, `SW`, `W` or `NW` (or `North`, `NorthEast`, ..). A button is a plain button, a sub-pie (`opens = "menu"`), a back button (`back = true`, labelled "Back" unless given a `label`) or a cluster (`items`, each with a `number`). Optional: `label`, `id`, `mnemonic` (one character, or `"none"`; left out: automatic), `enabled = false`, `visible = false`, and on a sub-pie `style`. A menu's own `style` says how it opens as a sub-pie; the button's `style` wins.
+**Buttons.** `dir` is `N`, `NE`, `E`, `SE`, `S`, `SW`, `W` or `NW` (or `North`, `NorthEast`, ..). A button is a plain button, a sub-pie (`opens = "menu"`), a back button (`back = true`, labelled "Back" unless given a `label`) or a cluster (`items`, each with a `number`). Optional: `label`, `id`, `mnemonic` (one character, or `"none"`; left out: automatic), and on a sub-pie `style`. A menu's own `style` says how it opens as a sub-pie; the button's `style` wins.
 
 **Ids.** `id` names a button or cluster item for your code. `MenuDefinition::ids` (a `ButtonIds`) maps paths to ids: `selected(&buttons, menu.selected_path())` after a selection, `find(id)` for the path, `button(path)` / `item(path, number)`. Unlike a path, an id stays the same when another file adds or reorders buttons.
 
-**Merging.** `add_toml` / `add_file` in order. A menu defined more than once (in several files, or twice in one) gets the buttons of every definition. Its `title`, `style` and settings (key by key within a group) are replaced by later definitions. Two buttons in the same direction are an error naming both files. A file that fails adds nothing.
+**Merging.** `add_toml` / `add_file` in order. A menu defined more than once (in several files, or twice in one) gets the buttons of every definition, in the order the files define them. Its `title`, `style` and settings (key by key within a group) are replaced by later definitions. A file that fails to load (bad TOML, an unknown key or setting) adds nothing.
+
+**Removing and changing buttons.** A file can also take buttons out of a menu or change them, wherever they were defined, by their `id`. This is how a user's own file adjusts the base menu and the plugins':
+
+```toml
+# user/menus.toml
+[menu.edit]
+remove = ["edit.paste_special", "format.underline"]   # a button (with its sub-pie), a cluster item
+
+[[menu.edit.change]]
+id = "edit.cut"
+label = "Snip"                # only the fields given change
+mnemonic = "s"
+
+[[menu.edit.change]]
+id = "plugin.share"
+dir = "SE"                    # move the plugin's button, to free South
+
+[[menu.edit.button]]
+dir = "S"
+label = "Select All"
+id = "edit.select_all"        # an action the program has but its menus did not show
+```
+
+A `change` can set `dir`, `label`, `mnemonic`, `opens`, `style` and `items` of a button, and `label` and `mnemonic` of a cluster item. `remove` and `change` are per menu: a sub-pie's buttons are changed in that sub-pie's own menu (`[[menu.paste_special.change]]`).
+
+They apply when the menu is built, after every file is in: first every `change` (in file order, so a later file wins on the same field), then every `remove`. Only then are the buttons checked: two in one direction is an error naming both files. So the order of the files does not matter for removals and changes: the user's file can be loaded before or after the plugin it changes. A `remove` or `change` whose id is not in the menu (the plugin is not installed) is not an error; it is noted in `MenuDefinition::notes` and reported by `check_references`.
 
 **Settings** go under `[menu.<name>.settings]`, with the paths of `PieMenuSettings`, and only what differs from the default. Colours are `"#rrggbb"` or `"#rrggbbaa"`, durations are milliseconds, and `false` switches off an optional value (`background_radius = false`). Compound values are inline tables: `highlight_stroke = { width = 2.0, color = "#ffffff" }`, `text_font = { size = 18.0, family = "Monospace" }`. An unknown setting is an error.
 
-**Values from your program.** A file can't hold code, so a value your program supplies is a reference by name: a label, a cluster item's label, the title, whether a button or item is `enabled`, or a colour, stroke or font of the settings can be a literal or `{ var = "name", default = .. }`.
+**Values from your program.** A file can't hold code, so a value your program supplies is a reference by name: a label, a cluster item's label, the title, or a colour, stroke, font, number or duration of the settings can be a literal or `{ var = "name", default = .. }`.
 
 ```toml
 [menu.edit]
@@ -646,16 +673,11 @@ dir = "N"
 label = { var = "i18n.copy", default = "Copy" }
 id = "edit.copy"
 
-[[menu.edit.button]]
-dir = "W"
-label = { var = "i18n.undo", default = "Undo" }
-id = "edit.undo"
-enabled = { var = "app.can_undo", default = true }
 ```
 
-The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible), `enabled` and `visible` are true and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value.
+The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible) and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value.
 
-What can be a reference: labels and the title (text), `enabled` and `visible` (true or false), and the colours, strokes, fonts, numbers and durations of the settings. A number is the value as written in the file (pixels, factors, angles in radians) and a duration is in milliseconds:
+A number is the value as written in the file (pixels, factors, angles in radians) and a duration is in milliseconds:
 
 ```toml
 [menu.edit.settings.layout]
@@ -663,30 +685,68 @@ radius = { var = "prefs.pie_radius", default = 120.0 }
 
 [menu.edit.settings.animations]
 reveal_duration = { var = "prefs.animation_ms", default = 150 }
-
-[[menu.edit.button]]
-dir = "S"
-label = "Share"
-visible = { var = "plugins.share", default = false }
 ```
 
 The rest (switches such as `title.show`, choices such as `reveal`) are literals only; a reference there is an error naming the setting.
 
-**Checking references.** Names and ids are only text to the file, so a typo goes unnoticed until a value stays at its default or a button does nothing. `check_references(&vars, &actions)` lists what your program does not answer: names it registers no variable for (or one of another kind, such as a font where a colour goes) and ids that are not among the actions it handles. Run it after loading, and log or show the result:
+**Actions: what the program handles, and their state.** Whether a button is enabled or shown is not something a file can know: it is the state of the *action* behind it, which only the program has. So files never say `enabled` or `visible`; the program registers the actions it handles, by id, with their state, and every button and cluster item with that id follows:
+
+```rust
+use egui_pie_menu::Actions;
+
+/// The actions this program handles, and their state right now.
+fn actions(app: &App) -> Actions {
+    let mut a = Actions::new();
+    a.add("edit.copy").enabled(app.selection.is_some());
+    a.add("edit.undo").enabled(app.history.can_undo());
+    a.add("edit.redo").enabled(app.history.can_redo());
+    a.add("edit.select_all");
+    a.add("paste.values");
+    // A plugin's actions: shown only while it is switched on.
+    let share_on = app.plugins.share.enabled();
+    a.add("plugin.share").visible(share_on);
+    a.add("plugin.share.email").visible(share_on).enabled(app.document.is_saved());
+    a
+}
+
+// each frame (it only writes what changed):
+edit.apply_actions(&actions(&app));
+```
+
+An action is enabled and visible unless the program says otherwise. A disabled button is greyed and cannot be picked; a hidden one is not drawn and keeps its place ([hidden buttons](#disabled-buttons-and-hover-query)). A cluster item cannot hide: a hidden action disables it. Buttons without an `id` are left alone. The `match` on the selected id then never sees an action that is disabled or hidden.
+
+**Buttons without an action.** A button whose id the program does not register (a typo in a plugin's file, a plugin made for a newer version) is disabled, so it can never be picked and do nothing; it shows egui's disabled look. `apply_actions` returns those ids, each the first time it finds it, for you to log if you like. Whether such buttons look more alarming than that is up to your program, which knows who is looking (an end user cannot fix someone else's file): `edit.is_unhandled(path)` (`is_item_unhandled` for a cluster item) tells your render closure, and `unhandled_color(ui)` is the theme's error colour to draw it in:
+
+```rust
+menu.show(ctx, &edit.buttons, key_down, |ui, b| {
+    let mut text = b.label_text();
+    if edit.is_unhandled(b.path) {
+        text = text.color(unhandled_color(ui));   // wins over the label's own colour
+    }
+    ui.label(text).on_disabled_hover_text("no action in the program");
+});
+```
+
+`actions.keep_unregistered(true)` leaves such buttons as they are, for programs that pass ids they do not know on to someone else.
+
+**Checking references.** Names and ids are only text to the file, so a typo goes unnoticed until a value stays at its default or a button is disabled. `check_references(&vars, &actions)` lists what your program does not answer: what building noted (a `remove` or `change` that found nothing), names it registers no variable for (or one of another kind, such as a font where a colour goes) and ids that are not among its actions. Run it after loading, and log or show the result:
 
 ```rust
 let mut vars = Variables::new();
-vars.text("i18n.copy", tr("copy")).flag("app.can_undo", history.can_undo());
-for problem in edit.check_references(&vars, &["edit.copy", "edit.undo"]) {
-    log::warn!("{problem}");   // the label of "Copy": `i18n.cpy` is not a variable of the program
+vars.text("i18n.copy", tr("copy"));
+for problem in edit.check_references(&vars, &actions(&app)) {
+    log::warn!("{problem}");
+    // the label of "Copy": `i18n.cpy` is not a variable of the program
+    // the id of "Share" › "Emial": `plugin.share.emial` is not an action of the program
+    // `remove` in menu `edit` (from user/menus.toml): `format.italik` is not in the menu (nothing removed)
 }
 ```
 
 A menu's `title` and `settings` apply when it is built as a menu of its own. Where it opens as a sub-pie, only its buttons and `style` count.
 
-**Errors.** `build` fails, with the file and the button named, if a button opens a menu no file defines, menus open each other in a circle, or the tree has a problem `check_buttons` reports (a mnemonic used twice, a fan-out child facing the parent, ..). Debug builds therefore never assert on a menu that built.
+**Errors.** `build` fails, with the file and the button named, if two buttons of a menu share a direction (after changes and removals), a `change` gives a cluster item a direction or the like, a button opens a menu no file defines, menus open each other in a circle, or the tree has a problem `check_buttons` reports (a mnemonic used twice, a fan-out child facing the parent, ..). Debug builds therefore never assert on a menu that built.
 
-**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. A reference keeps the file's own default, not the value your program put in: a menu saved while the program runs in Russian keeps `default = "Copy"`. The demo's "TOML" tab uses it to show, open and save menus.
+**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. Whether buttons are enabled or visible is the program's state and is not written. A reference keeps the file's own default, not the value your program put in: a menu saved while the program runs in Russian keeps `default = "Copy"`. The demo's "TOML" tab uses it to show, open and save menus.
 
 ## Settings
 
@@ -854,7 +914,7 @@ self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
 self.bindings.apply_title(&mut self.title);
 ```
 
-`apply` keeps the value each target had before your app's replaced it (`Bindings::fallback`), so a file saved afterwards keeps its defaults. A name that is not one of your registered variables is flagged below the row (a TOML file would keep the fallback for it). Labels and `enabled` of buttons and cluster items can be bound as well as the settings.
+`apply` keeps the value each target had before your app's replaced it (`Bindings::fallback`), so a file saved afterwards keeps its defaults. A name that is not one of your registered variables is flagged below the row (a TOML file would keep the fallback for it). Labels of buttons and cluster items can be bound as well as the settings and the title. Whether a button is enabled or visible is not bound: it is the state of its action ([Actions](#menus-from-toml-files)); the inspector's checkboxes are for trying it out. (For generated Rust code, `BindTarget::Enabled` / `Visible` can still be set from your own code.)
 
 The variables are not saved with the bindings (they are your app's state); register them again every frame.
 
@@ -862,10 +922,11 @@ The variables are not saved with the bindings (they are your app's state); regis
 |---|---|
 | `Bindings` / `BindTarget` / `Binding` / `BindingMode` | the bindings of one menu, owned by you like the `Selection`; a target is a settings field (`SettingsField::is_bindable`: colours, strokes, fonts, numbers, durations), the title, a button's label, `enabled` or `visible` (by path) or a cluster item's label or `enabled` (by path and number). With the `serde` feature they serialize |
 | `field_editor_bound` / `group_editor_bound` | `field_editor` / `group_editor` with the ⛓ toggle on bindable fields and the expression and Build / Live below a bound one |
-| `button_inspector_bound(.., &mut bindings, &mut ids, actions, extras)` | `button_inspector` with the ⛓ toggle on labels, `enabled` and `visible`, and an "Id" row (`id_editor`) for buttons and cluster items; it keeps bindings and ids with their buttons as the tree changes (`follow`, `prune`, `renumber_item` on `Bindings` / `ButtonIds` for doing that yourself) |
+| `button_inspector_bound(.., &mut bindings, &mut ids, &actions, extras)` | `button_inspector` with the ⛓ toggle on labels, and an "Id" row (`id_editor`) for buttons and cluster items; it keeps bindings and ids with their buttons as the tree changes (`follow`, `prune`, `renumber_item` on `Bindings` / `ButtonIds` for doing that yourself) |
 | `binding_toggle` / `binding_details` | the two halves of a bound row, for your own rows (the demo's "Menu title") |
 | `Variables` / `VarValue` / `VarKind` | your app's values by name (`color`, `stroke`, `font`, `text`, `flag`), with `code` for the Rust expression of generated code (`code_for`); `Bindings::set_variables`, `apply` / `apply_title` (write the variable values in, keeping `fallback`s), `variable_for`, `code_expr` |
-| `id_editor(ui, &mut ids, &key, actions)` | an "Id" row for a button or cluster item, with a picker of the actions your program handles and a warning for an id that is none of them |
+| `id_editor(ui, &mut ids, &key, &actions)` | an "Id" row for a button or cluster item, with a picker of the actions your program handles and a warning for an id that is none of them |
+| `button_tree_marked(.., filter, &marked)` | `button_tree` (optionally filtered) that marks the buttons at `marked` with ⚠, e.g. those without an action (`Actions::unregistered`) |
 | `menu_to_code_bound` | `menu_to_code` with the bindings; also `settings_to_code_bound`, `buttons_to_code_bound`, `live_bindings_code`, `free_identifiers` |
 
 ```rust
@@ -934,7 +995,7 @@ cargo run --example demo
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
   - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row (`id_editor`, offering the demo's actions) names a button or cluster item for the file, and the last action shows the id of what was selected. Open reports the references the demo does not answer (`check_references`). The demo runs a pretend undo history on the ids it gets, behind the `app.can_undo` / `app.can_redo` variables: in the example menu, Undo is greyed out until something was done. The plugin's Share button is `visible = { var = "plugins.share" }`: the "Share plugin on" switch of the TOML tab shows and hides it.
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row (`id_editor`, offering the demo's actions) names a button or cluster item for the file, and the last action shows the id of what was selected. Open reports the references the demo does not answer (`check_references`). The demo registers its actions as a program would (`Actions`): its pretend undo history, run by the ids it gets, enables Undo and Redo only when there is something to undo or redo, and the "Share plugin on" switch of the TOML tab shows and hides the plugin's buttons. The plugin's Print has an id the demo does not handle, on purpose: it is disabled, marked ⚠ in the tree (`button_tree_marked`) and drawn in the error colour (`unhandled_color`). Add `examples/menus/user.toml` to the files to see a user's `remove` and `change`.
 
 ## Upgrading from v0.36.0
 
@@ -1029,7 +1090,8 @@ Additive; nothing to change in existing code:
 - `PieMenu::configure`: change the settings in a closure.
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
-- The optional `toml` feature: menus in TOML files, loaded and merged at runtime (`catalog::MenuCatalog`, `MenuDefinition`), with ids for the buttons (`ButtonIds`) ([Menus from TOML files](#menus-from-toml-files)).
+- The optional `toml` feature: menus in TOML files, loaded and merged at runtime (`catalog::MenuCatalog`, `MenuDefinition`), with ids for the buttons (`ButtonIds`), `remove` / `change` by id, and the program's actions setting buttons' state (`Actions`) ([Menus from TOML files](#menus-from-toml-files)).
+- `PieButton::visible` / `with_visible`: hidden buttons keep their place but are not drawn or picked.
 - The `dev_tool` module: embeddable editors for the settings (`settings_editor`, `group_editor`, `field_editor`) and for a `PieButton` tree (`button_tree`, `button_tree_filtered`, `button_inspector`, `buttons_editor`), `preview_target` for a live preview, `set_menu_sub_pie_style`, and code generators ([Dev tool](#dev-tool)).
 - Dev tool bindings: bind colours, strokes, fonts, labels and the title to expressions of your app, read once or every frame, and register your app's values as `Variables` so the editors offer and show them ([Bindings](#bindings-values-from-your-app)). With them, `button_at` / `button_at_mut` (a button by path) and `PieButton::children_mut` / `cluster_item_mut`.
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.

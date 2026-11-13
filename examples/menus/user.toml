@@ -1,0 +1,24 @@
+# A user's own changes to the menus of edit.toml and plugin.toml. Load it after
+# them, or before: removals and changes apply once every file is in, so the order
+# does not matter (the demo's TOML tab: add it to the files and Open).
+
+[menu.edit]
+# Take out what I never use: a button (with its sub-pie) and a cluster item.
+remove = ["edit.paste_special", "format.underline"]
+
+# Change only the fields given; the rest stays as the other files defined it.
+[[menu.edit.change]]
+id = "edit.cut"
+label = "Snip"
+mnemonic = "s"
+
+# Move the plugin's Share button, to make room for my own.
+[[menu.edit.change]]
+id = "plugin.share"
+dir = "SE"
+
+# An action the program has but its own menus do not show.
+[[menu.edit.button]]
+dir = "S"
+label = "Select All"
+id = "edit.select_all"
