@@ -172,6 +172,40 @@ impl Default for TextDef {
     }
 }
 
+/// Whether a button or item is enabled: `false`, or a reference
+/// (`{ var = "app.can_undo", default = true }`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum FlagDef {
+    Literal(bool),
+    Var(VarRef<bool>),
+}
+
+impl FlagDef {
+    /// `on`, as a reference to `var` if there is one; `None` for a plain `true` (the default).
+    fn new(on: bool, var: Option<&str>) -> Option<Self> {
+        match var {
+            Some(v) => Some(FlagDef::Var(VarRef { var: v.to_string(), default: Some(on) })),
+            None => (!on).then_some(FlagDef::Literal(false)),
+        }
+    }
+
+    /// The value until a variable fills it: the literal, the default, else on.
+    fn on(&self) -> bool {
+        match self {
+            FlagDef::Literal(b) => *b,
+            FlagDef::Var(r) => r.default.unwrap_or(true),
+        }
+    }
+
+    fn var(&self) -> Option<&str> {
+        match self {
+            FlagDef::Literal(_) => None,
+            FlagDef::Var(r) => Some(&r.var),
+        }
+    }
+}
+
 /// A binding to the variable `name` (bindings from files have no Build / Live mode).
 fn var_binding(name: &str) -> Binding {
     Binding::new(name, BindingMode::Build)
@@ -188,7 +222,7 @@ struct ItemDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mnemonic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
+    enabled: Option<FlagDef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -202,7 +236,7 @@ struct ButtonDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mnemonic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
+    enabled: Option<FlagDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     opens: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -825,8 +859,11 @@ impl MenuCatalog {
                     if let Some(m) = &item.mnemonic {
                         it.mnemonic = parse_mnemonic(m).map_err(err)?;
                     }
-                    if let Some(e) = item.enabled {
-                        it = it.with_enabled(e);
+                    if let Some(e) = &item.enabled {
+                        it = it.with_enabled(e.on());
+                        if let Some(var) = e.var() {
+                            bindings.set(BindTarget::ItemEnabled(path.clone(), item.number), var_binding(var));
+                        }
                     }
                     if let Some(id) = &item.id {
                         ids.set(IdKey { path: path.clone(), item: Some(item.number) }, id.clone());
@@ -849,8 +886,11 @@ impl MenuCatalog {
             if let Some(m) = &def.mnemonic {
                 b.mnemonic = parse_mnemonic(m).map_err(err)?;
             }
-            if let Some(e) = def.enabled {
-                b.enabled = e;
+            if let Some(e) = &def.enabled {
+                b.enabled = e.on();
+                if let Some(var) = e.var() {
+                    bindings.set(BindTarget::Enabled(path.clone()), var_binding(var));
+                }
             }
             if let Some(id) = &def.id {
                 ids.set(IdKey { path: path.clone(), item: None }, id.clone());
@@ -909,6 +949,38 @@ fn check_button(b: &ButtonDef) -> Result<(), String> {
 // A built menu
 // ---------------------------------------------------------------------------------------
 
+/// What is wrong with a reference ([`MenuDefinition::check_references`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReferenceIssue {
+    /// No variable of the program has the name.
+    UnknownVariable,
+    /// The variable is of another kind than the place needs (a font for a colour).
+    WrongKind { found: crate::dev_tool::VarKind, needed: crate::dev_tool::VarKind },
+    /// The program does not handle the id.
+    UnknownAction,
+}
+
+/// A reference the program does not answer: where it is (`place`, e.g. `the label of
+/// "Edit › Copy"`), the name or id, and what is wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferenceProblem {
+    pub place: String,
+    pub name: String,
+    pub issue: ReferenceIssue,
+}
+
+impl fmt::Display for ReferenceProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.issue {
+            ReferenceIssue::UnknownVariable => write!(f, "{}: `{}` is not a variable of the program", self.place, self.name),
+            ReferenceIssue::WrongKind { found, needed } => {
+                write!(f, "{}: `{}` is {} of the program; this needs {}", self.place, self.name, found.name(), needed.name())
+            }
+            ReferenceIssue::UnknownAction => write!(f, "{}: `{}` is not an action of the program", self.place, self.name),
+        }
+    }
+}
+
 /// A menu built from a [`MenuCatalog`] (or made in the dev tool): everything to show it, and
 /// to write it back to TOML with [`MenuDefinition::to_toml`].
 ///
@@ -957,13 +1029,86 @@ impl MenuDefinition {
     pub fn apply_variables(&mut self, vars: Variables, menu: &mut PieMenu) -> bool {
         self.bindings.set_variables(vars);
         let mut changed = self.bindings.apply(&mut menu.settings, &mut self.buttons);
-        if let Some(VarValue::Text(t)) = self.bindings.variable_for(&BindTarget::Title)
-            && menu.title.as_deref() != Some(t.as_str())
-        {
-            menu.title = Some(t.clone());
+        let mut title = menu.title.clone().unwrap_or_default();
+        if self.bindings.apply_title(&mut title) {
+            menu.title = Some(title);
             changed = true;
         }
         changed
+    }
+
+    /// The references your program does not answer: names that are not among `vars` (or are
+    /// of another kind than the place needs) and ids that are not among the `actions` your
+    /// program handles. Empty when every reference is known. Run it after loading, e.g. to
+    /// log a typo in a plugin's file.
+    ///
+    /// ```
+    /// use egui_pie_menu::{catalog::MenuCatalog, dev_tool::Variables};
+    /// let mut catalog = MenuCatalog::new();
+    /// catalog.add_toml("m.toml", r#"
+    ///     [[menu.m.button]]
+    ///     dir = "N"
+    ///     label = { var = "i18n.cpy", default = "Copy" }
+    ///     id = "edit.cpy"
+    /// "#).unwrap();
+    /// let mut vars = Variables::new();
+    /// vars.text("i18n.copy", "Copy");
+    /// let problems = catalog.build("m").unwrap().check_references(&vars, &["edit.copy"]);
+    /// assert_eq!(problems.len(), 2);
+    /// assert_eq!(problems[0].to_string(), "the label of \"Copy\": `i18n.cpy` is not a variable of the program");
+    /// assert_eq!(problems[1].to_string(), "the id of \"Copy\": `edit.cpy` is not an action of the program");
+    /// ```
+    pub fn check_references(&self, vars: &Variables, actions: &[impl AsRef<str>]) -> Vec<ReferenceProblem> {
+        let mut out = Vec::new();
+        // The title, the settings (in their order), then the buttons in tree order.
+        let mut targets: Vec<&BindTarget> = self.bindings.iter().map(|(t, _)| t).collect();
+        targets.sort_by_key(|t| {
+            let field = match t {
+                BindTarget::Field(f) => SettingsField::ALL.iter().position(|x| x == f).unwrap_or(0) + 1,
+                _ => 0,
+            };
+            (
+                t.path().is_some(),
+                field,
+                t.path().map(<[usize]>::to_vec),
+                t.item(),
+                matches!(t, BindTarget::Enabled(_) | BindTarget::ItemEnabled(..)),
+            )
+        });
+        for target in targets {
+            let Some(name) = self.var(target) else { continue };
+            let issue = match vars.get(name) {
+                None => ReferenceIssue::UnknownVariable,
+                Some(v) if v.kind() != target.kind() => ReferenceIssue::WrongKind { found: v.kind(), needed: target.kind() },
+                Some(_) => continue,
+            };
+            out.push(ReferenceProblem { place: self.place(target), name: name.to_string(), issue });
+        }
+        let mut ids: Vec<(&crate::IdKey, &str)> = self.ids.iter().collect();
+        ids.sort_by_key(|(k, _)| (k.path.clone(), k.item));
+        for (key, id) in ids {
+            if !actions.iter().any(|a| a.as_ref() == id) {
+                let place = match key.item {
+                    Some(n) => format!("the id of item {n} of {}", labels_along(&self.buttons, &key.path)),
+                    None => format!("the id of {}", labels_along(&self.buttons, &key.path)),
+                };
+                out.push(ReferenceProblem { place, name: id.to_string(), issue: ReferenceIssue::UnknownAction });
+            }
+        }
+        out
+    }
+
+    /// "the label of "Edit › Copy"" for a binding target.
+    fn place(&self, target: &BindTarget) -> String {
+        let along = |p: &[usize]| labels_along(&self.buttons, p);
+        match target {
+            BindTarget::Field(f) => format!("the setting `{}`", f.path()),
+            BindTarget::Title => "the title".to_string(),
+            BindTarget::Label(p) => format!("the label of {}", along(p)),
+            BindTarget::Enabled(p) => format!("`enabled` of {}", along(p)),
+            BindTarget::ItemLabel(p, n) => format!("the label of item {n} of {}", along(p)),
+            BindTarget::ItemEnabled(p, n) => format!("`enabled` of item {n} of {}", along(p)),
+        }
     }
 
     /// The definition as a TOML file: this menu first, then one menu per sub-pie, named
@@ -977,7 +1122,7 @@ impl MenuDefinition {
         let title_var = self.var(&BindTarget::Title);
         root.title = match (&self.title, title_var) {
             (None, None) => None,
-            (t, var) => Some(TextDef::new(t.as_deref().unwrap_or_default(), var)),
+            (t, var) => Some(TextDef::new(&self.fallback_text(&BindTarget::Title, t.as_deref().unwrap_or_default()), var)),
         };
         let mut settings = settings_to_table(&self.settings);
         let current = readable_settings(&self.settings);
@@ -985,8 +1130,12 @@ impl MenuDefinition {
             if let Some(var) = self.var(&BindTarget::Field(field)) {
                 let mut r = Table::new();
                 r.insert("var".into(), Value::String(var.to_string()));
-                if let Some(d) = table_get(&current, field.path()) {
-                    r.insert("default".into(), d.clone());
+                let default = match self.bindings.fallback(&BindTarget::Field(field)) {
+                    Some(fallback) => fallback.and_then(readable_var_value),
+                    None => table_get(&current, field.path()).cloned(),
+                };
+                if let Some(d) = default {
+                    r.insert("default".into(), d);
                 }
                 table_set(&mut settings, field.path(), Value::Table(r));
             }
@@ -994,6 +1143,22 @@ impl MenuDefinition {
         root.settings = settings;
         root.button = buttons;
         write_menus(&menus)
+    }
+
+    /// The text to write for `target`: what it had before your app's variable replaced it,
+    /// else `current`.
+    fn fallback_text(&self, target: &BindTarget, current: &str) -> String {
+        match self.bindings.fallback(target) {
+            Some(Some(VarValue::Text(t))) => t.clone(),
+            _ => current.to_string(),
+        }
+    }
+
+    fn fallback_flag(&self, target: &BindTarget, current: bool) -> bool {
+        match self.bindings.fallback(target) {
+            Some(Some(VarValue::Bool(b))) => *b,
+            _ => current,
+        }
     }
 
     /// The variable `target` refers to (a binding's name; its Build / Live mode is for
@@ -1013,13 +1178,16 @@ impl MenuDefinition {
         for (n, b) in level.iter().enumerate() {
             path.push(n);
             let default_label = if b.is_back() { "Back" } else { "" };
-            let label_var = self.var(&BindTarget::Label(path.clone()));
+            let label_target = BindTarget::Label(path.clone());
+            let label_var = self.var(&label_target);
+            let label = self.fallback_text(&label_target, &b.label);
+            let enabled_target = BindTarget::Enabled(path.clone());
             let mut def = ButtonDef {
                 dir: direction_name(b.direction).to_string(),
-                label: (b.label != default_label || label_var.is_some()).then(|| TextDef::new(&b.label, label_var)),
+                label: (label != default_label || label_var.is_some()).then(|| TextDef::new(&label, label_var)),
                 id: self.ids.button(path).map(str::to_string),
                 mnemonic: if b.is_cluster() { None } else { mnemonic_name(b.mnemonic) },
-                enabled: (!b.enabled).then_some(false),
+                enabled: FlagDef::new(self.fallback_flag(&enabled_target, b.enabled), self.var(&enabled_target)),
                 back: b.is_back(),
                 ..ButtonDef::default()
             };
@@ -1039,10 +1207,16 @@ impl MenuDefinition {
                             .iter()
                             .map(|i| ItemDef {
                                 number: i.number,
-                                label: TextDef::new(&i.label, self.var(&BindTarget::ItemLabel(path.clone(), i.number))),
+                                label: {
+                                    let t = BindTarget::ItemLabel(path.clone(), i.number);
+                                    TextDef::new(&self.fallback_text(&t, &i.label), self.var(&t))
+                                },
                                 id: self.ids.item(path, i.number).map(str::to_string),
                                 mnemonic: mnemonic_name(i.mnemonic),
-                                enabled: (!i.enabled).then_some(false),
+                                enabled: {
+                                    let t = BindTarget::ItemEnabled(path.clone(), i.number);
+                                    FlagDef::new(self.fallback_flag(&t, i.enabled), self.var(&t))
+                                },
                             })
                             .collect(),
                     );
@@ -1054,6 +1228,16 @@ impl MenuDefinition {
         }
         out
     }
+}
+
+/// A settings value of a variable in its readable form (`"#rrggbb"`, a stroke table, ..).
+fn readable_var_value(v: &VarValue) -> Option<Value> {
+    Some(match v {
+        VarValue::Color(c) => Value::String(hex(*c)),
+        VarValue::Stroke(st) => readable(Value::try_from(st).ok()?, ""),
+        VarValue::Font(f) => readable(Value::try_from(f).ok()?, ""),
+        VarValue::Text(_) | VarValue::Bool(_) => return None,
+    })
 }
 
 /// A menu name from a label (`Paste Special` → `paste_special`), unique among `taken`.

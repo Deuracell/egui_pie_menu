@@ -431,3 +431,96 @@ fn the_example_files_build_and_merge() {
     assert_eq!(again.ids, edit.ids);
     assert_eq!(again.bindings, edit.bindings);
 }
+
+#[test]
+fn enabled_can_be_a_reference() {
+    let text = r##"
+        [[menu.m.button]]
+        dir = "N"
+        label = "Undo"
+        enabled = { var = "app.can_undo", default = false }
+        [[menu.m.button]]
+        dir = "E"
+        label = "Off"
+        enabled = false
+        [[menu.m.button]]
+        dir = "S"
+        label = "Format"
+        items = [{ number = 1, label = "B", enabled = { var = "app.bold" } }]
+    "##;
+    let mut m = catalog(&[("m.toml", text)]).build("m").unwrap();
+    assert!(!m.buttons[0].enabled, "the default until applied");
+    assert!(!m.buttons[1].enabled);
+    assert!(m.buttons[2].cluster_items()[0].enabled, "no default: enabled");
+    assert_eq!(m.bindings.get(&BindTarget::Enabled(vec![0])), Some(&var_binding("app.can_undo")));
+    assert_eq!(m.bindings.get(&BindTarget::ItemEnabled(vec![2], 1)), Some(&var_binding("app.bold")));
+    let mut menu = m.to_pie_menu();
+    let mut vars = Variables::new();
+    vars.flag("app.can_undo", true).flag("app.bold", false);
+    assert!(m.apply_variables(vars, &mut menu));
+    assert!(m.buttons[0].enabled);
+    assert!(!m.buttons[2].cluster_items()[0].enabled);
+    // Written with the file's own defaults, not the applied values.
+    let out = m.to_toml();
+    assert!(out.contains("enabled = { var = \"app.can_undo\", default = false }"), "{out}");
+    assert!(out.contains("enabled = { var = \"app.bold\", default = true }"), "{out}");
+    assert!(out.contains("label = \"Off\"\nenabled = false"), "{out}");
+    let again = catalog(&[("again.toml", &out)]).build("m").unwrap();
+    assert_eq!(format!("{:?}", again.buttons), format!("{:?}", catalog(&[("m.toml", text)]).build("m").unwrap().buttons));
+    let bad = MenuCatalog::new().add_toml("f.toml", "[[menu.m.button]]\ndir = \"N\"\nenabled = \"yes\"").unwrap_err();
+    assert!(bad.message.contains("enabled"), "{bad}");
+}
+
+#[test]
+fn saving_keeps_the_files_defaults_after_applying() {
+    // A program in Russian saves the menu: the file keeps its English defaults.
+    let base = include_str!("../../examples/menus/edit.toml");
+    let mut edit = catalog(&[("edit.toml", base)]).build("edit").unwrap();
+    let mut menu = edit.to_pie_menu();
+    let mut vars = Variables::new();
+    vars.text("i18n.edit", "Правка").text("i18n.copy", "Копировать").color("theme.accent", Color32::RED);
+    edit.apply_variables(vars, &mut menu);
+    edit.title = menu.title.clone();
+    edit.settings = menu.settings.clone();
+    assert_eq!(edit.buttons[0].label, "Копировать");
+    let out = edit.to_toml();
+    assert!(out.contains("title = { var = \"i18n.edit\", default = \"Edit\" }"), "{out}");
+    assert!(out.contains("label = { var = \"i18n.copy\", default = \"Copy\" }"), "{out}");
+    assert!(out.contains("highlight_fill_color = { var = \"theme.accent\", default = \"#8000ff\" }"), "{out}");
+    assert!(!out.contains("Правка") && !out.contains("Копировать") && !out.contains("#ff0000"), "{out}");
+}
+
+#[test]
+fn references_are_checked_against_the_program() {
+    let text = r##"
+        [menu.m]
+        title = { var = "i18n.title" }
+        settings = { title = { text_font = { var = "theme.accent" } } }
+        [[menu.m.button]]
+        dir = "N"
+        label = { var = "i18n.copy", default = "Copy" }
+        id = "edit.copy"
+        enabled = { var = "app.can_copy" }
+        [[menu.m.button]]
+        dir = "S"
+        label = "Format"
+        items = [{ number = 2, label = "B", id = "fmt.b" }]
+    "##;
+    let m = catalog(&[("m.toml", text)]).build("m").unwrap();
+    let mut vars = Variables::new();
+    vars.text("i18n.copy", "Copy").color("theme.accent", Color32::RED).text("app.can_copy", "yes");
+    let found: Vec<String> = m.check_references(&vars, &["edit.copy"]).iter().map(ToString::to_string).collect();
+    assert_eq!(
+        found,
+        [
+            "the title: `i18n.title` is not a variable of the program",
+            "the setting `title.text_font`: `theme.accent` is a colour of the program; this needs a font",
+            "`enabled` of \"Copy\": `app.can_copy` is text of the program; this needs true or false",
+            "the id of item 2 of \"Format\": `fmt.b` is not an action of the program",
+        ]
+    );
+    vars.text("i18n.title", "T").font("theme.accent", FontId::default());
+    vars.flag("app.can_copy", true);
+    let found = m.check_references(&vars, &["edit.copy", "fmt.b"]);
+    assert!(found.is_empty(), "{found:?}");
+}

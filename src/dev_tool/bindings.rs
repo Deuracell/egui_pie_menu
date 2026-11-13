@@ -24,27 +24,46 @@ pub enum BindTarget {
     Label(Vec<usize>),
     /// The label of the cluster item with this number, in the cluster at this path.
     ItemLabel(Vec<usize>, usize),
+    /// Whether the button at this path is enabled.
+    Enabled(Vec<usize>),
+    /// Whether the cluster item with this number, in the cluster at this path, is enabled.
+    ItemEnabled(Vec<usize>, usize),
 }
 
 impl BindTarget {
     /// The path of the button this target belongs to (`None` for a field or the title).
     pub fn path(&self) -> Option<&[usize]> {
         match self {
-            BindTarget::Label(p) | BindTarget::ItemLabel(p, _) => Some(p),
+            BindTarget::Label(p) | BindTarget::ItemLabel(p, _) | BindTarget::Enabled(p) | BindTarget::ItemEnabled(p, _) => Some(p),
             BindTarget::Field(_) | BindTarget::Title => None,
         }
     }
 
     fn path_mut(&mut self) -> Option<&mut Vec<usize>> {
         match self {
-            BindTarget::Label(p) | BindTarget::ItemLabel(p, _) => Some(p),
+            BindTarget::Label(p) | BindTarget::ItemLabel(p, _) | BindTarget::Enabled(p) | BindTarget::ItemEnabled(p, _) => Some(p),
             BindTarget::Field(_) | BindTarget::Title => None,
+        }
+    }
+
+    /// The cluster item number, for a target that belongs to a cluster item.
+    pub fn item(&self) -> Option<usize> {
+        match self {
+            BindTarget::ItemLabel(_, n) | BindTarget::ItemEnabled(_, n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn item_mut(&mut self) -> Option<&mut usize> {
+        match self {
+            BindTarget::ItemLabel(_, n) | BindTarget::ItemEnabled(_, n) => Some(n),
+            _ => None,
         }
     }
 
     /// Whether the target is text (a label or the title) rather than a settings value.
     pub fn is_text(&self) -> bool {
-        !matches!(self, BindTarget::Field(_))
+        self.kind() == VarKind::Text
     }
 
     /// The kind of value the target holds (what a [`Variables`] entry must be to fill it).
@@ -55,6 +74,7 @@ impl BindTarget {
             BindTarget::Field(F::TitleTextFont) => VarKind::Font,
             BindTarget::Field(_) => VarKind::Color,
             BindTarget::Title | BindTarget::Label(_) | BindTarget::ItemLabel(..) => VarKind::Text,
+            BindTarget::Enabled(_) | BindTarget::ItemEnabled(..) => VarKind::Bool,
         }
     }
 
@@ -69,6 +89,7 @@ impl BindTarget {
             BindTarget::Field(_) => "theme.accent",
             BindTarget::Title => "i18n.menu.edit",
             BindTarget::Label(_) | BindTarget::ItemLabel(..) => "i18n.edit.copy",
+            BindTarget::Enabled(_) | BindTarget::ItemEnabled(..) => "app.can_undo",
         }
     }
 }
@@ -120,6 +141,10 @@ impl Binding {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
 pub struct Bindings {
     entries: Vec<(BindTarget, Binding)>,
+    /// The value a target had before [`Bindings::apply`] first replaced it with a variable's:
+    /// the fallback that files keep. Not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    fallbacks: Vec<(BindTarget, Option<VarValue>)>,
     /// What your app registered this frame ([`Bindings::set_variables`]); not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     variables: Variables,
@@ -166,7 +191,15 @@ impl Bindings {
 
     pub fn remove(&mut self, target: &BindTarget) -> Option<Binding> {
         let i = self.entries.iter().position(|(t, _)| t == target)?;
+        self.fallbacks.retain(|(t, _)| t != target);
         Some(self.entries.remove(i).1)
+    }
+
+    /// The value `target` had before [`Bindings::apply`] first replaced it with your app's:
+    /// the fallback to write to a file. `None` if nothing was replaced (the current value is
+    /// the fallback); `Some(None)` if it had none (an optional colour that was off).
+    pub fn fallback(&self, target: &BindTarget) -> Option<Option<&VarValue>> {
+        self.fallbacks.iter().find(|(t, _)| t == target).map(|(_, v)| v.as_ref())
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&BindTarget, &Binding)> {
@@ -183,6 +216,12 @@ impl Bindings {
     /// binding when the tree is replaced).
     pub fn retain(&mut self, mut keep: impl FnMut(&BindTarget, &Binding) -> bool) {
         self.entries.retain(|(t, b)| keep(t, b));
+        self.drop_orphan_fallbacks();
+    }
+
+    fn drop_orphan_fallbacks(&mut self) {
+        let entries = &self.entries;
+        self.fallbacks.retain(|(t, _)| entries.iter().any(|(e, _)| e == t));
     }
 
     /// The expression of `target` if it is bound in `mode` with a non-empty expression.
@@ -194,17 +233,20 @@ impl Bindings {
     /// so every label binding stays with its button. [`super::button_inspector_bound`] does
     /// this itself.
     pub fn follow(&mut self, edit: &TreeEdit) {
-        self.entries.retain_mut(|(target, _)| {
-            let item = matches!(target, BindTarget::ItemLabel(..));
+        let keep = |target: &mut BindTarget| {
+            let item = target.item().is_some();
             target.path_mut().is_none_or(|key| crate::button_ids::follow_key(key, item, edit))
-        });
+        };
+        self.entries.retain_mut(|(t, _)| keep(t));
+        self.fallbacks.retain_mut(|(t, _)| keep(t));
     }
 
     /// The cluster item `from` of the cluster at `path` now has the number `to`.
     pub fn renumber_item(&mut self, path: &[usize], from: usize, to: usize) {
-        for (t, _) in &mut self.entries {
-            if let BindTarget::ItemLabel(p, n) = t
-                && p == path
+        let targets = self.entries.iter_mut().map(|(t, _)| t).chain(self.fallbacks.iter_mut().map(|(t, _)| t));
+        for t in targets {
+            if t.path() == Some(path)
+                && let Some(n) = t.item_mut()
                 && *n == from
             {
                 *n = to;
@@ -231,31 +273,49 @@ impl Bindings {
 
     /// Writes the value of every variable-bound target into `settings` and `buttons`, so the
     /// editors and the preview show your app's real values (call it each frame, after
-    /// [`Bindings::set_variables`] and before drawing). The title is not touched: read it with
-    /// [`Bindings::variable_for`]`(&BindTarget::Title)`. Returns `true` if anything changed.
-    pub fn apply(&self, settings: &mut PieMenuSettings, buttons: &mut [PieButton]) -> bool {
+    /// [`Bindings::set_variables`] and before drawing). The value a target had before is kept
+    /// as its [`Bindings::fallback`]. The title is done by [`Bindings::apply_title`]. Returns
+    /// `true` if anything changed.
+    pub fn apply(&mut self, settings: &mut PieMenuSettings, buttons: &mut [PieButton]) -> bool {
         let mut changed = false;
-        for (target, _) in &self.entries {
-            let Some(value) = self.variable_for(target) else { continue };
-            changed |= match (target, value) {
-                (BindTarget::Field(f), v) => set_field(settings, *f, v),
-                (BindTarget::Label(p), VarValue::Text(t)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.label, t)),
-                (BindTarget::ItemLabel(p, n), VarValue::Text(t)) => crate::button_at_mut(buttons, p)
-                    .and_then(|b| b.cluster_item_mut(*n))
-                    .is_some_and(|i| set_if_changed(&mut i.label, t)),
-                _ => false,
-            };
+        // The title is not in `settings` or `buttons`: apply_title does it.
+        let targets: Vec<BindTarget> = self.entries.iter().map(|(t, _)| t.clone()).filter(|t| *t != BindTarget::Title).collect();
+        for target in targets {
+            let Some(value) = self.variable_for(&target).cloned() else { continue };
+            let before = current_value(settings, buttons, &target);
+            if before.as_ref() == Some(&value) {
+                continue;
+            }
+            if self.fallback(&target).is_none() {
+                self.fallbacks.push((target.clone(), before));
+            }
+            changed |= write_value(settings, buttons, &target, &value);
         }
         changed
     }
 
+    /// [`Bindings::apply`] for the title (`""`: none): sets it to the variable's text if the
+    /// title is bound to one. Returns `true` if it changed.
+    pub fn apply_title(&mut self, title: &mut String) -> bool {
+        let Some(VarValue::Text(t)) = self.variable_for(&BindTarget::Title).cloned() else { return false };
+        if *title == t {
+            return false;
+        }
+        if self.fallback(&BindTarget::Title).is_none() {
+            self.fallbacks.push((BindTarget::Title, Some(VarValue::Text(title.clone()))));
+        }
+        *title = t;
+        true
+    }
+
     /// Forgets the bindings of buttons and cluster items that are not in `buttons`.
     pub fn prune(&mut self, buttons: &[PieButton]) {
-        self.entries.retain(|(t, _)| match t {
-            BindTarget::Label(p) => crate::button_at(buttons, p).is_some(),
-            BindTarget::ItemLabel(p, n) => crate::button_at(buttons, p).is_some_and(|b| b.cluster_items().iter().any(|i| i.number == *n)),
-            _ => true,
+        self.entries.retain(|(t, _)| match (t.path(), t.item()) {
+            (Some(p), None) => crate::button_at(buttons, p).is_some(),
+            (Some(p), Some(n)) => crate::button_at(buttons, p).is_some_and(|b| b.cluster_items().iter().any(|i| i.number == n)),
+            (None, _) => true,
         });
+        self.drop_orphan_fallbacks();
     }
 }
 
@@ -265,6 +325,49 @@ fn set_if_changed<T: PartialEq + Clone>(slot: &mut T, value: &T) -> bool {
     }
     *slot = value.clone();
     true
+}
+
+/// The value `target` has now (`None` for the title, an optional colour that is off, or a
+/// button that is not there).
+fn current_value(s: &PieMenuSettings, buttons: &[PieButton], target: &BindTarget) -> Option<VarValue> {
+    use SettingsField as F;
+    let item = |p: &[usize], n: usize| crate::button_at(buttons, p).and_then(|b| b.cluster_items().iter().find(|i| i.number == n));
+    Some(match target {
+        BindTarget::Field(f) => match f {
+            F::HintColor => VarValue::Color(s.number_hints.color?),
+            F::TextColor => VarValue::Color(s.text_color?),
+            F::CenterBackgroundFillColor => VarValue::Color(s.center_indicator.background_fill_color),
+            F::CenterHighlightFillColor => VarValue::Color(s.center_indicator.highlight_fill_color),
+            F::TitleBackgroundColor => VarValue::Color(s.title.background_color),
+            F::TitleTextColor => VarValue::Color(s.title.text_color),
+            F::CenterBackgroundStroke => VarValue::Stroke(s.center_indicator.background_stroke),
+            F::CenterHighlightStroke => VarValue::Stroke(s.center_indicator.highlight_stroke),
+            F::TitleBackgroundStroke => VarValue::Stroke(s.title.background_stroke),
+            F::TitleTextFont => VarValue::Font(s.title.text_font.clone()),
+            _ => return None,
+        },
+        BindTarget::Title => return None,
+        BindTarget::Label(p) => VarValue::Text(crate::button_at(buttons, p)?.label.clone()),
+        BindTarget::ItemLabel(p, n) => VarValue::Text(item(p, *n)?.label.clone()),
+        BindTarget::Enabled(p) => VarValue::Bool(crate::button_at(buttons, p)?.enabled),
+        BindTarget::ItemEnabled(p, n) => VarValue::Bool(item(p, *n)?.enabled),
+    })
+}
+
+/// Writes `value` into `target` if the kinds match. Returns whether it changed.
+fn write_value(settings: &mut PieMenuSettings, buttons: &mut [PieButton], target: &BindTarget, value: &VarValue) -> bool {
+    match (target, value) {
+        (BindTarget::Field(f), v) => set_field(settings, *f, v),
+        (BindTarget::Label(p), VarValue::Text(t)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.label, t)),
+        (BindTarget::Enabled(p), VarValue::Bool(on)) => crate::button_at_mut(buttons, p).is_some_and(|b| set_if_changed(&mut b.enabled, on)),
+        (BindTarget::ItemLabel(p, n), VarValue::Text(t)) => {
+            crate::button_at_mut(buttons, p).and_then(|b| b.cluster_item_mut(*n)).is_some_and(|i| set_if_changed(&mut i.label, t))
+        }
+        (BindTarget::ItemEnabled(p, n), VarValue::Bool(on)) => {
+            crate::button_at_mut(buttons, p).and_then(|b| b.cluster_item_mut(*n)).is_some_and(|i| set_if_changed(&mut i.enabled, on))
+        }
+        _ => false,
+    }
 }
 
 /// Writes `value` into a bindable `field` if the kinds match. Returns whether it changed.
@@ -296,6 +399,8 @@ pub enum VarKind {
     Stroke,
     Font,
     Text,
+    /// True or false (whether a button is enabled).
+    Bool,
 }
 
 impl VarKind {
@@ -305,6 +410,7 @@ impl VarKind {
             VarKind::Stroke => "a stroke",
             VarKind::Font => "a font",
             VarKind::Text => "text",
+            VarKind::Bool => "true or false",
         }
     }
 }
@@ -316,6 +422,7 @@ pub enum VarValue {
     Stroke(Stroke),
     Font(FontId),
     Text(String),
+    Bool(bool),
 }
 
 impl VarValue {
@@ -325,6 +432,7 @@ impl VarValue {
             VarValue::Stroke(_) => VarKind::Stroke,
             VarValue::Font(_) => VarKind::Font,
             VarValue::Text(_) => VarKind::Text,
+            VarValue::Bool(_) => VarKind::Bool,
         }
     }
 }
@@ -396,6 +504,11 @@ impl Variables {
 
     pub fn text(&mut self, name: impl Into<String>, value: impl Into<String>) -> &mut Self {
         self.set(name, VarValue::Text(value.into()))
+    }
+
+    /// A true-or-false variable, such as whether undo is possible (for `enabled`).
+    pub fn flag(&mut self, name: impl Into<String>, value: bool) -> &mut Self {
+        self.set(name, VarValue::Bool(value))
     }
 
     /// The Rust expression that reads the variable registered last, for the generated code
@@ -595,6 +708,8 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
         .map(VarValue::kind)
         .filter(|k| *k != kind);
     let from_app = bindings.variable_for(target).is_some();
+    let unknown = !bindings.variables.is_empty()
+        && bindings.get(target).and_then(Binding::active_expr).is_some_and(|e| bindings.variables.get(e).is_none());
     let code = bindings
         .get(target)
         .and_then(Binding::active_expr)
@@ -652,6 +767,8 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
         (Some(mismatch.as_str()), true)
     } else if binding.mode == BindingMode::Live && matches!(target, BindTarget::Label(_) | BindTarget::ItemLabel(..)) {
         (Some("A live label can change its automatic mnemonic key as the text changes."), true)
+    } else if unknown {
+        (Some("Not a variable of your app: a TOML file keeps the value above; generated code uses this as Rust."), true)
     } else if from_app {
         mismatch = match &code {
             Some(c) => format!("From your app: the value above follows it. In generated code: {c}"),
@@ -671,6 +788,43 @@ pub fn binding_details(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget
     changed
 }
 
+/// An "Id" row for the button or cluster item `key`: a text field and, when your program
+/// registers the `actions` it handles, a picker of them and a warning for an id that is not
+/// one. Returns `true` if the id changed.
+pub fn id_editor(ui: &mut Ui, ids: &mut crate::ButtonIds, key: &crate::IdKey, actions: &[impl AsRef<str>]) -> bool {
+    let mut id = match key.item {
+        Some(n) => ids.item(&key.path, n),
+        None => ids.button(&key.path),
+    }
+    .unwrap_or_default()
+    .to_string();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Id").on_hover_text("Names this for your code: the action your program runs when it is selected.");
+        changed |= ui.add(egui::TextEdit::singleline(&mut id).hint_text("edit.copy").desired_width(140.0)).changed();
+        if !actions.is_empty() {
+            egui::ComboBox::from_id_salt(("pie_id_actions", key)).selected_text("\u{2026}").width(24.0).show_ui(ui, |ui| {
+                for a in actions {
+                    if ui.selectable_label(a.as_ref() == id, a.as_ref()).clicked() {
+                        id = a.as_ref().to_string();
+                        changed = true;
+                    }
+                }
+            });
+        }
+    });
+    if !id.is_empty() && !actions.is_empty() && !actions.iter().any(|a| a.as_ref() == id) {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(ui.spacing().indent);
+            ui.label(RichText::new("Not an action of your program.").small().color(Color32::from_rgb(220, 160, 60)));
+        });
+    }
+    if changed {
+        ids.set(key.clone(), id);
+    }
+    changed
+}
+
 /// A small sample of a variable's value for the picker: a colour swatch, a stroke's colour.
 fn var_swatch(ui: &mut Ui, value: &VarValue) {
     let size = egui::vec2(ui.spacing().interact_size.y * 0.6, ui.spacing().interact_size.y * 0.6);
@@ -680,6 +834,9 @@ fn var_swatch(ui: &mut Ui, value: &VarValue) {
         }
         VarValue::Stroke(st) => {
             egui::color_picker::show_color(ui, st.color, size);
+        }
+        VarValue::Bool(on) => {
+            ui.label(RichText::new(if *on { "on" } else { "off" }).small().weak());
         }
         VarValue::Font(_) | VarValue::Text(_) => {}
     }
@@ -808,7 +965,7 @@ mod tests {
                 VarKind::Color => VarValue::Color(Color32::from_rgb(9, 9, 9)),
                 VarKind::Stroke => VarValue::Stroke(Stroke::new(9.0, Color32::BLUE)),
                 VarKind::Font => VarValue::Font(FontId::monospace(9.0)),
-                VarKind::Text => unreachable!(),
+                VarKind::Text | VarKind::Bool => unreachable!(),
             };
             let mut s = PieMenuSettings::default();
             assert!(set_field(&mut s, f, &value), "{f:?}");
@@ -879,6 +1036,55 @@ mod tests {
         });
         out.textures_delta.clear();
         assert_eq!(b, before);
+    }
+
+    #[test]
+    fn apply_keeps_the_fallback() {
+        let mut buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Undo"),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B")]),
+        ];
+        let mut settings = PieMenuSettings::default();
+        let mut title = "Edit".to_string();
+        let mut b = Bindings::new();
+        b.set(BindTarget::Label(vec![0]), Binding::new("i18n.undo", BindingMode::Build));
+        b.set(BindTarget::Enabled(vec![0]), Binding::new("app.can_undo", BindingMode::Build));
+        b.set(BindTarget::ItemEnabled(vec![1], 1), Binding::new("app.bold", BindingMode::Build));
+        b.set(BindTarget::Field(SettingsField::TitleTextColor), Binding::new("theme.text", BindingMode::Build));
+        b.set(BindTarget::Title, Binding::new("i18n.edit", BindingMode::Build));
+        let mut vars = Variables::new();
+        vars.text("i18n.undo", "Отменить").flag("app.can_undo", false).flag("app.bold", false).color("theme.text", Color32::RED);
+        vars.text("i18n.edit", "Правка");
+        b.set_variables(vars.clone());
+        assert!(b.apply(&mut settings, &mut buttons));
+        assert!(b.apply_title(&mut title));
+        assert_eq!((buttons[0].label.as_str(), buttons[0].enabled, title.as_str()), ("Отменить", false, "Правка"));
+        assert!(!buttons[1].cluster_items()[0].enabled);
+        assert_eq!(settings.title.text_color, Color32::RED);
+        // The values before stay as fallbacks, through later changes of the variables.
+        vars.text("i18n.undo", "Rückgängig");
+        b.set_variables(vars);
+        assert!(b.apply(&mut settings, &mut buttons));
+        assert_eq!(buttons[0].label, "Rückgängig");
+        assert_eq!(b.fallback(&BindTarget::Label(vec![0])), Some(Some(&VarValue::Text("Undo".into()))));
+        assert_eq!(b.fallback(&BindTarget::Enabled(vec![0])), Some(Some(&VarValue::Bool(true))));
+        assert_eq!(b.fallback(&BindTarget::Title), Some(Some(&VarValue::Text("Edit".into()))));
+        let default_colour = VarValue::Color(PieMenuSettings::default().title.text_color);
+        assert_eq!(b.fallback(&BindTarget::Field(SettingsField::TitleTextColor)), Some(Some(&default_colour)));
+        // An optional colour that was off: written, with "off" as its fallback.
+        b.set(BindTarget::Field(SettingsField::TextColor), Binding::new("theme.text", BindingMode::Build));
+        assert!(b.apply(&mut settings, &mut buttons));
+        assert_eq!(settings.text_color, Some(Color32::RED));
+        assert_eq!(b.fallback(&BindTarget::Field(SettingsField::TextColor)), Some(None));
+        // They follow the tree, and go with their binding.
+        b.follow(&TreeEdit::Removed(vec![0]));
+        assert_eq!(b.fallback(&BindTarget::ItemEnabled(vec![0], 1)), Some(Some(&VarValue::Bool(true))));
+        b.renumber_item(&[0], 1, 7);
+        assert!(b.get(&BindTarget::ItemEnabled(vec![0], 7)).is_some());
+        assert!(b.fallback(&BindTarget::ItemEnabled(vec![0], 7)).is_some());
+        b.remove(&BindTarget::Title);
+        assert!(b.fallback(&BindTarget::Title).is_none());
+        assert_eq!(BindTarget::Enabled(vec![0]).kind(), VarKind::Bool);
     }
 
     #[test]

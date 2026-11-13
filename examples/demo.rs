@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu::dev_tool::{
-    BindTarget, Bindings, Selection, VarValue, Variables, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
+    BindTarget, Bindings, Selection, Variables, id_editor, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
     button_tree, button_tree_filtered, field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
 };
@@ -91,8 +91,10 @@ const LABEL_KEYS: [&str; 8] = ["copy", "paste_special", "redo", "save_as", "dele
 /// What the demo offers the dev tool to bind to, as an app would: `theme.*` from egui's
 /// current visuals (so the Dark / Light switch changes them) and `i18n.*` for the labels and
 /// the title in the current language, which generated code reads with `tr("..")`.
-fn app_variables(visuals: &egui::Visuals, lang: usize) -> Variables {
+fn app_variables(visuals: &egui::Visuals, lang: usize, history: &History) -> Variables {
     let mut vars = Variables::new();
+    vars.flag("app.can_undo", history.done > 0).code("history.can_undo()");
+    vars.flag("app.can_redo", history.undone > 0).code("history.can_redo()");
     vars.color("theme.accent", visuals.selection.bg_fill)
         .color("theme.text", visuals.strong_text_color())
         .color("theme.weak_text", visuals.weak_text_color())
@@ -106,6 +108,59 @@ fn app_variables(visuals: &egui::Visuals, lang: usize) -> Variables {
         vars.text(format!("i18n.{key}"), label).code(format!("tr(\"{key}\")"));
     }
     vars
+}
+
+/// The actions the demo "handles": the ids of the example menus in `examples/menus`. A program
+/// registers its own, so that the dev tool can offer them and `check_references` can report
+/// an id nobody handles.
+const ACTIONS: &[&str] = &[
+    "edit.copy",
+    "edit.paste_special",
+    "edit.redo",
+    "edit.cut",
+    "edit.undo",
+    "format.bold",
+    "format.italic",
+    "format.underline",
+    "paste.values",
+    "paste.formatting",
+    "paste.link",
+    "plugin.share",
+    "plugin.paste_image",
+    "plugin.share.email",
+    "plugin.share.chat",
+    "plugin.share.link",
+];
+
+/// A pretend undo history, run by the menu's actions (by id), so that `app.can_undo` and
+/// `app.can_redo` change: an `enabled = { var = "app.can_undo" }` button greys out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct History {
+    /// Actions that can be undone.
+    done: usize,
+    /// Undone actions that can be redone.
+    undone: usize,
+}
+
+impl History {
+    /// Follows an action picked from the menu.
+    fn run(&mut self, id: &str) {
+        match id {
+            "edit.undo" if self.done > 0 => {
+                self.done -= 1;
+                self.undone += 1;
+            }
+            "edit.redo" if self.undone > 0 => {
+                self.undone -= 1;
+                self.done += 1;
+            }
+            "edit.undo" | "edit.redo" => {}
+            _ => {
+                self.done += 1;
+                self.undone = 0;
+            }
+        }
+    }
 }
 
 /// The tabs of the left-hand panel.
@@ -154,6 +209,8 @@ struct Demo {
     toml_files: String,
     /// What the last Open or Save did.
     toml_note: String,
+    /// The pretend undo history behind `app.can_undo` / `app.can_redo`.
+    history: History,
     /// What the canvas shows.
     mode: Mode,
     /// The last tree without problems: what Configure mode previews.
@@ -251,8 +308,18 @@ impl Demo {
         };
         match catalog.build(&name) {
             Ok(def) => {
+                // What the program would log: references it does not answer.
+                let vars = app_variables(&egui::Visuals::dark(), self.lang, &self.history);
+                let problems = def.check_references(&vars, ACTIONS);
                 self.load_definition(def);
                 self.toml_note = format!("Opened `{name}` (the files define: {}).", names.join(", "));
+                if problems.is_empty() {
+                    self.toml_note += " Every reference is known.";
+                } else {
+                    for p in problems {
+                        self.toml_note += &format!("\n\u{26a0} {p}");
+                    }
+                }
             }
             Err(e) => self.toml_note = e.to_string(),
         }
@@ -319,6 +386,7 @@ impl Demo {
             menu_name: "edit".to_string(),
             toml_files: "examples/menus/edit.toml, examples/menus/plugin.toml".to_string(),
             toml_note: String::new(),
+            history: History::default(),
             mode: Mode::Demo,
             snapshot: Vec::new(),
             previews: HashMap::new(),
@@ -1818,14 +1886,7 @@ impl Demo {
                 if !note.is_empty() {
                     ui.label(RichText::new(&note).small().weak());
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Id").on_hover_text("Names the button for your code (MenuDefinition::ids); saved in the TOML.");
-                    let mut id = ids.button(path).unwrap_or_default().to_string();
-                    let edit = egui::TextEdit::singleline(&mut id).hint_text("edit.copy").desired_width(160.0);
-                    if ui.add(edit).changed() {
-                        ids.set(IdKey { path: path.to_vec(), item: None }, id);
-                    }
-                });
+                id_editor(ui, ids, &IdKey { path: path.to_vec(), item: None }, ACTIONS);
                 let mut d = decor_at(decor, path);
                 if appearance_editor(ui, button, &mut d) {
                     decor.insert(path.to_vec(), d);
@@ -1853,13 +1914,9 @@ impl eframe::App for Demo {
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         // The app's values the dev tool can bind to; what is bound to one shows its value.
-        self.bindings.set_variables(app_variables(ui.visuals(), self.lang));
+        self.bindings.set_variables(app_variables(ui.visuals(), self.lang, &self.history));
         self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
-        if let Some(VarValue::Text(title)) = self.bindings.variable_for(&BindTarget::Title)
-            && self.title != *title
-        {
-            self.title = title.clone();
-        }
+        self.bindings.apply_title(&mut self.title);
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             ui.add_space(4.0);
             let query = self.search.trim().to_lowercase();
@@ -2082,7 +2139,11 @@ impl eframe::App for Demo {
                 PieMenuResponse::Selected(_) => {
                     // The full route from the root: "Paste Special › As Text".
                     let route = self.menu.selected_path().to_vec();
-                    let id = self.ids.selected(&self.buttons, &route).map(|id| format!("  [{id}]")).unwrap_or_default();
+                    let picked = self.ids.selected(&self.buttons, &route).map(str::to_string);
+                    if let Some(id) = &picked {
+                        self.history.run(id);
+                    }
+                    let id = picked.map(|id| format!("  [{id}]")).unwrap_or_default();
                     // A cluster's item: the last element is its number, not a button index.
                     let item = route.split_last().and_then(|(&n, up)| {
                         let cluster = button_at(&self.buttons, up).filter(|b| b.is_cluster())?;
@@ -2212,16 +2273,33 @@ mod tests {
     }
 
     #[test]
+    fn the_pretend_history() {
+        let mut h = History::default();
+        h.run("edit.undo");
+        assert_eq!(h, History::default(), "nothing to undo");
+        h.run("edit.copy");
+        h.run("edit.cut");
+        h.run("edit.undo");
+        assert_eq!(h, History { done: 1, undone: 1 });
+        h.run("edit.redo");
+        assert_eq!(h, History { done: 2, undone: 0 });
+        h.run("edit.undo");
+        h.run("paste.values");
+        assert_eq!(h, History { done: 2, undone: 0 }, "a new action drops the redo");
+    }
+
+    #[test]
     fn app_variables_cover_every_language() {
         assert_eq!(TITLES.len(), LANGS.len());
         for lang in 0..LANGS.len() {
-            let vars = app_variables(&egui::Visuals::dark(), lang);
-            assert_eq!(vars.get("i18n.edit"), Some(&VarValue::Text(TITLES[lang].to_string())));
-            assert_eq!(vars.get("i18n.undo"), Some(&VarValue::Text(LANGS[lang].labels[6].to_string())));
+            let vars = app_variables(&egui::Visuals::dark(), lang, &History::default());
+            assert_eq!(vars.get("i18n.edit"), Some(&egui_pie_menu::dev_tool::VarValue::Text(TITLES[lang].to_string())));
+            assert_eq!(vars.get("i18n.undo"), Some(&egui_pie_menu::dev_tool::VarValue::Text(LANGS[lang].labels[6].to_string())));
             assert_eq!(vars.code_for("i18n.undo"), "tr(\"undo\")", "generated code reads it with tr");
             assert_eq!(vars.code_for("theme.accent"), "theme.accent");
         }
-        let (light, dark) = (app_variables(&egui::Visuals::light(), 0), app_variables(&egui::Visuals::dark(), 0));
+        let h = History::default();
+        let (light, dark) = (app_variables(&egui::Visuals::light(), 0, &h), app_variables(&egui::Visuals::dark(), 0, &h));
         assert_ne!(light.get("theme.panel"), dark.get("theme.panel"), "the theme switch changes the theme variables");
     }
 
@@ -2293,12 +2371,24 @@ mod tests {
         frames(&mut demo, |d, ui| d.toml_files_row(ui));
         demo.open_toml();
         assert!(demo.toml_note.starts_with("Opened `edit`"), "{}", demo.toml_note);
+        assert!(demo.toml_note.ends_with("Every reference is known."), "{}", demo.toml_note);
         assert_eq!(demo.buttons.len(), 7, "edit.toml and plugin.toml merged");
         assert_eq!(demo.ids.selected(&demo.buttons, &[6, 2]), Some("plugin.share.chat"));
         assert_eq!(demo.menu.settings.layout.radius, 130.0);
         assert!(demo.bindings.get(&BindTarget::Title).is_some());
-        // Drawn with the opened menu (tabs and the Configure previews).
+        // Drawn with the opened menu, the Id row (id_editor) of a button with an id included.
+        demo.selection = Selection::button([4]);
         frames(&mut demo, |d, ui| d.buttons_tab(ui, ""));
+        // Undo is enabled only when the history allows it.
+        let vars = app_variables(&egui::Visuals::dark(), 0, &demo.history);
+        demo.bindings.set_variables(vars);
+        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        assert_eq!(demo.ids.button(&[4]), Some("edit.undo"));
+        assert!(!demo.buttons[4].enabled, "nothing to undo yet");
+        demo.history.run("edit.copy");
+        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history));
+        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        assert!(demo.buttons[4].enabled);
         // Save to a file of its own and open it alone: the same menu.
         let path = std::env::temp_dir().join(format!("pie_demo_{}.toml", std::process::id()));
         demo.toml_files = path.display().to_string();
@@ -2308,6 +2398,10 @@ mod tests {
         assert!(demo.toml_note.starts_with("Saved"), "{}", demo.toml_note);
         demo.buttons.clear();
         demo.open_toml();
+        // The file holds its defaults; the app's values come back when applied.
+        assert_eq!(demo.buttons[4].label, "Undo");
+        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history));
+        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
         let after = demo.definition();
         std::fs::remove_file(&path).ok();
         assert_eq!(format!("{:?}", after.buttons), format!("{:?}", before.buttons));

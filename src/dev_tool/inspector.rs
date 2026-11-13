@@ -687,7 +687,7 @@ fn button_sections(
     settings: &PieMenuSettings,
     buttons: &[PieButton],
     selection: &Selection,
-    bindings: Option<&mut Bindings>,
+    mut bindings: Option<&mut Bindings>,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     let path = &selection.path;
@@ -704,7 +704,7 @@ fn button_sections(
             }
             false
         };
-        match bindings {
+        match bindings.as_deref_mut() {
             Some(b) => {
                 bound_row(ui, b, &BindTarget::Label(path.clone()), label_row);
             }
@@ -771,9 +771,20 @@ fn button_sections(
                 });
             });
         }
-        let mut enabled = button.enabled;
-        if ui.checkbox(&mut enabled, "enabled").changed() {
-            intents.push(Intent::Enabled(enabled));
+        let enabled_row = |ui: &mut Ui| {
+            let mut enabled = button.enabled;
+            if ui.checkbox(&mut enabled, "enabled").changed() {
+                intents.push(Intent::Enabled(enabled));
+            }
+            false
+        };
+        match bindings {
+            Some(b) => {
+                bound_row(ui, b, &BindTarget::Enabled(path.clone()), enabled_row);
+            }
+            None => {
+                ui.horizontal(enabled_row);
+            }
         }
         if remove_block_reason(buttons, path).is_none() && ui.button("Remove").clicked() {
             intents.push(Intent::Remove);
@@ -829,7 +840,7 @@ fn item_sections(
     settings: &PieMenuSettings,
     buttons: &[PieButton],
     selection: &Selection,
-    bindings: Option<&mut Bindings>,
+    mut bindings: Option<&mut Bindings>,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     let Some(cluster) = button_at(buttons, &selection.path) else { return intents };
@@ -855,7 +866,7 @@ fn item_sections(
             }
             false
         };
-        match bindings {
+        match bindings.as_deref_mut() {
             Some(b) => {
                 bound_row(ui, b, &BindTarget::ItemLabel(selection.path.clone(), item.number), label_row);
             }
@@ -863,9 +874,20 @@ fn item_sections(
                 ui.horizontal(label_row);
             }
         }
-        let mut enabled = item.enabled;
-        if ui.checkbox(&mut enabled, "enabled").changed() {
-            intents.push(Intent::ItemEnabled(k, enabled));
+        let enabled_row = |ui: &mut Ui| {
+            let mut enabled = item.enabled;
+            if ui.checkbox(&mut enabled, "enabled").changed() {
+                intents.push(Intent::ItemEnabled(k, enabled));
+            }
+            false
+        };
+        match bindings {
+            Some(b) => {
+                bound_row(ui, b, &BindTarget::ItemEnabled(selection.path.clone(), item.number), enabled_row);
+            }
+            None => {
+                ui.horizontal(enabled_row);
+            }
         }
         if item_remove_block_reason(cluster.cluster_items().len()).is_none() && ui.button("Remove item").clicked() {
             intents.push(Intent::RemoveItem(k));

@@ -261,7 +261,9 @@ fn item_code(item: &ClusterItem, path: &[usize], bindings: &Bindings) -> String 
     };
     let mut s = format!("ClusterItem::new({}, {label})", item.number);
     s += &mnemonic_code(item.mnemonic);
-    if !item.enabled {
+    if let Some(expr) = bindings.code_expr(&BindTarget::ItemEnabled(path.to_vec(), item.number), BindingMode::Build) {
+        s += &format!(".with_enabled({expr})");
+    } else if !item.enabled {
         s += ".with_enabled(false)";
     }
     s
@@ -285,7 +287,9 @@ fn button_expr(b: &PieButton, ind: usize, path: &mut Vec<usize>, bindings: &Bind
     if !b.is_cluster() {
         s += &mnemonic_code(b.mnemonic);
     }
-    if !b.enabled {
+    if let Some(expr) = bindings.code_expr(&BindTarget::Enabled(path.clone()), BindingMode::Build) {
+        s += &format!(".with_enabled({expr})");
+    } else if !b.enabled {
         s += ".with_enabled(false)";
     }
     match &b.kind {
@@ -370,21 +374,27 @@ pub fn live_bindings_code(buttons: &[PieButton], bindings: &Bindings) -> Vec<Str
                 let route: Vec<String> = path.iter().map(|p| p.to_string()).collect();
                 format!("button_at_mut(&mut buttons, &[{}])", route.join(", "))
             };
-            if let Some(expr) = live(&BindTarget::Label(path.clone())) {
-                out.push(if path.len() == 1 {
-                    format!("{at}.label = {expr};")
-                } else {
-                    format!("if let Some(b) = {at} {{ b.label = {expr}; }}")
-                });
+            for (target, field) in [(BindTarget::Label(path.clone()), "label"), (BindTarget::Enabled(path.clone()), "enabled")] {
+                if let Some(expr) = live(&target) {
+                    out.push(if path.len() == 1 {
+                        format!("{at}.{field} = {expr};")
+                    } else {
+                        format!("if let Some(b) = {at} {{ b.{field} = {expr}; }}")
+                    });
+                }
             }
             for item in b.cluster_items() {
-                if let Some(expr) = live(&BindTarget::ItemLabel(path.clone(), item.number)) {
-                    let item_at = if path.len() == 1 {
-                        format!("{at}.cluster_item_mut({})", item.number)
-                    } else {
-                        format!("{at}.and_then(|b| b.cluster_item_mut({}))", item.number)
-                    };
-                    out.push(format!("if let Some(item) = {item_at} {{ item.label = {expr}; }}"));
+                let item_at = if path.len() == 1 {
+                    format!("{at}.cluster_item_mut({})", item.number)
+                } else {
+                    format!("{at}.and_then(|b| b.cluster_item_mut({}))", item.number)
+                };
+                for (target, field) in
+                    [(BindTarget::ItemLabel(path.clone(), item.number), "label"), (BindTarget::ItemEnabled(path.clone(), item.number), "enabled")]
+                {
+                    if let Some(expr) = live(&target) {
+                        out.push(format!("if let Some(item) = {item_at} {{ item.{field} = {expr}; }}"));
+                    }
                 }
             }
             walk(b.children(), path, live, out);
@@ -1102,6 +1112,42 @@ buttons[1].label = format!(\"Undo ({})\", history.len());\n\
         // An unregistered name is written as it is.
         b.set_variables(Variables::new());
         assert!(menu_to_code_bound(None, &PieMenuSettings::default(), &buttons, &b).contains(".with_label(i18n.copy)"));
+    }
+
+    #[test]
+    fn enabled_bindings_compile() {
+        let can_undo = false;
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Undo"),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B")]),
+        ];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Enabled(vec![0]), "can_undo", BindingMode::Build);
+        bind(&mut b, BindTarget::ItemEnabled(vec![1], 1), "can_undo", BindingMode::Build);
+        let built: Vec<PieButton> = vec![
+            PieButton::new(PieDirection::North).with_label("Undo").with_enabled(can_undo),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B").with_enabled(can_undo),]),
+        ];
+        let tokens = stringify!(vec![
+            PieButton::new(PieDirection::North).with_label("Undo").with_enabled(can_undo),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B").with_enabled(can_undo),]),
+        ]);
+        assert_eq!(strip(&buttons_to_code_bound(&buttons, &b)), strip(tokens));
+        assert!(!built[0].enabled);
+        // Live: assigned every frame.
+        let mut live = Bindings::new();
+        bind(&mut live, BindTarget::Enabled(vec![0]), "can_undo", BindingMode::Live);
+        bind(&mut live, BindTarget::ItemEnabled(vec![1], 1), "can_undo", BindingMode::Live);
+        let mut buttons = buttons;
+        buttons[0].enabled = can_undo;
+        if let Some(item) = buttons[1].cluster_item_mut(1) {
+            item.enabled = can_undo;
+        }
+        let tokens = stringify!(
+            buttons[0].enabled = can_undo;
+            if let Some(item) = buttons[1].cluster_item_mut(1) { item.enabled = can_undo; }
+        );
+        assert_eq!(strip(&live_bindings_code(&buttons, &live).join("\n")), strip(tokens));
     }
 
     #[test]
