@@ -882,7 +882,7 @@ cargo run --example basic        # a menu built in code: sub-pie, cluster, handl
 cargo run --example toml_menus   # menus from TOML files: variables, actions, ids
 ```
 
-**Pie Designer** (the `egui_pie_menu_designer` crate in this repository) is the place to try everything the menu can do and to design menus visually: every setting, the button tree with an inspector, a live preview, and the result as TOML or as Rust code. Its editors are also a library you can embed in your own program's tools. See [designer/README.md](designer/README.md).
+**Pie Designer** (the `egui_pie_menu_designer` crate in this repository) is the place to try everything the menu can do and to design menus visually: every setting, the button tree with an inspector, a live preview, and the result as TOML or as Rust code. Its editors are also a library you can embed in your own program's tools. It runs on the desktop and in the browser (the repository's GitHub Pages site). See [designer/README.md](designer/README.md).
 
 ```sh
 cargo run -p egui_pie_menu_designer

@@ -19,16 +19,20 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (serde feature)
-        run: cargo clippy --all-targets --features serde -- -D warnings
+        run: cargo clippy --workspace --all-targets --features egui_pie_menu/serde -- -D warnings
+      - name: Clippy (core alone, no features)
+        run: cargo clippy -p egui_pie_menu --lib -- -D warnings
       - name: Tests
-        run: cargo test
+        run: cargo test --workspace
       - name: Tests (serde feature)
-        run: cargo test --features serde
+        run: cargo test --workspace --features egui_pie_menu/serde
       - name: Docs
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --workspace --features egui_pie_menu/toml
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Library builds for the web
-        run: cargo check --lib --target wasm32-unknown-unknown
+        run: cargo check -p egui_pie_menu --lib --target wasm32-unknown-unknown
+      - name: Pie Designer builds for the web
+        run: cargo clippy -p egui_pie_menu_designer --target wasm32-unknown-unknown -- -D warnings

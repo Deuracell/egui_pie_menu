@@ -12,6 +12,7 @@ use egui_pie_menu::{
 };
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     eframe::run_native(
         "Pie Designer",
@@ -20,44 +21,48 @@ fn main() -> eframe::Result {
             ..Default::default()
         },
         Box::new(|cc| {
-            let font_note = load_system_fonts(&cc.egui_ctx);
-            let mut demo = Demo::new(&cc.egui_ctx);
-            demo.font_note = font_note;
-            Ok(Box::new(demo))
+            load_fonts(&cc.egui_ctx);
+            Ok(Box::new(Demo::new(&cc.egui_ctx)))
         }),
     )
 }
 
-/// egui's built-in fonts lack Arabic/Hebrew, so try to add system fonts as fallbacks.
-fn load_system_fonts(ctx: &egui::Context) -> String {
-    const CANDIDATES: &[&str] = &[
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "C:\\Windows\\Fonts\\segoeui.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-    ];
-    let mut fonts = egui::FontDefinitions::default();
-    let mut loaded = 0;
-    for path in CANDIDATES {
-        if let Ok(bytes) = std::fs::read(path) {
-            let name = format!("fallback{loaded}");
-            fonts.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts.families.entry(family).or_default().push(name.clone());
-            }
-            loaded += 1;
+/// The web build: runs in the page's `<canvas id="pie_designer">` (see `index.html`).
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::wasm_bindgen::JsCast as _;
+    wasm_bindgen_futures::spawn_local(async {
+        let canvas = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("pie_designer"))
+            .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            .expect("the page has a <canvas id=\"pie_designer\">");
+        let started = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|cc| {
+                    load_fonts(&cc.egui_ctx);
+                    Ok(Box::new(Demo::new(&cc.egui_ctx)))
+                }),
+            )
+            .await;
+        if let Some(loading) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("loading")) {
+            loading.set_inner_html(if started.is_ok() { "" } else { "Pie Designer could not start (WebGL is needed)." });
         }
+    });
+}
+
+/// egui's own fonts have no Hebrew or Arabic: DejaVu Sans (embedded, see
+/// `assets/fonts/LICENSE-DejaVu.txt`) is added after them, for the right-to-left languages.
+fn load_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let dejavu = egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSans.ttf"));
+    fonts.font_data.insert("dejavu".into(), std::sync::Arc::new(dejavu));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("dejavu".into());
     }
     ctx.set_fonts(fonts);
-    if loaded == 0 {
-        "No system font with Arabic/Hebrew found: those labels may show as boxes.".to_string()
-    } else {
-        format!("{loaded} fallback font(s) loaded for non-Latin scripts.")
-    }
 }
 
 /// Demo languages: button labels for the eight directions (N clockwise to NW).
@@ -197,7 +202,6 @@ enum LeftTab {
 struct Demo {
     /// Index into `LANGS`.
     lang: usize,
-    font_note: String,
     menu: PieMenu,
     last_action: String,
     /// The "Pin pie-menu" checkbox.
@@ -228,9 +232,13 @@ struct Demo {
     /// The menu's name in the TOML files.
     menu_name: String,
     /// The TOML files to open, separated by commas (merged in order); Save writes the first.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the web build has no files on disk
     toml_files: String,
     /// What the last Open or Save did.
     toml_note: String,
+    /// Files dropped on the window, read (on the web asynchronously): opened together on the
+    /// next frame.
+    dropped: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>>,
     /// The pretend undo history behind `app.can_undo` / `app.can_redo`.
     history: History,
     /// The "Share plugin on" switch: the plugin's actions are visible only while it is on.
@@ -315,12 +323,14 @@ impl Demo {
     }
 
     /// The comma-separated file names of the TOML tab.
+    #[cfg(not(target_arch = "wasm32"))]
     fn toml_paths(&self) -> Vec<String> {
         self.toml_files.split(',').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect()
     }
 
     /// Opens every file of the TOML tab into one catalog (later files add to and override
     /// earlier ones) and builds the menu named in the tab (else the first one).
+    #[cfg(not(target_arch = "wasm32"))]
     fn open_toml(&mut self) {
         let mut catalog = MenuCatalog::new();
         for path in self.toml_paths() {
@@ -330,6 +340,39 @@ impl Demo {
             }
         }
         self.open_catalog(catalog);
+    }
+
+    /// Opens TOML texts (name, text) together, as if they were files: dropped files.
+    fn open_texts(&mut self, texts: &[(String, String)]) {
+        let mut catalog = MenuCatalog::new();
+        for (name, text) in texts {
+            if let Err(e) = catalog.add_toml(name, text) {
+                self.toml_note = e.to_string();
+                return;
+            }
+        }
+        self.open_catalog(catalog);
+    }
+
+    /// Reads a file dropped on the window into `dropped` (on the web asynchronously).
+    fn read_dropped(&self, ctx: &egui::Context, file: egui::DroppedFileHandle) {
+        let name = file.path().file_name().map_or("dropped.toml".to_string(), |n| n.to_string_lossy().into_owned());
+        let queue = self.dropped.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = ctx;
+            let text = file.bytes().map(|b| String::from_utf8_lossy(&b).into_owned());
+            queue.borrow_mut().push((name, text.unwrap_or_else(|e| format!("# could not read: {e}"))));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let ctx = ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let text = file.bytes_async().await.map(|b| String::from_utf8_lossy(&b).into_owned());
+                queue.borrow_mut().push((name, text.unwrap_or_else(|e| format!("# could not read: {e}"))));
+                ctx.request_repaint();
+            });
+        }
     }
 
     /// Opens the example menus built into the designer: `edit.toml` and `plugin.toml`, and
@@ -372,7 +415,17 @@ impl Demo {
         }
     }
 
-    /// Writes the menu to the first file of the TOML tab.
+    /// Writes the menu to the first file of the TOML tab (on the web: downloads it).
+    #[cfg(target_arch = "wasm32")]
+    fn save_toml(&mut self) {
+        let name = format!("{}.toml", self.menu_name);
+        self.toml_note = match download(&name, &self.definition().to_toml()) {
+            Ok(()) => format!("Downloaded {name}."),
+            Err(e) => format!("{name}: {e:?}"),
+        };
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn save_toml(&mut self) {
         let Some(path) = self.toml_paths().into_iter().next() else {
             self.toml_note = "No file name.".to_string();
@@ -387,18 +440,28 @@ impl Demo {
     /// The menu name, the files, Open and Save, above the TOML.
     fn toml_files_row(&mut self, ui: &mut egui::Ui) {
         egui::Grid::new("toml_files").num_columns(2).show(ui, |ui| {
-            ui.label("Menu").on_hover_text("The menu's name in the files ([menu.<name>]); Open builds this one if the files have it.");
+            ui.label("Menu").on_hover_text("The menu's name in the files ([menu.<name>]); opening builds this one if the files have it.");
             ui.add(egui::TextEdit::singleline(&mut self.menu_name).desired_width(140.0));
             ui.end_row();
-            ui.label("Files").on_hover_text("Files on disk, separated by commas. Open merges them in order; Save writes the first.");
-            ui.add(egui::TextEdit::singleline(&mut self.toml_files).desired_width(f32::INFINITY));
-            ui.end_row();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.label("Files").on_hover_text("Files on disk, separated by commas. Open merges them in order; Save writes the first.");
+                ui.add(egui::TextEdit::singleline(&mut self.toml_files).desired_width(f32::INFINITY));
+                ui.end_row();
+            }
         });
         ui.horizontal(|ui| {
-            if ui.button("Open").on_hover_text("Replaces the menu with the one built from the files").clicked() {
-                self.open_toml();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if ui.button("Open").on_hover_text("Replaces the menu with the one built from the files").clicked() {
+                    self.open_toml();
+                }
+                if ui.button("Save").on_hover_text("Writes the menu below to the first file").clicked() {
+                    self.save_toml();
+                }
             }
-            if ui.button("Save").on_hover_text("Writes the menu below to the first file").clicked() {
+            #[cfg(target_arch = "wasm32")]
+            if ui.button("Download").on_hover_text("Saves the menu below as a TOML file").clicked() {
                 self.save_toml();
             }
             ui.separator();
@@ -414,6 +477,7 @@ impl Demo {
             ui.checkbox(&mut self.share_plugin, "Share plugin on")
                 .on_hover_text("The demo's plugin.share* actions are visible only while this is on: the example plugin's Share button comes and goes.");
         });
+        ui.label(RichText::new("Drop TOML files on the window to open them (several at once are merged).").small().weak());
         if !self.toml_note.is_empty() {
             ui.label(RichText::new(&self.toml_note).small());
         }
@@ -428,7 +492,6 @@ impl Demo {
 
         Self {
             lang: 0,
-            font_note: String::new(),
             menu,
             last_action: String::new(),
             pinned: false,
@@ -445,6 +508,7 @@ impl Demo {
             menu_name: "edit".to_string(),
             toml_files: String::new(),
             toml_note: String::new(),
+            dropped: Default::default(),
             history: History::default(),
             share_plugin: true,
             unhandled: Vec::new(),
@@ -1845,9 +1909,6 @@ impl Demo {
                     }
                 });
                 ui.label(RichText::new("egui has no bidi: keep each label single-script.").small());
-                if !self.font_note.is_empty() {
-                    ui.label(RichText::new(&self.font_note).small());
-                }
             }
         }
     }
@@ -1978,6 +2039,17 @@ impl eframe::App for Demo {
         // (e.g. a colour picker) is open, Esc belongs to it and must not also reach the
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
+        // Files dropped on the window: read now (on the web: when the browser has them), opened
+        // together once all have arrived.
+        for file in ctx.input(|i| i.raw.dropped_files.clone()) {
+            self.read_dropped(ctx, file);
+        }
+        let ready: Vec<(String, String)> = self.dropped.borrow_mut().drain(..).collect();
+        if !ready.is_empty() {
+            self.code_tab = CodeTab::Toml;
+            self.show_code = true;
+            self.open_texts(&ready);
+        }
         // The app's values the dev tool can bind to; what is bound to one shows its value.
         self.bindings.set_variables(app_variables(ui.visuals(), self.lang));
         self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
@@ -2504,6 +2576,22 @@ mod tests {
     }
 
     #[test]
+    fn dropped_files_open_together() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        // What the drop handler queues: the texts and their names, opened as one set.
+        let texts: Vec<(String, String)> = EXAMPLE_MENUS.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
+        demo.open_texts(&texts);
+        assert!(demo.toml_note.starts_with("Opened `edit`"), "{}", demo.toml_note);
+        assert!(demo.ids.find("edit.select_all").is_some(), "user.toml's button: all three merged");
+        // A broken file is reported with its name, and the menu stays.
+        let count = demo.buttons.len();
+        demo.open_texts(&[("broken.toml".to_string(), "[menu.edit\n".to_string())]);
+        assert!(demo.toml_note.starts_with("broken.toml: "), "{}", demo.toml_note);
+        assert_eq!(demo.buttons.len(), count);
+    }
+
+    #[test]
     fn configure_mode_previews_every_node_without_panicking() {
         let ctx = egui::Context::default();
         let mut demo = Demo::new(&ctx);
@@ -2828,4 +2916,21 @@ mod tests {
         s.input.use_number_keys = false;
         assert!(!group_rows(SettingsGroup::KeysAndHints, &s).contains(&Row::Demo(DemoRow::ShowHints)));
     }
+}
+
+/// Offers `text` to the browser as a file to save.
+#[cfg(target_arch = "wasm32")]
+fn download(name: &str, text: &str) -> Result<(), eframe::wasm_bindgen::JsValue> {
+    use eframe::wasm_bindgen::JsCast as _;
+    let parts = js_sys::Array::of1(&eframe::wasm_bindgen::JsValue::from_str(text));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/toml");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let a = document.create_element("a")?.dyn_into::<web_sys::HtmlAnchorElement>()?;
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    web_sys::Url::revoke_object_url(&url)
 }

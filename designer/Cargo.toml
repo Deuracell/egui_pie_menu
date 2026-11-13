@@ -21,3 +21,9 @@ egui_pie_menu = { path = "..", version = "0.37.0", features = ["toml"] }
 egui = "0.36.2"
 eframe = "0.36.2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+# The web build (`trunk build`, see index.html): the page's entry point and file download.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3.103"
+web-sys = { version = "0.3.103", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url"] }
