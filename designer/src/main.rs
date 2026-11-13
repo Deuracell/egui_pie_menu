@@ -292,6 +292,10 @@ impl Demo {
         }
         self.menu.settings.mirror_horizontal = l.rtl;
         self.menu.settings.number_hints.digits = l.digits;
+        // The title too, unless it is one of your own (not a translation of "Edit").
+        if self.title.is_empty() || TITLES.contains(&self.title.as_str()) {
+            self.title = TITLES[self.lang].to_string();
+        }
     }
 
     /// The menu being edited, as a definition for the TOML files.
@@ -2425,6 +2429,22 @@ mod tests {
         h.run("edit.undo");
         h.run("paste.values");
         assert_eq!(h, History { done: 2, undone: 0 }, "a new action drops the redo");
+    }
+
+    #[test]
+    fn the_language_switch_translates_the_title_but_not_your_own() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        for lang in 0..LANGS.len() {
+            demo.lang = lang;
+            demo.apply_language();
+            assert_eq!(demo.title, TITLES[lang]);
+            assert_eq!(demo.menu.settings.mirror_horizontal, LANGS[lang].rtl);
+        }
+        demo.title = "My menu".to_string();
+        demo.lang = 3;
+        demo.apply_language();
+        assert_eq!(demo.title, "My menu", "a title of your own stays");
     }
 
     #[test]
