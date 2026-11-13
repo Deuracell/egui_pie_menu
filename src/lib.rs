@@ -43,6 +43,8 @@ pub use settings::*;
 
 mod button;
 mod button_ids;
+pub mod settings_fields;
+pub mod values;
 #[cfg(feature = "toml")]
 pub mod catalog;
 pub mod dev_tool;
@@ -53,7 +55,8 @@ mod mnemonic;
 mod tests;
 
 pub use button::{ButtonProblem, ButtonView, ClusterItem, button_at, button_at_mut, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
-pub use button_ids::{ActionState, Actions, ButtonIds, IdKey, unhandled_color};
+pub use button_ids::{ActionState, Actions, ButtonIds, IdKey, TreeEdit, unhandled_color};
+pub use settings_fields::{SettingsField, SettingsGroup, field_label};
 pub use mnemonic::{Mnemonic, mnemonic_text};
 
 use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};
@@ -345,6 +348,26 @@ impl PieMenu {
     pub fn configure(mut self, f: impl FnOnce(&mut PieMenuSettings)) -> Self {
         f(&mut self.settings);
         self
+    }
+
+    /// [`PieMenu::check_buttons`] for every level of a tree: the root and each sub-pie,
+    /// with the path of the sub-pie button whose level has the problem (empty: the root). A
+    /// fan-out's children are checked with its parent's level. Empty when the whole tree is
+    /// fine: then no level asserts when it opens.
+    pub fn check_tree(&self, buttons: &[PieButton]) -> Vec<(Vec<usize>, ButtonProblem)> {
+        fn walk(menu: &PieMenu, level: &[PieButton], path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, ButtonProblem)>) {
+            out.extend(menu.check_buttons(level).into_iter().map(|p| (path.clone(), p)));
+            for (i, b) in level.iter().enumerate() {
+                if let PieButtonKind::SubPie { children, .. } = &b.kind {
+                    path.push(i);
+                    walk(menu, children, path, out);
+                    path.pop();
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, buttons, &mut Vec::new(), &mut out);
+        out
     }
 
     /// Problems in one level's buttons: several in one direction, or the same mnemonic

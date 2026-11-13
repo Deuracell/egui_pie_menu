@@ -110,20 +110,7 @@ pub(crate) fn problem_menu_for(settings: &PieMenuSettings) -> PieMenu {
 /// level, problem)`, the root level having the empty path. Unlike [`PieMenu::check_buttons`]
 /// (one level) this descends into all sub-pies.
 pub(crate) fn tree_problems(settings: &PieMenuSettings, buttons: &[PieButton]) -> Vec<(Vec<usize>, ButtonProblem)> {
-    fn walk(menu: &PieMenu, level: &[PieButton], path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, ButtonProblem)>) {
-        out.extend(menu.check_buttons(level).into_iter().map(|p| (path.clone(), p)));
-        for (i, b) in level.iter().enumerate() {
-            if let PieButtonKind::SubPie { children, .. } = &b.kind {
-                path.push(i);
-                walk(menu, children, path, out);
-                path.pop();
-            }
-        }
-    }
-    let menu = problem_menu_for(settings);
-    let mut out = Vec::new();
-    walk(&menu, buttons, &mut Vec::new(), &mut out);
-    out
+    problem_menu_for(settings).check_tree(buttons)
 }
 
 /// The paths of the buttons involved in a problem of the tree (the sub-pie levels' parents
