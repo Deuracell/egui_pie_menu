@@ -420,19 +420,7 @@ fn tree(
 // The inspector
 // ---------------------------------------------------------------------------------------
 
-/// A change to the tree's shape made by the inspector, so a caller that keeps data per button
-/// (keyed by path) can follow. Additions always append, so only removals shift indices.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TreeEdit {
-    /// The button at this path was removed; its later siblings moved down by one (their
-    /// subtrees with them).
-    Removed(Vec<usize>),
-    /// The button at this path stays, but its children were dropped (converted to another
-    /// kind; converting back may bring them back as they were).
-    Dropped(Vec<usize>),
-    /// A button was appended at this path.
-    Added(Vec<usize>),
-}
+pub use crate::TreeEdit;
 
 /// What [`button_inspector`] did this frame.
 #[derive(Clone, Debug, Default, PartialEq)]

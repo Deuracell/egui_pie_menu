@@ -2,7 +2,21 @@
 //! it by path (as menus loaded from TOML carry them), so a selection can be told apart by id
 //! rather than by a path that changes when buttons are added or moved.
 use crate::PieButton;
-use crate::dev_tool::TreeEdit;
+
+/// A change to a button tree's shape, so data kept per button (keyed by path, such as
+/// [`ButtonIds`] or the bindings) can follow it. Additions always append, so only removals
+/// shift indices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeEdit {
+    /// The button at this path was removed; its later siblings moved down by one (their
+    /// subtrees with them).
+    Removed(Vec<usize>),
+    /// The button at this path stays, but its children were dropped (converted to another
+    /// kind; converting back may bring them back as they were).
+    Dropped(Vec<usize>),
+    /// A button was appended at this path.
+    Added(Vec<usize>),
+}
 
 /// What an id belongs to: the button at `path`, or the item `item` (its number) of the
 /// cluster at `path`.
@@ -89,8 +103,8 @@ impl ButtonIds {
         self.entries.iter().find(|(_, v)| v == id).map(|(k, _)| k)
     }
 
-    /// Follows a change to the tree's shape (from [`crate::dev_tool::InspectorOutput::edits`]),
-    /// as [`crate::dev_tool::Bindings::follow`] does for bindings.
+    /// Follows a change to the tree's shape (e.g. from the designer's inspector),
+    /// as [`crate::values::Bindings::follow`] does for bindings.
     pub fn follow(&mut self, edit: &TreeEdit) {
         self.entries.retain_mut(|(key, _)| follow_key(&mut key.path, key.item.is_some(), edit));
     }

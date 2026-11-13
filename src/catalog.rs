@@ -66,7 +66,8 @@
 //! `"#rrggbbaa"`, durations are milliseconds, and `false` switches off an optional value
 //! (`background_radius = false`). A menu's `title` and `settings` apply when it is built as a
 //! menu of its own; where it opens as a sub-pie, only its buttons (and its `style`) count.
-use crate::dev_tool::{BindTarget, Binding, BindingMode, Bindings, SettingsField, VarValue, Variables};
+use crate::settings_fields::SettingsField;
+use crate::values::{BindTarget, Binding, BindingMode, Bindings, VarValue, Variables};
 use crate::{
     Actions, ButtonIds, ClusterItem, IdKey, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuSettings, SubPieStyle,
 };
@@ -822,7 +823,7 @@ impl MenuCatalog {
         if let Some(var) = menu.title.as_ref().and_then(TextDef::var) {
             bindings.set(BindTarget::Title, var_binding(var));
         }
-        let problems = crate::dev_tool::tree_problems(&settings, &buttons);
+        let problems = PieMenu::new().with_settings(settings.clone()).check_tree(&buttons);
         if !problems.is_empty() {
             let lines: Vec<String> = problems.iter().map(|(path, p)| format!("{}: {p}", labels_along(&buttons, path))).collect();
             return Err(CatalogError::new(name, lines.join("; ")));
@@ -1057,7 +1058,7 @@ pub enum ReferenceIssue {
     /// No variable of the program has the name.
     UnknownVariable,
     /// The variable is of another kind than the place needs (a font for a colour).
-    WrongKind { found: crate::dev_tool::VarKind, needed: crate::dev_tool::VarKind },
+    WrongKind { found: crate::values::VarKind, needed: crate::values::VarKind },
     /// The program does not handle the id.
     UnknownAction,
     /// A `remove` named an id the menu does not have.
@@ -1093,7 +1094,7 @@ impl fmt::Display for ReferenceProblem {
 /// to write it back to TOML with [`MenuDefinition::to_toml`].
 ///
 /// ```no_run
-/// # use egui_pie_menu::{*, catalog::*, dev_tool::Variables};
+/// # use egui_pie_menu::{*, catalog::*, values::Variables};
 /// # fn f(ctx: &egui::Context, catalog: &MenuCatalog, key_down: bool, vars: Variables) {
 /// let mut edit = catalog.build("edit").unwrap();
 /// let mut menu = edit.to_pie_menu();
@@ -1196,7 +1197,7 @@ impl MenuDefinition {
     /// plugin's file.
     ///
     /// ```
-    /// use egui_pie_menu::{Actions, catalog::MenuCatalog, dev_tool::Variables};
+    /// use egui_pie_menu::{Actions, catalog::MenuCatalog, values::Variables};
     /// let mut catalog = MenuCatalog::new();
     /// catalog.add_toml("m.toml", r#"
     ///     [[menu.m.button]]
