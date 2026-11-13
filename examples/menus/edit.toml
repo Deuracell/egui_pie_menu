@@ -1,0 +1,78 @@
+# The base Edit menu. examples/menus/plugin.toml adds to it: open both together
+# (the demo's "TOML" tab, or MenuCatalog::add_file once per file).
+
+[menu.edit]
+title = "Edit"
+
+[menu.edit.settings]
+input = { auto_mnemonics = true }
+
+[menu.edit.settings.layout]
+radius = 110.0
+
+[menu.edit.settings.animations]
+reveal_duration = 150  # milliseconds
+
+[menu.edit.bind]
+# Names of the app's variables (the demo registers theme.* and tr("..")).
+title = 'tr("edit")'
+"center_indicator.highlight_fill_color" = "theme.accent"
+
+[[menu.edit.button]]
+dir = "N"
+label = "Copy"
+id = "edit.copy"
+mnemonic = "c"
+bind_label = 'tr("copy")'
+
+[[menu.edit.button]]
+dir = "NE"
+label = "Paste Special"
+id = "edit.paste_special"
+opens = "paste_special"
+
+[[menu.edit.button]]
+dir = "E"
+label = "Redo"
+id = "edit.redo"
+bind_label = 'tr("redo")'
+
+[[menu.edit.button]]
+dir = "SW"
+label = "Cut"
+id = "edit.cut"
+bind_label = 'tr("cut")'
+
+[[menu.edit.button]]
+dir = "W"
+label = "Undo"
+id = "edit.undo"
+bind_label = { expr = 'tr("undo")', live = true }
+
+[[menu.edit.button]]
+dir = "NW"
+label = "Format"
+items = [
+    { number = 1, label = "B", id = "format.bold", mnemonic = "b" },
+    { number = 2, label = "I", id = "format.italic", mnemonic = "i" },
+    { number = 3, label = "U", id = "format.underline", mnemonic = "u" },
+]
+
+# Opened by "Paste Special": a sub-pie of its own, which any file may extend.
+[menu.paste_special]
+style = "fan_out"
+
+[[menu.paste_special.button]]
+dir = "N"
+label = "Values Only"
+id = "paste.values"
+
+[[menu.paste_special.button]]
+dir = "NE"
+label = "Formatting"
+id = "paste.formatting"
+
+[[menu.paste_special.button]]
+dir = "E"
+label = "As Link"
+id = "paste.link"

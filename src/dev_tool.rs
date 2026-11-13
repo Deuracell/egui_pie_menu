@@ -499,6 +499,8 @@ mod inspector;
 mod legality;
 pub use inspector::*;
 pub use legality::set_menu_sub_pie_style;
+#[cfg(feature = "toml")]
+pub(crate) use legality::tree_problems;
 
 /// What the kind combo offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

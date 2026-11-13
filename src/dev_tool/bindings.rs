@@ -116,13 +116,23 @@ impl Binding {
 /// [`super::field_editor_bound`], [`super::button_inspector_bound`] (which keeps them with
 /// their buttons when the tree changes) or [`binding_toggle`] / [`binding_details`], and
 /// generate code with [`super::menu_to_code_bound`].
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
 pub struct Bindings {
     entries: Vec<(BindTarget, Binding)>,
     /// What your app registered this frame ([`Bindings::set_variables`]); not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     variables: Variables,
+}
+
+/// Equal when they bind the same targets the same way (in any order) and hold the same
+/// variables.
+impl PartialEq for Bindings {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries.len() == other.entries.len()
+            && self.entries.iter().all(|(t, b)| other.get(t) == Some(b))
+            && self.variables == other.variables
+    }
 }
 
 impl Bindings {
@@ -163,6 +173,12 @@ impl Bindings {
         self.entries.iter().map(|(t, b)| (t, b))
     }
 
+    /// Keeps the bindings `keep` accepts (e.g. `|t, _| t.path().is_none()` drops every label
+    /// binding when the tree is replaced).
+    pub fn retain(&mut self, mut keep: impl FnMut(&BindTarget, &Binding) -> bool) {
+        self.entries.retain(|(t, b)| keep(t, b));
+    }
+
     /// The expression of `target` if it is bound in `mode` with a non-empty expression.
     pub fn expr(&self, target: &BindTarget, mode: BindingMode) -> Option<&str> {
         self.get(target).filter(|b| b.mode == mode).and_then(Binding::active_expr)
@@ -172,33 +188,10 @@ impl Bindings {
     /// so every label binding stays with its button. [`super::button_inspector_bound`] does
     /// this itself.
     pub fn follow(&mut self, edit: &TreeEdit) {
-        match edit {
-            TreeEdit::Removed(path) => {
-                let Some((last, parent)) = path.split_last() else {
-                    return;
-                };
-                let depth = parent.len();
-                self.entries.retain_mut(|(target, _)| {
-                    let Some(key) = target.path_mut() else {
-                        return true;
-                    };
-                    if key.starts_with(path) {
-                        return false;
-                    }
-                    if key.len() > depth && key.starts_with(parent) && key[depth] > *last {
-                        key[depth] -= 1;
-                    }
-                    true
-                });
-            }
-            TreeEdit::Dropped(path) => self.entries.retain(|(t, _)| match t {
-                BindTarget::Label(key) => !(key.len() > path.len() && key.starts_with(path)),
-                // The cluster's items went (or it became a cluster): their bindings go too.
-                BindTarget::ItemLabel(key, _) => !key.starts_with(path),
-                _ => true,
-            }),
-            TreeEdit::Added(path) => self.entries.retain(|(t, _)| t.path().is_none_or(|key| !key.starts_with(path))),
-        }
+        self.entries.retain_mut(|(target, _)| {
+            let item = matches!(target, BindTarget::ItemLabel(..));
+            target.path_mut().is_none_or(|key| crate::button_ids::follow_key(key, item, edit))
+        });
     }
 
     /// The cluster item `from` of the cluster at `path` now has the number `to`.

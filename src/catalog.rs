@@ -1,0 +1,991 @@
+//! Menus defined in TOML files, loaded at runtime (feature `toml`).
+//!
+//! A file holds any number of named menus. A button opens another menu by its name, so a
+//! sub-pie can live in another file and one menu can be the sub-pie of several buttons.
+//! [`MenuCatalog`] collects files: a menu defined in several of them (or twice in one) is
+//! merged, its buttons added together and later values replacing earlier ones, so a plugin
+//! file can add a button to the `edit` menu of the base file.
+//!
+//! ```toml
+//! [menu.edit]
+//! title = "Edit"
+//!
+//! [menu.edit.settings]
+//! layout = { radius = 120.0 }
+//! title = { text_color = "#ffcc00" }
+//! animations = { reveal_duration = 150 }   # milliseconds
+//!
+//! [menu.edit.bind]
+//! "center_indicator.highlight_fill_color" = "theme.accent"
+//! title = { expr = "tr(\"menu.edit\")", live = true }
+//!
+//! [[menu.edit.button]]
+//! dir = "N"
+//! label = "Copy"
+//! id = "edit.copy"
+//! mnemonic = "c"
+//!
+//! [[menu.edit.button]]
+//! dir = "E"
+//! label = "Paste Special"
+//! opens = "paste_special"      # another menu, in this file or another
+//! style = "fan_out"            # optional: "replace" or "fan_out"
+//!
+//! [[menu.edit.button]]
+//! dir = "S"
+//! label = "Format"
+//! items = [{ number = 1, label = "Bold", id = "fmt.bold" }, { number = 2, label = "Italic" }]
+//!
+//! [[menu.paste_special.button]]
+//! dir = "N"
+//! label = "Values only"
+//! id = "paste.values"
+//! ```
+//!
+//! A button is a plain button, a sub-pie (`opens`), a back button (`back = true`) or a
+//! cluster (`items`). `dir` is `N`, `NE`, `E`, .. `NW` (or `North`, `NorthEast`, ..);
+//! `mnemonic` is one character or `"none"` (left out: automatic); `id` names the button for
+//! your code ([`MenuDefinition::ids`]); `bind_label` binds the label to one of your
+//! [`Variables`] (a string, or `{ expr = "..", live = true }`).
+//!
+//! `settings` uses the paths of [`PieMenuSettings`] (as in [`SettingsField::path`]); only
+//! what differs from the default needs to be there. Colours are `"#rrggbb"` or
+//! `"#rrggbbaa"`, durations are milliseconds, and `false` switches off an optional value
+//! (`background_radius = false`). `bind` binds the title (`title`) and the colours, strokes
+//! and fonts ([`SettingsField::is_bindable`]) to variables. A menu's `title`, `settings` and
+//! `bind` apply when it is built as a menu of its own; where it opens as a sub-pie, only its
+//! buttons (and its `style`) count.
+use crate::dev_tool::{BindTarget, Binding, BindingMode, Bindings, SettingsField, VarValue, Variables};
+use crate::{ButtonIds, ClusterItem, IdKey, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuSettings, SubPieStyle};
+use egui::Color32;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::Path;
+use toml::{Table, Value};
+
+// ---------------------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------------------
+
+/// Why a file could not be added or a menu not built: `source` is the file (or, for a
+/// build, the menu) and `message` says what is wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogError {
+    pub source: String,
+    pub message: String,
+}
+
+impl CatalogError {
+    fn new(source: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { source: source.into(), message: message.into() }
+    }
+}
+
+impl fmt::Display for CatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.source, self.message)
+    }
+}
+
+impl std::error::Error for CatalogError {}
+
+// ---------------------------------------------------------------------------------------
+// The file format
+// ---------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StyleName {
+    Replace,
+    FanOut,
+}
+
+impl From<StyleName> for SubPieStyle {
+    fn from(s: StyleName) -> Self {
+        match s {
+            StyleName::Replace => SubPieStyle::Replace,
+            StyleName::FanOut => SubPieStyle::FanOut,
+        }
+    }
+}
+
+impl From<SubPieStyle> for StyleName {
+    fn from(s: SubPieStyle) -> Self {
+        match s {
+            SubPieStyle::Replace => StyleName::Replace,
+            SubPieStyle::FanOut => StyleName::FanOut,
+        }
+    }
+}
+
+/// A binding: `"theme.accent"` (read when built) or `{ expr = "theme.accent", live = true }`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum BindDef {
+    Expr(String),
+    Full {
+        expr: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        live: bool,
+    },
+}
+
+impl BindDef {
+    fn binding(&self) -> Binding {
+        match self {
+            BindDef::Expr(e) => Binding::new(e.clone(), BindingMode::Build),
+            BindDef::Full { expr, live } => Binding::new(expr.clone(), if *live { BindingMode::Live } else { BindingMode::Build }),
+        }
+    }
+
+    fn from_binding(b: &Binding) -> Option<Self> {
+        let expr = b.active_expr()?.to_string();
+        Some(match b.mode {
+            BindingMode::Build => BindDef::Expr(expr),
+            BindingMode::Live => BindDef::Full { expr, live: true },
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemDef {
+    number: usize,
+    #[serde(default)]
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mnemonic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bind_label: Option<BindDef>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ButtonDef {
+    dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mnemonic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opens: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<StyleName>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    back: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    items: Option<Vec<ItemDef>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bind_label: Option<BindDef>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MenuDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    /// How the menu opens where a button opens it as a sub-pie (the button's own `style`
+    /// wins); left out: the menu-wide setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<StyleName>,
+    #[serde(default, skip_serializing_if = "Table::is_empty")]
+    settings: Table,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    bind: BTreeMap<String, BindDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    button: Vec<ButtonDef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileDef {
+    #[serde(default)]
+    menu: BTreeMap<String, MenuDef>,
+}
+
+/// A table key: bare where TOML allows, quoted otherwise.
+fn key(k: &str) -> String {
+    if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        k.to_string()
+    } else {
+        Value::String(k.to_string()).to_string()
+    }
+}
+
+/// `key = value` lines for the entries of `t`, values inline; the entries `section` picks
+/// (by their path below `prefix`) are left out and returned to be written as sections.
+fn lines<'a>(out: &mut String, t: &'a Table, prefix: &str, section: &dyn Fn(&str) -> bool) -> Vec<(&'a str, &'a Table)> {
+    let mut later = Vec::new();
+    for (k, v) in t {
+        match v {
+            Value::Table(sub) if section(&join(prefix, k)) => later.push((k.as_str(), sub)),
+            // Several tables (cluster items, dismiss inputs): one per line.
+            Value::Array(a) if a.len() > 1 && a.iter().all(Value::is_table) => {
+                out.push_str(&format!("{} = [\n", key(k)));
+                for x in a {
+                    out.push_str(&format!("    {x},\n"));
+                }
+                out.push_str("]\n");
+            }
+            _ => out.push_str(&format!("{} = {v}\n", key(k))),
+        }
+    }
+    later
+}
+
+/// Writes the menus as TOML: a `[menu.name]` section for the title and style (when there
+/// is one), the settings by group, the bindings, then one `[[menu.name.button]]` per button
+/// with its values on single lines (cluster items, strokes and fonts inline).
+fn write_menus(menus: &[(String, MenuDef)]) -> String {
+    let mut out = String::new();
+    let mut section = |out: &mut String, header: String| {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&header);
+        out.push('\n');
+    };
+    for (name, def) in menus {
+        let base = format!("menu.{}", key(name));
+        let empty = def.settings.is_empty() && def.bind.is_empty() && def.button.is_empty();
+        if def.title.is_some() || def.style.is_some() || empty {
+            section(&mut out, format!("[{base}]"));
+            if let Some(t) = &def.title {
+                out.push_str(&format!("title = {}\n", Value::String(t.clone())));
+            }
+            if let Some(st) = def.style {
+                out.push_str(&format!("style = {}\n", Value::try_from(st).expect("style")));
+            }
+        }
+        if !def.settings.is_empty() {
+            // The groups as sections, nested groups (sub_pies.fan_out) as sections of their own.
+            fn write(out: &mut String, t: &Table, prefix: &str, header: &str, section: &mut dyn FnMut(&mut String, String)) {
+                let mut body = String::new();
+                let later = lines(&mut body, t, prefix, &|p| GROUPS.contains(&p));
+                if !body.is_empty() {
+                    section(out, format!("[{header}]"));
+                    out.push_str(&body);
+                }
+                for (k, sub) in later {
+                    write(out, sub, &join(prefix, k), &format!("{header}.{}", key(k)), section);
+                }
+            }
+            write(&mut out, &def.settings, "", &format!("{base}.settings"), &mut section);
+        }
+        if !def.bind.is_empty() {
+            section(&mut out, format!("[{base}.bind]"));
+            for (k, b) in &def.bind {
+                out.push_str(&format!("{} = {}\n", key(k), Value::try_from(b).expect("binding")));
+            }
+        }
+        for b in &def.button {
+            section(&mut out, format!("[[{base}.button]]"));
+            if let Ok(Value::Table(t)) = Value::try_from(b) {
+                lines(&mut out, &t, "", &|_| false);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------
+// Directions and mnemonics
+// ---------------------------------------------------------------------------------------
+
+const DIRECTION_NAMES: [(&str, PieDirection); 8] = [
+    ("N", PieDirection::North),
+    ("NE", PieDirection::NorthEast),
+    ("E", PieDirection::East),
+    ("SE", PieDirection::SouthEast),
+    ("S", PieDirection::South),
+    ("SW", PieDirection::SouthWest),
+    ("W", PieDirection::West),
+    ("NW", PieDirection::NorthWest),
+];
+
+fn parse_direction(text: &str) -> Option<PieDirection> {
+    let t = text.trim();
+    DIRECTION_NAMES.iter().find(|(short, d)| short.eq_ignore_ascii_case(t) || format!("{d:?}").eq_ignore_ascii_case(t)).map(|(_, d)| *d)
+}
+
+fn direction_name(d: PieDirection) -> &'static str {
+    DIRECTION_NAMES.iter().find(|(_, x)| *x == d).map_or("N", |(n, _)| n)
+}
+
+fn parse_mnemonic(text: &str) -> Result<Mnemonic, String> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Ok(Mnemonic::Key(c)),
+        _ if text.eq_ignore_ascii_case("none") => Ok(Mnemonic::None),
+        _ => Err(format!("mnemonic `{text}` is neither one character nor \"none\"")),
+    }
+}
+
+fn mnemonic_name(m: Mnemonic) -> Option<String> {
+    match m {
+        Mnemonic::Auto => None,
+        Mnemonic::Key(c) => Some(c.to_string()),
+        Mnemonic::None => Some("none".to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Settings: the readable form (hex colours, milliseconds, `false` for off)
+// ---------------------------------------------------------------------------------------
+
+/// The settings groups (tables whose keys are merged and diffed one by one).
+const GROUPS: [&str; 8] = ["layout", "input", "center_indicator", "title", "animations", "sub_pies", "sub_pies.fan_out", "number_hints"];
+
+const DURATIONS: [&str; 6] = [
+    "input.double_tap_window",
+    "animations.reveal_duration",
+    "animations.slide_fade",
+    "animations.hover_duration",
+    "sub_pies.hover_delay",
+    "sub_pies.fan_out.delay",
+];
+
+/// The optional settings: `false` in a file means `None`.
+const OPTIONALS: [&str; 9] = [
+    "center_indicator.background_radius",
+    "center_indicator.highlight_radius",
+    "number_hints.color",
+    "animations.slide_start_shape_factor",
+    "animations.slide_fade",
+    "layout.intercardinal_height",
+    "sub_pies.fan_out.radius",
+    "sub_pies.hover_delay",
+    "text_color",
+];
+
+fn set_none(s: &mut PieMenuSettings, path: &str) {
+    match path {
+        "center_indicator.background_radius" => s.center_indicator.background_radius = None,
+        "center_indicator.highlight_radius" => s.center_indicator.highlight_radius = None,
+        "number_hints.color" => s.number_hints.color = None,
+        "animations.slide_start_shape_factor" => s.animations.slide_start_shape_factor = None,
+        "animations.slide_fade" => s.animations.slide_fade = None,
+        "layout.intercardinal_height" => s.layout.intercardinal_height = None,
+        "sub_pies.fan_out.radius" => s.sub_pies.fan_out.radius = None,
+        "sub_pies.hover_delay" => s.sub_pies.hover_delay = None,
+        "text_color" => s.text_color = None,
+        _ => {}
+    }
+}
+
+fn join(prefix: &str, key: &str) -> String {
+    if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") }
+}
+
+fn hex(c: Color32) -> String {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    if a == 255 { format!("#{r:02x}{g:02x}{b:02x}") } else { format!("#{r:02x}{g:02x}{b:02x}{a:02x}") }
+}
+
+fn parse_hex(text: &str) -> Option<Color32> {
+    let h = text.strip_prefix('#')?;
+    let byte = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok());
+    match h.len() {
+        6 => Some(Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?)),
+        8 => Some(Color32::from_rgba_unmultiplied(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
+        _ => None,
+    }
+}
+
+/// A serialized `Color32` (its premultiplied bytes).
+fn as_color(v: &Value) -> Option<Color32> {
+    let a = v.as_array().filter(|a| a.len() == 4)?;
+    let bytes: Vec<u8> = a.iter().map(|x| x.as_integer().and_then(|i| u8::try_from(i).ok())).collect::<Option<_>>()?;
+    Some(Color32::from_rgba_premultiplied(bytes[0], bytes[1], bytes[2], bytes[3]))
+}
+
+/// The serde form of a settings value, made readable.
+fn readable(v: Value, path: &str) -> Value {
+    if DURATIONS.contains(&path)
+        && let Some(t) = v.as_table()
+    {
+        let secs = t.get("secs").and_then(Value::as_integer).unwrap_or(0);
+        let nanos = t.get("nanos").and_then(Value::as_integer).unwrap_or(0);
+        return if nanos % 1_000_000 == 0 {
+            Value::Integer(secs * 1000 + nanos / 1_000_000)
+        } else {
+            Value::Float(secs as f64 * 1000.0 + nanos as f64 / 1e6)
+        };
+    }
+    if let Some(c) = as_color(&v) {
+        return Value::String(hex(c));
+    }
+    match v {
+        // The settings' floats are f32: write the shortest decimal that reads back the same.
+        Value::Float(x) => Value::Float(format!("{}", x as f32).parse().unwrap_or(x)),
+        Value::Table(t) => Value::Table(t.into_iter().map(|(k, x)| (k.clone(), readable(x, &join(path, &k)))).collect()),
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| readable(x, path)).collect()),
+        other => other,
+    }
+}
+
+/// The readable form turned back into the serde form; `nones` collects the optional
+/// settings switched off with `false`.
+fn unreadable(v: Value, path: &str, nones: &mut Vec<String>) -> Result<Option<Value>, String> {
+    Ok(Some(match v {
+        Value::Boolean(false) if OPTIONALS.contains(&path) => {
+            nones.push(path.to_string());
+            return Ok(None);
+        }
+        Value::Integer(ms) if DURATIONS.contains(&path) => {
+            if ms < 0 {
+                return Err(format!("`{path}` is negative"));
+            }
+            duration_value(ms as f64)
+        }
+        Value::Float(ms) if DURATIONS.contains(&path) => {
+            if ms < 0.0 {
+                return Err(format!("`{path}` is negative"));
+            }
+            duration_value(ms)
+        }
+        Value::String(s) if s.starts_with('#') => {
+            let c = parse_hex(&s).ok_or_else(|| format!("`{path}`: `{s}` is not a colour (#rrggbb or #rrggbbaa)"))?;
+            Value::Array(c.to_array().iter().map(|b| Value::Integer(i64::from(*b))).collect())
+        }
+        Value::Table(t) => {
+            let mut out = Table::new();
+            for (k, x) in t {
+                if let Some(x) = unreadable(x, &join(path, &k), nones)? {
+                    out.insert(k, x);
+                }
+            }
+            Value::Table(out)
+        }
+        Value::Array(a) => {
+            Value::Array(a.into_iter().map(|x| unreadable(x, path, nones)).collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect())
+        }
+        other => other,
+    }))
+}
+
+fn duration_value(ms: f64) -> Value {
+    let nanos_total = (ms * 1e6).round() as i64;
+    let mut t = Table::new();
+    t.insert("secs".into(), Value::Integer(nanos_total / 1_000_000_000));
+    t.insert("nanos".into(), Value::Integer(nanos_total % 1_000_000_000));
+    Value::Table(t)
+}
+
+fn readable_settings(s: &PieMenuSettings) -> Table {
+    match readable(Value::try_from(s).expect("settings serialize"), "") {
+        Value::Table(t) => t,
+        _ => Table::new(),
+    }
+}
+
+/// Every key of `given` must be a settings group or field.
+fn check_settings_keys(given: &Table, prefix: &str) -> Result<(), String> {
+    for (k, v) in given {
+        let path = join(prefix, k);
+        if GROUPS.contains(&path.as_str()) {
+            let t = v.as_table().ok_or_else(|| format!("settings `{path}` should be a table"))?;
+            check_settings_keys(t, &path)?;
+        } else if !SettingsField::ALL.iter().any(|f| f.path() == path) {
+            return Err(format!("unknown setting `{path}`"));
+        }
+    }
+    Ok(())
+}
+
+/// Merges `new` into `base`: groups key by key, anything else replaced.
+fn merge_settings(base: &mut Table, new: &Table, prefix: &str) {
+    for (k, v) in new {
+        let path = join(prefix, k);
+        match (base.get_mut(k), v) {
+            (Some(Value::Table(b)), Value::Table(n)) if GROUPS.contains(&path.as_str()) => merge_settings(b, n, &path),
+            _ => {
+                base.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
+/// The readable settings table: what differs from the default (`false` for an optional
+/// setting that is off but on by default).
+pub(crate) fn settings_to_table(s: &PieMenuSettings) -> Table {
+    fn diff(cur: &Table, def: &Table, prefix: &str) -> Table {
+        let mut out = Table::new();
+        for (k, v) in cur {
+            let path = join(prefix, k);
+            match (def.get(k), v) {
+                (Some(Value::Table(d)), Value::Table(c)) if GROUPS.contains(&path.as_str()) => {
+                    let sub = diff(c, d, &path);
+                    if !sub.is_empty() {
+                        out.insert(k.clone(), Value::Table(sub));
+                    }
+                }
+                (Some(d), v) if d == v => {}
+                _ => {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        for k in def.keys().filter(|k| !cur.contains_key(*k)) {
+            if OPTIONALS.contains(&join(prefix, k).as_str()) {
+                out.insert(k.clone(), Value::Boolean(false));
+            }
+        }
+        out
+    }
+    diff(&readable_settings(s), &readable_settings(&PieMenuSettings::default()), "")
+}
+
+/// The settings a readable table describes (the default for everything left out).
+pub(crate) fn settings_from_table(t: &Table) -> Result<PieMenuSettings, String> {
+    check_settings_keys(t, "")?;
+    let mut nones = Vec::new();
+    let Some(Value::Table(serde_form)) = unreadable(Value::Table(t.clone()), "", &mut nones)? else {
+        return Ok(PieMenuSettings::default());
+    };
+    let mut s: PieMenuSettings = Value::Table(serde_form).try_into().map_err(|e: toml::de::Error| format!("settings: {}", e.message()))?;
+    for path in nones {
+        set_none(&mut s, &path);
+    }
+    Ok(s)
+}
+
+// ---------------------------------------------------------------------------------------
+// The catalog
+// ---------------------------------------------------------------------------------------
+
+/// One menu as merged from every definition of its name.
+#[derive(Clone, Debug, Default)]
+struct Merged {
+    title: Option<String>,
+    style: Option<StyleName>,
+    settings: Table,
+    bind: BTreeMap<String, BindDef>,
+    /// The buttons with the file each came from.
+    buttons: Vec<(ButtonDef, String)>,
+}
+
+/// Menus collected from TOML files (see the [module documentation](self) for the format).
+/// Add files with [`MenuCatalog::add_toml`] / [`MenuCatalog::add_file`], then
+/// [`MenuCatalog::build`] a menu by name.
+///
+/// ```
+/// use egui_pie_menu::catalog::MenuCatalog;
+/// let mut catalog = MenuCatalog::new();
+/// catalog.add_toml("base.toml", r#"
+///     [[menu.edit.button]]
+///     dir = "N"
+///     label = "Copy"
+///     id = "edit.copy"
+/// "#).unwrap();
+/// // A plugin adds a button to the same menu.
+/// catalog.add_toml("plugin.toml", r#"
+///     [[menu.edit.button]]
+///     dir = "S"
+///     label = "Translate"
+///     id = "plugin.translate"
+/// "#).unwrap();
+/// let edit = catalog.build("edit").unwrap();
+/// assert_eq!(edit.buttons.len(), 2);
+/// assert_eq!(edit.ids.button(&[1]), Some("plugin.translate"));
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct MenuCatalog {
+    menus: Vec<(String, Merged)>,
+}
+
+impl MenuCatalog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The names of the menus, in the order they were first defined.
+    pub fn menu_names(&self) -> impl Iterator<Item = &str> {
+        self.menus.iter().map(|(n, _)| n.as_str())
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.menus.iter().any(|(n, _)| n == name)
+    }
+
+    fn get(&self, name: &str) -> Option<&Merged> {
+        self.menus.iter().find(|(n, _)| n == name).map(|(_, m)| m)
+    }
+
+    /// Reads a TOML file and adds its menus (see [`MenuCatalog::add_toml`]).
+    pub fn add_file(&mut self, path: impl AsRef<Path>) -> Result<(), CatalogError> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|e| CatalogError::new(path.display().to_string(), e.to_string()))?;
+        self.add_toml(&path.display().to_string(), &text)
+    }
+
+    /// Adds the menus of a TOML text; `source` names it in errors. A menu that is already
+    /// defined is merged: its buttons are added, and its title, style, settings and bindings
+    /// replace the earlier ones where given. On an error (bad TOML, an unknown key or
+    /// setting, a direction already taken, ..) nothing of the text is added.
+    pub fn add_toml(&mut self, source: &str, text: &str) -> Result<(), CatalogError> {
+        let file: FileDef = toml::from_str(text).map_err(|e| CatalogError::new(source, e.to_string().trim_end()))?;
+        let mut next = self.menus.clone();
+        for (name, def) in file.menu {
+            let err = |m: String| CatalogError::new(source, format!("menu `{name}`: {m}"));
+            check_settings_keys(&def.settings, "").map_err(err)?;
+            for b in &def.button {
+                check_button(b).map_err(err)?;
+            }
+            for key in def.bind.keys() {
+                bind_target(key).map_err(err)?;
+            }
+            let i = match next.iter().position(|(n, _)| *n == name) {
+                Some(i) => i,
+                None => {
+                    next.push((name.clone(), Merged::default()));
+                    next.len() - 1
+                }
+            };
+            let merged = &mut next[i].1;
+            if def.title.is_some() {
+                merged.title = def.title;
+            }
+            if def.style.is_some() {
+                merged.style = def.style;
+            }
+            merge_settings(&mut merged.settings, &def.settings, "");
+            merged.bind.extend(def.bind);
+            for b in def.button {
+                let dir = parse_direction(&b.dir);
+                if let Some((taken, from)) = merged.buttons.iter().find(|(x, _)| parse_direction(&x.dir) == dir) {
+                    return Err(err(format!(
+                        "direction {} is taken twice: by {} (from {from}) and {} (from {source})",
+                        b.dir,
+                        button_name(taken),
+                        button_name(&b)
+                    )));
+                }
+                merged.buttons.push((b, source.to_string()));
+            }
+        }
+        self.menus = next;
+        Ok(())
+    }
+
+    /// Builds the menu `name`: its buttons (with the menus they open as sub-pies, from
+    /// whichever files define them), settings, title, ids and bindings. Fails if a button
+    /// opens a menu nobody defines, menus open each other in a circle, or the tree has a
+    /// problem ([`crate::PieMenu::check_buttons`], e.g. a mnemonic used twice).
+    pub fn build(&self, name: &str) -> Result<MenuDefinition, CatalogError> {
+        let menu = self.get(name).ok_or_else(|| CatalogError::new(name, "no file defines this menu"))?;
+        let mut ids = ButtonIds::new();
+        let mut bindings = Bindings::new();
+        let buttons = self.level(name, &mut vec![name.to_string()], &mut Vec::new(), &mut ids, &mut bindings)?;
+        let settings = settings_from_table(&menu.settings).map_err(|m| CatalogError::new(name, m))?;
+        for (key, b) in &menu.bind {
+            bindings.set(bind_target(key).map_err(|m| CatalogError::new(name, m))?, b.binding());
+        }
+        let problems = crate::dev_tool::tree_problems(&settings, &buttons);
+        if !problems.is_empty() {
+            let lines: Vec<String> = problems.iter().map(|(path, p)| format!("{}: {p}", labels_along(&buttons, path))).collect();
+            return Err(CatalogError::new(name, lines.join("; ")));
+        }
+        Ok(MenuDefinition { name: name.to_string(), title: menu.title.clone(), settings, buttons, ids, bindings })
+    }
+
+    fn level(
+        &self,
+        name: &str,
+        stack: &mut Vec<String>,
+        path: &mut Vec<usize>,
+        ids: &mut ButtonIds,
+        bindings: &mut Bindings,
+    ) -> Result<Vec<PieButton>, CatalogError> {
+        let menu = self.get(name).ok_or_else(|| CatalogError::new(name, "no file defines this menu"))?;
+        let mut out = Vec::new();
+        for (n, (def, source)) in menu.buttons.iter().enumerate() {
+            path.push(n);
+            let err = |m: String| CatalogError::new(source.clone(), format!("menu `{name}`, button {}: {m}", button_name(def)));
+            let dir = parse_direction(&def.dir).ok_or_else(|| err(format!("unknown direction `{}`", def.dir)))?;
+            let mut b = if let Some(target) = &def.opens {
+                let opened = self.get(target).ok_or_else(|| err(format!("opens `{target}`, which no file defines")))?;
+                if stack.contains(target) {
+                    return Err(err(format!("menus open each other: {} \u{2192} {target}", stack.join(" \u{2192} "))));
+                }
+                stack.push(target.clone());
+                let children = self.level(target, stack, path, ids, bindings)?;
+                stack.pop();
+                PieButton::new(dir).with_children(children).with_sub_pie_style(def.style.or(opened.style).map(Into::into))
+            } else if def.back {
+                PieButton::back(dir)
+            } else if let Some(items) = &def.items {
+                let mut list = Vec::new();
+                for item in items {
+                    let mut it = ClusterItem::new(item.number, item.label.clone());
+                    if let Some(m) = &item.mnemonic {
+                        it.mnemonic = parse_mnemonic(m).map_err(err)?;
+                    }
+                    if let Some(e) = item.enabled {
+                        it = it.with_enabled(e);
+                    }
+                    if let Some(id) = &item.id {
+                        ids.set(IdKey { path: path.clone(), item: Some(item.number) }, id.clone());
+                    }
+                    if let Some(bind) = &item.bind_label {
+                        bindings.set(BindTarget::ItemLabel(path.clone(), item.number), bind.binding());
+                    }
+                    list.push(it);
+                }
+                PieButton::cluster(dir).with_items(list)
+            } else {
+                PieButton::new(dir)
+            };
+            if let Some(label) = &def.label {
+                b.label = label.clone();
+            }
+            if let Some(m) = &def.mnemonic {
+                b.mnemonic = parse_mnemonic(m).map_err(err)?;
+            }
+            if let Some(e) = def.enabled {
+                b.enabled = e;
+            }
+            if let Some(id) = &def.id {
+                ids.set(IdKey { path: path.clone(), item: None }, id.clone());
+            }
+            if let Some(bind) = &def.bind_label {
+                bindings.set(BindTarget::Label(path.clone()), bind.binding());
+            }
+            out.push(b);
+            path.pop();
+        }
+        Ok(out)
+    }
+}
+
+/// `"Copy" (N)` for errors.
+fn button_name(b: &ButtonDef) -> String {
+    match &b.label {
+        Some(l) if !l.is_empty() => format!("\"{l}\" ({})", b.dir),
+        _ => format!("at {}", b.dir),
+    }
+}
+
+fn labels_along(buttons: &[PieButton], path: &[usize]) -> String {
+    if path.is_empty() {
+        return "the menu".to_string();
+    }
+    (1..=path.len())
+        .map(|n| crate::button_at(buttons, &path[..n]).map_or("?".to_string(), |b| format!("\"{}\"", b.label)))
+        .collect::<Vec<_>>()
+        .join(" \u{203a} ")
+}
+
+/// The shape rules of one button definition.
+fn check_button(b: &ButtonDef) -> Result<(), String> {
+    let name = button_name(b);
+    parse_direction(&b.dir).ok_or_else(|| format!("button {name}: unknown direction `{}` (N, NE, E, SE, S, SW, W, NW)", b.dir))?;
+    let kinds = usize::from(b.opens.is_some()) + usize::from(b.back) + usize::from(b.items.is_some());
+    if kinds > 1 {
+        return Err(format!("button {name}: `opens`, `back` and `items` exclude each other"));
+    }
+    if b.style.is_some() && b.opens.is_none() {
+        return Err(format!("button {name}: `style` needs `opens`"));
+    }
+    if b.items.is_some() && b.mnemonic.is_some() {
+        return Err(format!("button {name}: a cluster has no mnemonic of its own (give its items one)"));
+    }
+    if let Some(m) = &b.mnemonic {
+        parse_mnemonic(m).map_err(|e| format!("button {name}: {e}"))?;
+    }
+    for item in b.items.iter().flatten() {
+        if let Some(m) = &item.mnemonic {
+            parse_mnemonic(m).map_err(|e| format!("button {name}, item {}: {e}", item.number))?;
+        }
+    }
+    Ok(())
+}
+
+/// The target of a `bind` key: `title` or the path of a bindable settings field.
+fn bind_target(key: &str) -> Result<BindTarget, String> {
+    if key == "title" {
+        return Ok(BindTarget::Title);
+    }
+    SettingsField::ALL
+        .into_iter()
+        .find(|f| f.path() == key && f.is_bindable())
+        .map(BindTarget::Field)
+        .ok_or_else(|| format!("`bind` key `{key}` is neither `title` nor a bindable setting (colours, strokes, fonts)"))
+}
+
+// ---------------------------------------------------------------------------------------
+// A built menu
+// ---------------------------------------------------------------------------------------
+
+/// A menu built from a [`MenuCatalog`] (or made in the dev tool): everything to show it, and
+/// to write it back to TOML with [`MenuDefinition::to_toml`].
+///
+/// ```no_run
+/// # use egui_pie_menu::{*, catalog::*, dev_tool::Variables};
+/// # fn f(ctx: &egui::Context, catalog: &MenuCatalog, key_down: bool, vars: Variables) {
+/// let mut edit = catalog.build("edit").unwrap();
+/// let mut menu = edit.to_pie_menu();
+/// // each frame:
+/// edit.apply_variables(vars, &mut menu);
+/// if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |ui, b| { ui.label(b.label_text()); }) {
+///     match edit.ids.selected(&edit.buttons, menu.selected_path()) {
+///         Some("edit.copy") => { /* copy */ }
+///         _ => {}
+///     }
+/// }
+/// # }
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct MenuDefinition {
+    /// The menu's name in the files.
+    pub name: String,
+    pub title: Option<String>,
+    pub settings: PieMenuSettings,
+    pub buttons: Vec<PieButton>,
+    /// The `id`s of the buttons and cluster items.
+    pub ids: ButtonIds,
+    /// The `bind` and `bind_label` entries: resolved by [`MenuDefinition::apply_variables`].
+    pub bindings: Bindings,
+}
+
+impl MenuDefinition {
+    /// A [`PieMenu`] with this definition's settings and title.
+    pub fn to_pie_menu(&self) -> PieMenu {
+        let mut menu = PieMenu::new();
+        menu.settings = self.settings.clone();
+        menu.title = self.title.clone();
+        menu
+    }
+
+    /// Resolves the bindings with your app's current values: every bound label goes into
+    /// [`MenuDefinition::buttons`], every bound setting and the title into `menu`. Call it
+    /// when the values change (or every frame). A binding whose name is not among `vars`
+    /// keeps the value from the file. Returns `true` if anything changed.
+    pub fn apply_variables(&mut self, vars: Variables, menu: &mut PieMenu) -> bool {
+        self.bindings.set_variables(vars);
+        let mut changed = self.bindings.apply(&mut menu.settings, &mut self.buttons);
+        if let Some(VarValue::Text(t)) = self.bindings.variable_for(&BindTarget::Title)
+            && menu.title.as_deref() != Some(t.as_str())
+        {
+            menu.title = Some(t.clone());
+            changed = true;
+        }
+        changed
+    }
+
+    /// The definition as a TOML file: this menu first, then one menu per sub-pie, named
+    /// after its button's label (`paste_special`). Settings are written where they differ
+    /// from the default. [`MenuCatalog::add_toml`] reads it back to the same definition.
+    pub fn to_toml(&self) -> String {
+        let mut menus: Vec<(String, MenuDef)> = vec![(self.name.clone(), MenuDef::default())];
+        let mut taken: Vec<String> = vec![self.name.clone()];
+        let buttons = self.export_level(&self.buttons, &mut Vec::new(), &mut menus, &mut taken);
+        let root = &mut menus[0].1;
+        root.title = self.title.clone();
+        root.settings = settings_to_table(&self.settings);
+        root.button = buttons;
+        for (target, b) in self.bindings.iter() {
+            let key = match target {
+                BindTarget::Title => "title".to_string(),
+                BindTarget::Field(f) => f.path().to_string(),
+                _ => continue,
+            };
+            if let Some(def) = BindDef::from_binding(b) {
+                root.bind.insert(key, def);
+            }
+        }
+        write_menus(&menus)
+    }
+
+    fn export_level(
+        &self,
+        level: &[PieButton],
+        path: &mut Vec<usize>,
+        menus: &mut Vec<(String, MenuDef)>,
+        taken: &mut Vec<String>,
+    ) -> Vec<ButtonDef> {
+        let mut out = Vec::new();
+        for (n, b) in level.iter().enumerate() {
+            path.push(n);
+            let default_label = if b.is_back() { "Back" } else { "" };
+            let mut def = ButtonDef {
+                dir: direction_name(b.direction).to_string(),
+                label: (b.label != default_label).then(|| b.label.clone()),
+                id: self.ids.button(path).map(str::to_string),
+                mnemonic: if b.is_cluster() { None } else { mnemonic_name(b.mnemonic) },
+                enabled: (!b.enabled).then_some(false),
+                back: b.is_back(),
+                bind_label: self.bindings.get(&BindTarget::Label(path.clone())).and_then(BindDef::from_binding),
+                ..ButtonDef::default()
+            };
+            match &b.kind {
+                PieButtonKind::SubPie { children, style } => {
+                    let name = unique_name(&b.label, path, taken);
+                    let slot = menus.len();
+                    menus.push((name.clone(), MenuDef::default()));
+                    let kids = self.export_level(children, path, menus, taken);
+                    menus[slot].1.button = kids;
+                    def.opens = Some(name);
+                    def.style = style.map(Into::into);
+                }
+                PieButtonKind::Cluster(items) => {
+                    def.items = Some(
+                        items
+                            .iter()
+                            .map(|i| ItemDef {
+                                number: i.number,
+                                label: i.label.clone(),
+                                id: self.ids.item(path, i.number).map(str::to_string),
+                                mnemonic: mnemonic_name(i.mnemonic),
+                                enabled: (!i.enabled).then_some(false),
+                                bind_label: self
+                                    .bindings
+                                    .get(&BindTarget::ItemLabel(path.clone(), i.number))
+                                    .and_then(BindDef::from_binding),
+                            })
+                            .collect(),
+                    );
+                }
+                PieButtonKind::Action | PieButtonKind::Back => {}
+            }
+            out.push(def);
+            path.pop();
+        }
+        out
+    }
+}
+
+/// A menu name from a label (`Paste Special` → `paste_special`), unique among `taken`.
+fn unique_name(label: &str, path: &[usize], taken: &mut Vec<String>) -> String {
+    let mut base: String = label
+        .chars()
+        .flat_map(|c| if c.is_alphanumeric() { c.to_lowercase().collect::<Vec<_>>() } else { vec!['_'] })
+        .collect::<String>()
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    if base.is_empty() {
+        base = format!("sub_{}", path.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("_"));
+    }
+    let mut name = base.clone();
+    let mut n = 2;
+    while taken.contains(&name) {
+        name = format!("{base}_{n}");
+        n += 1;
+    }
+    taken.push(name.clone());
+    name
+}
+
+#[cfg(test)]
+mod tests;
