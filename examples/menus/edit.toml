@@ -3,7 +3,8 @@
 
 # Most values are plain literals. Those your program supplies are references by
 # name, { var = "..", default = ".." }: the demo registers theme.* (from egui's
-# Dark / Light look) and i18n.* (the labels in the chosen language).
+# Dark / Light look), i18n.* (the labels in the chosen language) and app.* (its
+# pretend undo history). The ids are the actions the program handles.
 
 [menu.edit]
 title = { var = "i18n.edit", default = "Edit" }
@@ -36,6 +37,7 @@ opens = "paste_special"
 dir = "E"
 label = { var = "i18n.redo", default = "Redo" }
 id = "edit.redo"
+enabled = { var = "app.can_redo", default = true }
 
 [[menu.edit.button]]
 dir = "SW"
@@ -46,6 +48,7 @@ id = "edit.cut"
 dir = "W"
 label = { var = "i18n.undo", default = "Undo" }
 id = "edit.undo"
+enabled = { var = "app.can_undo", default = true }
 
 [[menu.edit.button]]
 dir = "NW"

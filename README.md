@@ -629,7 +629,7 @@ if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |u
 
 **Settings** go under `[menu.<name>.settings]`, with the paths of `PieMenuSettings`, and only what differs from the default. Colours are `"#rrggbb"` or `"#rrggbbaa"`, durations are milliseconds, and `false` switches off an optional value (`background_radius = false`). Compound values are inline tables: `highlight_stroke = { width = 2.0, color = "#ffffff" }`, `text_font = { size = 18.0, family = "Monospace" }`. An unknown setting is an error.
 
-**Values from your program.** A file can't hold code, so a value your program supplies is a reference by name: a label, a cluster item's label, the title, or a colour, stroke or font of the settings can be a literal or `{ var = "name", default = .. }`.
+**Values from your program.** A file can't hold code, so a value your program supplies is a reference by name: a label, a cluster item's label, the title, whether a button or item is `enabled`, or a colour, stroke or font of the settings can be a literal or `{ var = "name", default = .. }`.
 
 ```toml
 [menu.edit]
@@ -643,15 +643,31 @@ highlight_stroke = { var = "theme.outline", default = { width = 2.0, color = "#f
 dir = "N"
 label = { var = "i18n.copy", default = "Copy" }
 id = "edit.copy"
+
+[[menu.edit.button]]
+dir = "W"
+label = { var = "i18n.undo", default = "Undo" }
+id = "edit.undo"
+enabled = { var = "app.can_undo", default = true }
 ```
 
-The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible) and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value. Only colours, strokes, fonts and text can be references for now; anything else is an error naming the setting.
+The names are plain keys of your app's [`Variables`](#bindings-values-from-your-app), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible), `enabled` is true and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value. Only text, true/false, colours, strokes and fonts can be references for now; anything else is an error naming the setting.
+
+**Checking references.** Names and ids are only text to the file, so a typo goes unnoticed until a value stays at its default or a button does nothing. `check_references(&vars, &actions)` lists what your program does not answer: names it registers no variable for (or one of another kind, such as a font where a colour goes) and ids that are not among the actions it handles. Run it after loading, and log or show the result:
+
+```rust
+let mut vars = Variables::new();
+vars.text("i18n.copy", tr("copy")).flag("app.can_undo", history.can_undo());
+for problem in edit.check_references(&vars, &["edit.copy", "edit.undo"]) {
+    log::warn!("{problem}");   // the label of "Copy": `i18n.cpy` is not a variable of the program
+}
+```
 
 A menu's `title` and `settings` apply when it is built as a menu of its own. Where it opens as a sub-pie, only its buttons and `style` count.
 
 **Errors.** `build` fails, with the file and the button named, if a button opens a menu no file defines, menus open each other in a circle, or the tree has a problem `check_buttons` reports (a mnemonic used twice, a fan-out child facing the parent, ..). Debug builds therefore never assert on a menu that built.
 
-**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. The demo's "TOML" tab uses it to show, open and save menus.
+**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. A reference keeps the file's own default, not the value your program put in: a menu saved while the program runs in Russian keeps `default = "Copy"`. The demo's "TOML" tab uses it to show, open and save menus.
 
 ## Settings
 
@@ -805,7 +821,7 @@ For generated code, each binding reads its value either once or every frame (TOM
 
 For an optional setting (`text_color`, the number hint colour) the expression is the inner value and the code wraps it in `Some(..)`. A `// needs in scope: theme, tr` line lists the names the expressions use. An empty expression is ignored (the code keeps the literal).
 
-**Variables from your app.** Register your app's values each frame, each under a plain name, and, where generated code should read it differently from the name, with `.code(..)`: the Rust expression for the variable registered just before. Below a bound row, an "app value" picker then lists the variables of the right kind (with a colour swatch). A value bound to one shows the variable's real current value: its editor is greyed out and follows your app (switch your theme or language and the editors and the preview change with it). Typing a variable of the wrong kind (a font for a colour) is flagged.
+**Variables from your app.** Register your app's values each frame (`color`, `stroke`, `font`, `text`, and `flag` for true or false), each under a plain name, and, where generated code should read it differently from the name, with `.code(..)`: the Rust expression for the variable registered just before. Below a bound row, an "app value" picker then lists the variables of the right kind (with a colour swatch). A value bound to one shows the variable's real current value: its editor is greyed out and follows your app (switch your theme or language and the editors and the preview change with it). Typing a variable of the wrong kind (a font for a colour) is flagged.
 
 ```rust
 let mut vars = Variables::new();
@@ -816,10 +832,10 @@ vars.color("theme.accent", self.theme.accent)
 self.bindings.set_variables(vars);
 // Before drawing the editors and the preview:
 self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
-if let Some(VarValue::Text(t)) = self.bindings.variable_for(&BindTarget::Title) {
-    self.menu.title = Some(t.clone());
-}
+self.bindings.apply_title(&mut self.title);
 ```
+
+`apply` keeps the value each target had before your app's replaced it (`Bindings::fallback`), so a file saved afterwards keeps its defaults. A name that is not one of your registered variables is flagged below the row (a TOML file would keep the fallback for it). Labels and `enabled` of buttons and cluster items can be bound as well as the settings.
 
 The variables are not saved with the bindings (they are your app's state); register them again every frame.
 
@@ -829,7 +845,8 @@ The variables are not saved with the bindings (they are your app's state); regis
 | `field_editor_bound` / `group_editor_bound` | `field_editor` / `group_editor` with the ⛓ toggle on bindable fields and the expression and Build / Live below a bound one |
 | `button_inspector_bound` | `button_inspector` with the ⛓ toggle on labels; it keeps the bindings with their buttons as the tree changes (`Bindings::follow`, `prune`, `renumber_item` for doing that yourself) |
 | `binding_toggle` / `binding_details` | the two halves of a bound row, for your own rows (the demo's "Menu title") |
-| `Variables` / `VarValue` / `VarKind` | your app's values by name (`color`, `stroke`, `font`, `text`), with `code` for the Rust expression of generated code (`code_for`); `Bindings::set_variables`, `apply` (writes the variable values into the settings and labels), `variable_for`, `code_expr` |
+| `Variables` / `VarValue` / `VarKind` | your app's values by name (`color`, `stroke`, `font`, `text`, `flag`), with `code` for the Rust expression of generated code (`code_for`); `Bindings::set_variables`, `apply` / `apply_title` (write the variable values in, keeping `fallback`s), `variable_for`, `code_expr` |
+| `id_editor(ui, &mut ids, &key, actions)` | an "Id" row for a button or cluster item, with a picker of the actions your program handles and a warning for an id that is none of them |
 | `menu_to_code_bound` | `menu_to_code` with the bindings; also `settings_to_code_bound`, `buttons_to_code_bound`, `live_bindings_code`, `free_identifiers` |
 
 ```rust
@@ -898,7 +915,7 @@ cargo run --example demo
 - Centre: the canvas, with a toolbar (the **Demo | Configure** toggle, "Pin pie-menu", the code panel, the theme switch, the last action). The mode is always your choice; the demo never switches it.
   - **Demo**: the real menu, opened with right-click or Space, so every change can be tried at once ("Pin pie-menu" keeps it open).
   - **Configure**: a preview of the node selected in the tree, on separate pinned menus: the ring that holds a button (the button outlined), the children of a replace-style sub-pie (with a breadcrumb to its parents), or a ring with the fan of a fan-out open. It uses no pointer and ignores number keys, so hover, reveal animation, sub-pie centre and hover delay, and the fan-out delay and opener action can only be judged in Demo mode (the editors say so). Click a button, or a cluster item, to select it in the tree. While a button problem exists, the preview keeps showing the last tree without one.
-- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row names a button for the file, and the last action shows the id of what was selected.
+- Right (the "Code panel" checkbox shows or hides it): the generated code, live, with a Copy button. "Menu code" is the library-level code (buttons, sub-pies, mnemonics and a `.configure(..)` closure with the changed settings, with the bound expressions and a live block for the live ones). "Draw code" is a sketch of the render closure with the demo's colours, tooltips, icons and cluster layouts. "TOML" is the menu as a [TOML file](#menus-from-toml-files), with the menu's name, the files to open (separated by commas, merged in order) and Open / Save (Save writes the first file). It starts with `examples/menus/edit.toml` and `examples/menus/plugin.toml`, which together show a plugin extending a menu. The inspector's "Id" row (`id_editor`, offering the demo's actions) names a button for the file, and the last action shows the id of what was selected. Open reports the references the demo does not answer (`check_references`). The demo runs a pretend undo history on the ids it gets, behind the `app.can_undo` / `app.can_redo` variables: in the example menu, Undo is greyed out until something was done.
 
 ## Upgrading from v0.36.0
 
