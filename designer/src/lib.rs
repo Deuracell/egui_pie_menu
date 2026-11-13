@@ -6,8 +6,8 @@
 //! [`button_inspector`], with [`preview_target`] for a live preview) in a side panel, show
 //! [`menu_to_code`] (or [`settings_to_code`] / [`buttons_to_code`]) with [`code_view`], and
 //! paste the result into your project.
-use crate::settings::*;
-use crate::{ClusterItem, Mnemonic, PieButton, PieButtonKind};
+use egui_pie_menu::settings::*;
+use egui_pie_menu::{ClusterItem, Mnemonic, PieButton, PieButtonKind};
 use egui::{Color32, FontFamily, FontId, Margin, Stroke, Ui};
 use std::time::Duration;
 
@@ -211,7 +211,8 @@ fn field_value_code(field: SettingsField, expr: &str) -> String {
 /// what differs from [`PieMenuSettings::default`]. Empty when nothing differs.
 ///
 /// ```
-/// use egui_pie_menu::{PieMenuSettings, dev_tool::settings_to_code};
+/// use egui_pie_menu::PieMenuSettings;
+/// use egui_pie_menu_designer::settings_to_code;
 /// let mut s = PieMenuSettings::default();
 /// assert_eq!(settings_to_code(&s), "");
 /// s.layout.radius = 120.0;
@@ -332,7 +333,8 @@ fn button_expr(b: &PieButton, ind: usize, path: &mut Vec<usize>, bindings: &Bind
 /// `vec![ .. ]` source that rebuilds `buttons` with the [`PieButton`] builders.
 ///
 /// ```
-/// use egui_pie_menu::{PieButton, PieDirection, dev_tool::buttons_to_code};
+/// use egui_pie_menu::{PieButton, PieDirection};
+/// use egui_pie_menu_designer::buttons_to_code;
 /// let b = vec![PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c')];
 /// assert_eq!(
 ///     buttons_to_code(&b),
@@ -355,7 +357,7 @@ pub fn buttons_to_code_bound(buttons: &[PieButton], bindings: &Bindings) -> Stri
 ///
 /// ```
 /// use egui_pie_menu::*;
-/// use egui_pie_menu::dev_tool::*;
+/// use egui_pie_menu_designer::*;
 /// let buttons = vec![PieButton::new(PieDirection::North).with_label("Undo")];
 /// let mut bindings = Bindings::new();
 /// bindings.set(BindTarget::Label(vec![0]), Binding::new("format!(\"Undo ({n})\")", BindingMode::Live));
@@ -434,7 +436,7 @@ pub fn menu_to_code_bound(title: Option<&str>, settings: &PieMenuSettings, butto
     }
     let mut names: Vec<String> = Vec::new();
     for (target, binding) in bindings.iter() {
-        let used = target.path().is_none_or(|p| crate::button_at(buttons, p).is_some());
+        let used = target.path().is_none_or(|p| egui_pie_menu::button_at(buttons, p).is_some());
         if let Some(expr) = binding.active_expr().filter(|_| used).map(|e| bindings.variables().code_for(e)) {
             for name in free_identifiers(expr) {
                 if !names.contains(&name) {
@@ -582,7 +584,7 @@ fn new_sub_pie(dir: PieDirection, fan: bool) -> PieButton {
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
-    use crate::*;
+    use egui_pie_menu::*;
     use egui::Context;
 
     /// Compiles the tokens as a `Vec<PieButton>` expression, checks it equals `$value` (Debug)
