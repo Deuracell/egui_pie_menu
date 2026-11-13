@@ -1,7 +1,7 @@
 #![allow(clippy::field_reassign_with_default)]
 use super::*;
-use crate::PieMenuDismissInput;
 use crate::settings::{HighlightShape, HoverEmphasis, RevealAnimation, ShowBehavior};
+use crate::{PieMenuDismissInput, button_at};
 use egui::{FontId, Stroke};
 use std::time::Duration;
 
@@ -127,7 +127,6 @@ items = [{ number = 1, label = "Bold", id = "fmt.bold" }, { number = 2, label = 
 [[menu.edit.button]]
 dir = "West"
 label = { var = "i18n.undo", default = "Undo" }
-enabled = false
 
 [[menu.paste_special.button]]
 dir = "N"
@@ -159,7 +158,7 @@ fn the_documented_example_builds() {
         PieButton::cluster(PieDirection::South)
             .with_label("Format")
             .with_items(vec![ClusterItem::new(1, "Bold"), ClusterItem::new(2, "Italic").with_mnemonic('i')]),
-        PieButton::new(PieDirection::West).with_label("Undo").with_enabled(false),
+        PieButton::new(PieDirection::West).with_label("Undo"),
     ];
     assert_eq!(format!("{:?}", edit.buttons), format!("{expected:?}"));
     assert_eq!(edit.title.as_deref(), Some("Edit"));
@@ -267,15 +266,19 @@ fn files_merge() {
     assert_eq!(edit.settings.text_color, Some(Color32::WHITE));
     assert_eq!(edit.ids.button(&[1, 0]), Some("translate.en"));
     assert!(edit.buttons[1].children()[1].is_back());
-    // The same file twice: every direction is taken twice.
-    let mut c = catalog(&[("base.toml", base)]);
-    let err = c.add_toml("again.toml", base).unwrap_err();
+    // The same file twice: it loads (another file might still move a button), but the menu
+    // does not build, and the error names both files.
+    let c = catalog(&[("base.toml", base), ("again.toml", base)]);
+    let err = c.build("edit").unwrap_err();
     assert_eq!(err.source, "again.toml");
     assert!(
         err.message.contains("direction N is taken twice: by \"Copy\" (N) (from base.toml) and \"Copy\" (N) (from again.toml)"),
         "{err}"
     );
-    assert_eq!(c.build("edit").unwrap().title.as_deref(), Some("Edit"), "a failed file adds nothing");
+    // A file with an error adds nothing.
+    let mut c = catalog(&[("base.toml", base)]);
+    assert!(c.add_toml("bad.toml", "[menu.edit]\ntitle = \"New\"\n[[menu.edit.button]]\ndir = \"Up\"").is_err());
+    assert_eq!(c.build("edit").unwrap().title.as_deref(), Some("Edit"));
 }
 
 #[test]
@@ -294,6 +297,15 @@ fn file_errors() {
     assert!(add("[[menu.a.button]]\ndir = \"N\"\nlabel = { name = \"x\" }").contains("label"));
     assert!(add("[menu.a.settings]\nradius = 1.0").contains("unknown setting `radius`"));
     assert!(add("[menu.a\n").starts_with("f.toml: "), "a TOML syntax error names the file");
+    // Whether a button is enabled or visible is the program's state, not the file's.
+    assert!(add("[[menu.a.button]]\ndir = \"N\"\nenabled = false").contains("unknown field `enabled`"));
+    assert!(add("[[menu.a.button]]\ndir = \"N\"\nvisible = false").contains("unknown field `visible`"));
+    assert!(add("[[menu.a.button]]\ndir = \"N\"\nitems = [{ number = 1, enabled = false }]").contains("enabled"));
+    // Changes.
+    assert!(add("[[menu.a.change]]\nlabel = \"x\"").contains("id"), "a change needs an id");
+    assert!(add("[[menu.a.change]]\nid = \"x\"\ndir = \"Up\"").contains("unknown direction `Up`"));
+    assert!(add("[[menu.a.change]]\nid = \"x\"\nmnemonic = \"ab\"").contains("neither one character"));
+    assert!(add("[[menu.a.change]]\nid = \"x\"\nenabled = false").contains("unknown field `enabled`"));
 }
 
 #[test]
@@ -319,7 +331,7 @@ fn rich_definition() -> MenuDefinition {
             PieButton::back(PieDirection::North),
             PieButton::new(PieDirection::South).with_label("Deeper").with_children(vec![
                 PieButton::back(PieDirection::North).with_label("Up"),
-                PieButton::new(PieDirection::East).with_label("Leaf").with_enabled(false),
+                PieButton::new(PieDirection::East).with_label("Leaf"),
             ]),
             PieButton::new(PieDirection::East).with_label("Paste Special").with_children(vec![
                 PieButton::back(PieDirection::West),
@@ -328,7 +340,7 @@ fn rich_definition() -> MenuDefinition {
         ]),
         PieButton::cluster(PieDirection::West)
             .with_label("Format")
-            .with_items(vec![ClusterItem::new(1, "Bold").with_mnemonic('b'), ClusterItem::new(3, "Italic").with_enabled(false)]),
+            .with_items(vec![ClusterItem::new(1, "Bold").with_mnemonic('b'), ClusterItem::new(3, "Italic")]),
         PieButton::new(PieDirection::NorthWest)
             .with_label("Sub")
             .with_children(vec![PieButton::back(PieDirection::SouthEast)])
@@ -348,7 +360,7 @@ fn rich_definition() -> MenuDefinition {
     bindings.set(BindTarget::ItemLabel(vec![3], 1), var_binding("i18n.bold"));
     let mut settings = rich_settings();
     settings.sub_pies.style = SubPieStyle::Replace; // the tree's sub-pies are not all legal fan-outs
-    MenuDefinition { name: "edit".into(), title: Some("Edit".into()), settings, buttons, ids, bindings }
+    MenuDefinition { name: "edit".into(), title: Some("Edit".into()), settings, buttons, ids, bindings, ..MenuDefinition::default() }
 }
 
 #[test]
@@ -422,6 +434,7 @@ fn the_example_files_build_and_merge() {
     assert_eq!(edit.settings.layout.radius, 130.0);
     assert_eq!(edit.settings.animations.reveal_duration, Duration::from_millis(150));
     assert_eq!(edit.ids.find("plugin.share.chat"), Some(&IdKey { path: vec![6, 2], item: None }));
+    assert_eq!(edit.ids.find("plugin.share.print"), Some(&IdKey { path: vec![6, 4], item: None }));
     assert_eq!(edit.ids.button(&[1, 3]), Some("plugin.paste_image"));
     assert_eq!(edit.ids.selected(&edit.buttons, &[5, 2]), Some("format.italic"));
     assert!(edit.buttons[1].children().len() == 4 && edit.buttons[1].children()[3].label == "As Image");
@@ -430,45 +443,203 @@ fn the_example_files_build_and_merge() {
     assert_eq!(format!("{:?}", again.buttons), format!("{:?}", edit.buttons));
     assert_eq!(again.ids, edit.ids);
     assert_eq!(again.bindings, edit.bindings);
+    // The user's file: in any order with the others, the same menu.
+    let user = include_str!("../../examples/menus/user.toml");
+    // (The order of the buttons in the tree is the order the files define them.)
+    let first = catalog(&[("user.toml", user), ("edit.toml", base), ("plugin.toml", plugin)]).build("edit").unwrap();
+    let last = catalog(&[("edit.toml", base), ("plugin.toml", plugin), ("user.toml", user)]).build("edit").unwrap();
+    let by_direction = |buttons: &[PieButton]| {
+        let mut v: Vec<String> = buttons.iter().map(|b| format!("{b:?}")).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(by_direction(&first.buttons), by_direction(&last.buttons));
+    for (_, id) in last.ids.iter() {
+        let (a, b) = (first.ids.find(id).unwrap(), last.ids.find(id).unwrap());
+        let dir = |m: &MenuDefinition, k: &IdKey| button_at(&m.buttons, &k.path).map(|b| b.direction);
+        assert_eq!(dir(&first, a), dir(&last, b), "{id}");
+    }
+    assert!(last.notes.is_empty(), "{:?}", last.notes);
+    assert!(last.ids.find("edit.paste_special").is_none() && last.ids.find("paste.values").is_none(), "removed with its sub-pie");
+    assert!(last.ids.find("format.underline").is_none() && last.ids.find("format.bold").is_some(), "an item removed from its cluster");
+    let cut = last.ids.find("edit.cut").unwrap();
+    assert_eq!(button_at(&last.buttons, &cut.path).map(|b| (b.label.as_str(), b.mnemonic)), Some(("Snip", Mnemonic::Key('s'))));
+    let share = last.ids.find("plugin.share").unwrap();
+    assert_eq!(button_at(&last.buttons, &share.path).map(|b| b.direction), Some(PieDirection::SouthEast), "moved");
+    let all = last.ids.find("edit.select_all").unwrap();
+    assert_eq!(button_at(&last.buttons, &all.path).map(|b| b.direction), Some(PieDirection::South), "in the place Share left");
+    // Without the plugin, its change is only noted.
+    let no_plugin = catalog(&[("edit.toml", base), ("user.toml", user)]).build("edit").unwrap();
+    let notes: Vec<String> = no_plugin.notes.iter().map(ToString::to_string).collect();
+    assert_eq!(notes, ["`change` in menu `edit` (from user.toml): `plugin.share` is not in the menu (nothing changed)"]);
+}
+
+fn actions(ids: &[&str]) -> Actions {
+    let mut a = Actions::new();
+    for id in ids {
+        a.add(*id);
+    }
+    a
 }
 
 #[test]
-fn enabled_can_be_a_reference() {
+fn changes_and_removals() {
+    let base = r##"
+        [[menu.m.button]]
+        dir = "N"
+        label = "Copy"
+        id = "copy"
+        [[menu.m.button]]
+        dir = "S"
+        label = "More"
+        id = "more"
+        opens = "more"
+        [[menu.m.button]]
+        dir = "W"
+        label = "Format"
+        id = "format"
+        items = [{ number = 1, label = "B", id = "bold" }, { number = 2, label = "I", id = "italic" }]
+        [[menu.more.button]]
+        dir = "N"
+        back = true
+        [[menu.more.button]]
+        dir = "S"
+        label = "Deep"
+        id = "deep"
+    "##;
+    // A change in a file loaded before the button is defined still applies.
+    let early = r##"
+        [[menu.m.change]]
+        id = "copy"
+        label = { var = "i18n.dup", default = "Duplicate" }
+        dir = "E"
+        [[menu.m.change]]
+        id = "italic"
+        label = "Italic"
+        mnemonic = "t"
+        [[menu.more.change]]
+        id = "deep"
+        label = "Deeper"
+        [menu.m]
+        remove = ["nowhere"]
+    "##;
+    let late = r##"
+        [[menu.m.change]]
+        id = "copy"
+        mnemonic = "d"
+        [[menu.m.change]]
+        id = "more"
+        items = [{ number = 1, label = "X", id = "x" }]
+        [[menu.m.button]]
+        dir = "N"
+        label = "New in the North"
+        id = "new"
+        [menu.m]
+        remove = ["bold"]
+    "##;
+    let m = catalog(&[("early.toml", early), ("base.toml", base), ("late.toml", late)]).build("m").unwrap();
+    let copy = &m.buttons[0];
+    assert_eq!(
+        (copy.label.as_str(), copy.direction, copy.mnemonic),
+        ("Duplicate", PieDirection::East, Mnemonic::Key('d')),
+        "both changes, in file order"
+    );
+    assert_eq!(m.bindings.get(&BindTarget::Label(vec![0])), Some(&var_binding("i18n.dup")), "a changed label can be a reference");
+    assert!(m.buttons[1].is_cluster() && m.buttons[1].children().is_empty(), "a sub-pie changed into a cluster");
+    assert_eq!(m.ids.item(&[1], 1), Some("x"));
+    let format = &m.buttons[2];
+    assert_eq!(format.cluster_items().len(), 1, "bold removed");
+    assert_eq!((format.cluster_items()[0].label.as_str(), format.cluster_items()[0].mnemonic), ("Italic", Mnemonic::Key('t')));
+    assert_eq!(m.buttons[3].label, "New in the North", "North is free once Copy moved");
+    let notes: Vec<String> = m.notes.iter().map(ToString::to_string).collect();
+    assert_eq!(notes, ["`remove` in menu `m` (from early.toml): `nowhere` is not in the menu (nothing removed)"]);
+    // The sub-pie's own change: the menu `more`, built alone, has it.
+    let more = catalog(&[("early.toml", early), ("base.toml", base)]).build("m").unwrap();
+    assert_eq!(more.buttons[1].children()[1].label, "Deeper");
+    // A notes are reported with the references.
+    let found: Vec<String> = m
+        .check_references(&Variables::new(), &actions(&["copy", "format", "italic", "new", "more", "x"]))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(found[0], "`remove` in menu `m` (from early.toml): `nowhere` is not in the menu (nothing removed)");
+    // Errors at build: a change that clashes, an item changed like a button.
+    let clash = catalog(&[("base.toml", base), ("c.toml", "[[menu.m.change]]\nid = \"copy\"\ndir = \"S\"")]).build("m").unwrap_err();
+    assert!(clash.message.contains("direction") && clash.message.contains("taken twice"), "{clash}");
+    let item = catalog(&[("base.toml", base), ("c.toml", "[[menu.m.change]]\nid = \"bold\"\ndir = \"S\"")]).build("m").unwrap_err();
+    assert_eq!(item.source, "c.toml");
+    assert!(item.message.contains("a cluster item can only change its `label` and `mnemonic`"), "{item}");
+    let style =
+        catalog(&[("base.toml", base), ("c.toml", "[[menu.m.change]]\nid = \"copy\"\nstyle = \"fan_out\"")]).build("m").unwrap_err();
+    assert!(style.message.contains("`style` needs `opens`"), "{style}");
+}
+
+#[test]
+fn actions_set_enabled_and_visible_by_id() {
     let text = r##"
         [[menu.m.button]]
         dir = "N"
         label = "Undo"
-        enabled = { var = "app.can_undo", default = false }
-        [[menu.m.button]]
-        dir = "E"
-        label = "Off"
-        enabled = false
+        id = "edit.undo"
         [[menu.m.button]]
         dir = "S"
+        label = "Share"
+        id = "plugin.share"
+        opens = "share"
+        [[menu.m.button]]
+        dir = "E"
+        label = "Typo"
+        id = "edit.cpoy"
+        [[menu.m.button]]
+        dir = "W"
         label = "Format"
-        items = [{ number = 1, label = "B", enabled = { var = "app.bold" } }]
+        items = [{ number = 1, label = "B", id = "format.bold" }, { number = 2, label = "Q", id = "format.qq" }]
+        [[menu.m.button]]
+        dir = "NE"
+        label = "No id"
+        [[menu.share.button]]
+        dir = "N"
+        back = true
+        [[menu.share.button]]
+        dir = "S"
+        label = "Email"
+        id = "plugin.share.email"
     "##;
     let mut m = catalog(&[("m.toml", text)]).build("m").unwrap();
-    assert!(!m.buttons[0].enabled, "the default until applied");
-    assert!(!m.buttons[1].enabled);
-    assert!(m.buttons[2].cluster_items()[0].enabled, "no default: enabled");
-    assert_eq!(m.bindings.get(&BindTarget::Enabled(vec![0])), Some(&var_binding("app.can_undo")));
-    assert_eq!(m.bindings.get(&BindTarget::ItemEnabled(vec![2], 1)), Some(&var_binding("app.bold")));
-    let mut menu = m.to_pie_menu();
-    let mut vars = Variables::new();
-    vars.flag("app.can_undo", true).flag("app.bold", false);
-    assert!(m.apply_variables(vars, &mut menu));
-    assert!(m.buttons[0].enabled);
-    assert!(!m.buttons[2].cluster_items()[0].enabled);
-    // Written with the file's own defaults, not the applied values.
-    let out = m.to_toml();
-    assert!(out.contains("enabled = { var = \"app.can_undo\", default = false }"), "{out}");
-    assert!(out.contains("enabled = { var = \"app.bold\", default = true }"), "{out}");
-    assert!(out.contains("label = \"Off\"\nenabled = false"), "{out}");
-    let again = catalog(&[("again.toml", &out)]).build("m").unwrap();
-    assert_eq!(format!("{:?}", again.buttons), format!("{:?}", catalog(&[("m.toml", text)]).build("m").unwrap().buttons));
-    let bad = MenuCatalog::new().add_toml("f.toml", "[[menu.m.button]]\ndir = \"N\"\nenabled = \"yes\"").unwrap_err();
-    assert!(bad.message.contains("enabled"), "{bad}");
+    let mut a = actions(&["edit.undo", "plugin.share", "plugin.share.email", "format.bold"]);
+    a.add("edit.undo").enabled(false);
+    a.add("plugin.share").visible(false);
+    a.add("format.bold").enabled(false);
+    let fresh = m.apply_actions(&a);
+    assert_eq!(fresh, ["edit.cpoy", "format.qq"], "the unregistered ids, once");
+    assert!(!m.buttons[0].enabled);
+    assert!(!m.buttons[1].visible && m.buttons[1].enabled);
+    assert!(!m.buttons[2].enabled, "an unregistered id is disabled");
+    assert!(m.is_unhandled(&[2]) && !m.is_unhandled(&[0]));
+    assert!(!m.buttons[3].cluster_items()[0].enabled && !m.buttons[3].cluster_items()[1].enabled);
+    assert!(m.is_item_unhandled(&[3], 2) && !m.is_item_unhandled(&[3], 1));
+    assert!(m.buttons[4].enabled && m.buttons[4].visible, "a button without an id is left alone");
+    // Again: nothing new to report, and the state follows the program.
+    a.add("edit.undo").enabled(true);
+    a.add("plugin.share").visible(true);
+    assert!(m.apply_actions(&a).is_empty());
+    assert!(m.buttons[0].enabled && m.buttons[1].visible);
+    // Registering a typo's id clears it; a new typo is reported once.
+    a.add("edit.cpoy");
+    assert!(m.apply_actions(&a).is_empty());
+    assert!(m.buttons[2].enabled && !m.is_unhandled(&[2]));
+    // Keep: unregistered ids are left as they are.
+    let mut keep = actions(&["edit.undo"]);
+    keep.keep_unregistered(true);
+    let mut k = catalog(&[("m.toml", text)]).build("m").unwrap();
+    k.apply_actions(&keep);
+    assert!(k.buttons[2].enabled && k.is_unhandled(&[2]), "still reported, not disabled");
+    // Not written to the file.
+    m.buttons[0].enabled = false;
+    assert!(!m.to_toml().contains("enabled") && !m.to_toml().contains("visible"));
+    // Reported by check_references too.
+    let found: Vec<String> = m.check_references(&Variables::new(), &actions(&["edit.undo"])).iter().map(ToString::to_string).collect();
+    assert!(found.contains(&"the id of \"Share\": `plugin.share` is not an action of the program".to_string()), "{found:?}");
 }
 
 #[test]
@@ -500,7 +671,6 @@ fn references_are_checked_against_the_program() {
         dir = "N"
         label = { var = "i18n.copy", default = "Copy" }
         id = "edit.copy"
-        enabled = { var = "app.can_copy" }
         [[menu.m.button]]
         dir = "S"
         label = "Format"
@@ -508,58 +678,19 @@ fn references_are_checked_against_the_program() {
     "##;
     let m = catalog(&[("m.toml", text)]).build("m").unwrap();
     let mut vars = Variables::new();
-    vars.text("i18n.copy", "Copy").color("theme.accent", Color32::RED).text("app.can_copy", "yes");
-    let found: Vec<String> = m.check_references(&vars, &["edit.copy"]).iter().map(ToString::to_string).collect();
+    vars.text("i18n.copy", "Copy").color("theme.accent", Color32::RED);
+    let found: Vec<String> = m.check_references(&vars, &actions(&["edit.copy"])).iter().map(ToString::to_string).collect();
     assert_eq!(
         found,
         [
             "the title: `i18n.title` is not a variable of the program",
             "the setting `title.text_font`: `theme.accent` is a colour of the program; this needs a font",
-            "`enabled` of \"Copy\": `app.can_copy` is text of the program; this needs true or false",
             "the id of item 2 of \"Format\": `fmt.b` is not an action of the program",
         ]
     );
     vars.text("i18n.title", "T").font("theme.accent", FontId::default());
-    vars.flag("app.can_copy", true);
-    let found = m.check_references(&vars, &["edit.copy", "fmt.b"]);
+    let found = m.check_references(&vars, &actions(&["edit.copy", "fmt.b"]));
     assert!(found.is_empty(), "{found:?}");
-}
-
-#[test]
-fn visible_can_be_a_reference() {
-    let base = r##"
-        [[menu.edit.button]]
-        dir = "N"
-        label = "Copy"
-        [[menu.edit.button]]
-        dir = "W"
-        label = "Old"
-        visible = false
-    "##;
-    let plugin = r##"
-        [[menu.edit.button]]
-        dir = "S"
-        label = "Share"
-        id = "plugin.share"
-        visible = { var = "plugins.share", default = false }
-    "##;
-    let mut edit = catalog(&[("base.toml", base), ("plugin.toml", plugin)]).build("edit").unwrap();
-    assert!(!edit.buttons[1].visible);
-    assert!(!edit.buttons[2].visible, "hidden until the program says the plugin is on");
-    let mut menu = edit.to_pie_menu();
-    let mut vars = Variables::new();
-    vars.flag("plugins.share", true);
-    assert!(edit.apply_variables(vars.clone(), &mut menu));
-    assert!(edit.buttons[2].visible);
-    assert!(edit.check_references(&vars, &["plugin.share"]).is_empty());
-    let found: Vec<String> = edit.check_references(&Variables::new(), &["plugin.share"]).iter().map(ToString::to_string).collect();
-    assert_eq!(found, ["`visible` of \"Share\": `plugins.share` is not a variable of the program"]);
-    let out = edit.to_toml();
-    assert!(out.contains("label = \"Old\"\nvisible = false"), "{out}");
-    assert!(out.contains("visible = { var = \"plugins.share\", default = false }"), "{out}");
-    let again = catalog(&[("again.toml", &out)]).build("edit").unwrap();
-    assert!(!again.buttons[2].visible);
-    assert_eq!(again.bindings, catalog(&[("base.toml", base), ("plugin.toml", plugin)]).build("edit").unwrap().bindings);
 }
 
 #[test]
@@ -601,7 +732,7 @@ fn numbers_and_durations_can_be_references() {
     // A number where text goes is reported.
     let mut wrong = Variables::new();
     wrong.text("prefs.radius", "big");
-    let found: Vec<String> = m.check_references(&wrong, &[] as &[&str]).iter().map(ToString::to_string).collect();
+    let found: Vec<String> = m.check_references(&wrong, &Actions::new()).iter().map(ToString::to_string).collect();
     assert!(
         found.contains(&"the setting `layout.radius`: `prefs.radius` is text of the program; this needs a number".to_string()),
         "{found:?}"

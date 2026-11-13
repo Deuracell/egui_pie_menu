@@ -1,13 +1,13 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu::dev_tool::{
-    BindTarget, Bindings, Selection, Variables, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
-    button_tree, button_tree_filtered, field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
+    BindTarget, Bindings, Selection, Variables, button_tree_marked, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
+    field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
 };
 use egui_pie_menu::catalog::{MenuCatalog, MenuDefinition};
 use egui_pie_menu::{
-    ButtonIds, ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
+    Actions, ButtonIds, ButtonView, IdKey, unhandled_color, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
     SubPieStyle,
 };
 use std::collections::HashMap;
@@ -91,11 +91,8 @@ const LABEL_KEYS: [&str; 8] = ["copy", "paste_special", "redo", "save_as", "dele
 /// What the demo offers the dev tool to bind to, as an app would: `theme.*` from egui's
 /// current visuals (so the Dark / Light switch changes them) and `i18n.*` for the labels and
 /// the title in the current language, which generated code reads with `tr("..")`.
-fn app_variables(visuals: &egui::Visuals, lang: usize, history: &History, share_plugin: bool) -> Variables {
+fn app_variables(visuals: &egui::Visuals, lang: usize) -> Variables {
     let mut vars = Variables::new();
-    vars.flag("plugins.share", share_plugin).code("plugins.share_enabled()");
-    vars.flag("app.can_undo", history.done > 0).code("history.can_undo()");
-    vars.flag("app.can_redo", history.undone > 0).code("history.can_redo()");
     vars.color("theme.accent", visuals.selection.bg_fill)
         .color("theme.text", visuals.strong_text_color())
         .color("theme.weak_text", visuals.weak_text_color())
@@ -111,11 +108,12 @@ fn app_variables(visuals: &egui::Visuals, lang: usize, history: &History, share_
     vars
 }
 
-/// The actions the demo "handles": the ids of the example menus in `examples/menus`. A program
-/// registers its own, so that the dev tool can offer them and `check_references` can report
-/// an id nobody handles.
+/// The actions the demo "handles": the ids of the example menus in `examples/menus`, except
+/// `plugin.share.print`, which the example plugin offers but the demo does not handle (to show
+/// how such a button looks). A program registers its own (see [`demo_actions`]).
 const ACTIONS: &[&str] = &[
     "edit.copy",
+    "edit.select_all", // not in the example menus: user.toml adds a button for it
     "edit.paste_special",
     "edit.redo",
     "edit.cut",
@@ -133,8 +131,23 @@ const ACTIONS: &[&str] = &[
     "plugin.share.link",
 ];
 
-/// A pretend undo history, run by the menu's actions (by id), so that `app.can_undo` and
-/// `app.can_redo` change: an `enabled = { var = "app.can_undo" }` button greys out.
+/// The demo's actions with their state, as a program would register them: Undo and Redo
+/// only while the pretend history allows, the Share plugin's only while it is switched on.
+fn demo_actions(history: &History, share_plugin: bool) -> Actions {
+    let mut actions = Actions::new();
+    for id in ACTIONS {
+        actions.add(*id);
+    }
+    actions.add("edit.undo").enabled(history.done > 0);
+    actions.add("edit.redo").enabled(history.undone > 0);
+    for id in ACTIONS.iter().filter(|id| id.starts_with("plugin.share")) {
+        actions.add(*id).visible(share_plugin);
+    }
+    actions
+}
+
+/// A pretend undo history, run by the menu's actions (by id): Undo and Redo are enabled only
+/// while there is something to undo or redo ([`demo_actions`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct History {
     /// Actions that can be undone.
@@ -212,8 +225,11 @@ struct Demo {
     toml_note: String,
     /// The pretend undo history behind `app.can_undo` / `app.can_redo`.
     history: History,
-    /// The "Share plugin on" switch behind the `plugins.share` variable.
+    /// The "Share plugin on" switch: the plugin's actions are visible only while it is on.
     share_plugin: bool,
+    /// The buttons and cluster items whose id the demo does not handle (from the last
+    /// `Actions::apply`): marked in the tree and drawn in the error colour.
+    unhandled: Vec<IdKey>,
     /// What the canvas shows.
     mode: Mode,
     /// The last tree without problems: what Configure mode previews.
@@ -271,6 +287,7 @@ impl Demo {
             buttons: self.buttons.clone(),
             ids: self.ids.clone(),
             bindings: self.bindings.clone(),
+            ..MenuDefinition::default()
         }
     }
 
@@ -312,8 +329,8 @@ impl Demo {
         match catalog.build(&name) {
             Ok(def) => {
                 // What the program would log: references it does not answer.
-                let vars = app_variables(&egui::Visuals::dark(), self.lang, &self.history, self.share_plugin);
-                let problems = def.check_references(&vars, ACTIONS);
+                let vars = app_variables(&egui::Visuals::dark(), self.lang);
+                let problems = def.check_references(&vars, &demo_actions(&self.history, self.share_plugin));
                 self.load_definition(def);
                 self.toml_note = format!("Opened `{name}` (the files define: {}).", names.join(", "));
                 if problems.is_empty() {
@@ -358,7 +375,7 @@ impl Demo {
                 self.save_toml();
             }
             ui.checkbox(&mut self.share_plugin, "Share plugin on")
-                .on_hover_text("The demo's `plugins.share` variable: the example plugin's Share button is visible only while it is on.");
+                .on_hover_text("The demo's plugin.share* actions are visible only while this is on: the example plugin's Share button comes and goes.");
         });
         if !self.toml_note.is_empty() {
             ui.label(RichText::new(&self.toml_note).small());
@@ -393,6 +410,7 @@ impl Demo {
             toml_note: String::new(),
             history: History::default(),
             share_plugin: true,
+            unhandled: Vec::new(),
             mode: Mode::Demo,
             snapshot: Vec::new(),
             previews: HashMap::new(),
@@ -1259,6 +1277,7 @@ impl Demo {
             button_h: self.button_height,
             hint_gap: self.menu.settings.number_hints.spacing,
             show_hints: self.show_hints,
+            unhandled: &self.unhandled,
         };
         let selection = self.selection.clone();
         let mut clicked = None;
@@ -1290,6 +1309,8 @@ struct Look<'a> {
     /// The gap between a number hint and the label (`number_hints.spacing`).
     hint_gap: f32,
     show_hints: bool,
+    /// Buttons and items without an action in the demo, drawn in the error colour.
+    unhandled: &'a [IdKey],
 }
 
 /// The outline colour of the selected button in Configure mode.
@@ -1304,6 +1325,9 @@ fn outline(ui: &egui::Ui, rect: Rect) {
 /// selection) the button also gets an outline when it is the selected one, and a click on it
 /// (or on a cluster's item) is returned as the new selection.
 fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, select: Option<&Selection>) -> Option<Selection> {
+    // No action in the program (for a cluster: for one of its items): the error colour, the
+    // demo's choice of how to show it.
+    let text_color = if look.unhandled.iter().any(|k| k.path == path) { unhandled_color(ui) } else { b.text_color() };
     let d = decor_at(look.decor, path);
     let hovered = b.hovered;
     let mut clicked = None;
@@ -1409,7 +1433,7 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
     let hint = b.number_hint.as_ref().filter(|_| look.show_hints).map(|h| (RichText::new(&h.text).color(h.color), h.on_right));
 
     // Icon + label, with the mnemonic underlined.
-    let mut label = b.label_text();
+    let mut label = b.label_text().color(text_color);
     // Sub-pie and back buttons carry a marker (from the "Sub-pies" section) in a slot of its
     // own: at the far end, or before the icon. The icon is the button's own and never
     // replaces it.
@@ -1428,14 +1452,14 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
     // Far end: in the label's colour, set apart from the text by a little space.
     let far_marker = (!marker.is_empty() && far_end).then(|| {
         let text = if b.rtl { format!("{marker}  ") } else { format!("  {marker}") };
-        RichText::new(text).color(b.text_color())
+        RichText::new(text).color(text_color)
     });
     let text: egui::WidgetText = label.into();
     // A painted or image icon, about the text height; `b.scale()` keeps it crisp under hover
     // emphasis.
     let icon_size = ui.text_style_height(&egui::TextStyle::Body) * b.scale();
     let graphic = d.icon_kind != IconKind::Text;
-    let icon_color = b.text_color();
+    let icon_color = text_color;
     let hint_gap = look.hint_gap;
     let images = look.images;
 
@@ -1870,11 +1894,11 @@ impl Demo {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().id_salt("buttons_tree_scroll").auto_shrink([false, false]).show(ui, |ui| {
                     let settings = &self.menu.settings;
-                    if query.is_empty() {
-                        button_tree(ui, settings, &self.buttons, &mut self.selection);
-                    } else {
-                        button_tree_filtered(ui, settings, &self.buttons, &mut self.selection, &|b| button_matches(b, settings, query));
-                    }
+                    // Buttons without an action in the demo are marked like problems.
+                    let marked: Vec<Vec<usize>> = self.unhandled.iter().map(|k| k.path.clone()).collect();
+                    let filter = |b: &PieButton| button_matches(b, settings, query);
+                    let filter: Option<&dyn Fn(&PieButton) -> bool> = if query.is_empty() { None } else { Some(&filter) };
+                    button_tree_marked(ui, settings, &self.buttons, &mut self.selection, filter, &marked);
                 });
             });
         egui::ScrollArea::vertical().id_salt("buttons_inspector_scroll").auto_shrink([false, false]).show(ui, |ui| {
@@ -1886,7 +1910,8 @@ impl Demo {
             };
             let bindings = &mut self.bindings;
             let ids = &mut self.ids;
-            let out = button_inspector_bound(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, bindings, ids, ACTIONS, |ui, path, button| {
+            let actions = demo_actions(&self.history, self.share_plugin);
+            let out = button_inspector_bound(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, bindings, ids, &actions, |ui, path, button| {
                 // Read first, write only on a change: the inspector may have reshaped the
                 // tree this frame, and the table follows only once it returns.
                 if !note.is_empty() {
@@ -1917,9 +1942,11 @@ impl eframe::App for Demo {
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         // The app's values the dev tool can bind to; what is bound to one shows its value.
-        self.bindings.set_variables(app_variables(ui.visuals(), self.lang, &self.history, self.share_plugin));
+        self.bindings.set_variables(app_variables(ui.visuals(), self.lang));
         self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
         self.bindings.apply_title(&mut self.title);
+        // The program's state, by action id: enabled / visible, and what it does not handle.
+        self.unhandled = demo_actions(&self.history, self.share_plugin).apply(&self.ids, &mut self.buttons);
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
             ui.add_space(4.0);
             let query = self.search.trim().to_lowercase();
@@ -2129,6 +2156,7 @@ impl eframe::App for Demo {
                 button_h: self.button_height,
                 hint_gap: self.menu.settings.number_hints.spacing,
                 show_hints: self.show_hints,
+                unhandled: &self.unhandled,
             };
 
             // Does nothing while the menu is closed; closes itself on any response but
@@ -2295,14 +2323,13 @@ mod tests {
     fn app_variables_cover_every_language() {
         assert_eq!(TITLES.len(), LANGS.len());
         for lang in 0..LANGS.len() {
-            let vars = app_variables(&egui::Visuals::dark(), lang, &History::default(), true);
+            let vars = app_variables(&egui::Visuals::dark(), lang);
             assert_eq!(vars.get("i18n.edit"), Some(&egui_pie_menu::dev_tool::VarValue::Text(TITLES[lang].to_string())));
             assert_eq!(vars.get("i18n.undo"), Some(&egui_pie_menu::dev_tool::VarValue::Text(LANGS[lang].labels[6].to_string())));
             assert_eq!(vars.code_for("i18n.undo"), "tr(\"undo\")", "generated code reads it with tr");
             assert_eq!(vars.code_for("theme.accent"), "theme.accent");
         }
-        let h = History::default();
-        let (light, dark) = (app_variables(&egui::Visuals::light(), 0, &h, true), app_variables(&egui::Visuals::dark(), 0, &h, true));
+        let (light, dark) = (app_variables(&egui::Visuals::light(), 0), app_variables(&egui::Visuals::dark(), 0));
         assert_ne!(light.get("theme.panel"), dark.get("theme.panel"), "the theme switch changes the theme variables");
     }
 
@@ -2369,61 +2396,76 @@ mod tests {
 
     #[test]
     fn toml_open_save_and_open_again() {
+        /// What the demo does each frame: the program's variables and actions applied.
+        fn refresh(demo: &mut Demo) {
+            demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0));
+            demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+            demo.unhandled = demo_actions(&demo.history, demo.share_plugin).apply(&demo.ids, &mut demo.buttons);
+        }
         let ctx = egui::Context::default();
         let mut demo = Demo::new(&ctx);
         frames(&mut demo, |d, ui| d.toml_files_row(ui));
         demo.open_toml();
         assert!(demo.toml_note.starts_with("Opened `edit`"), "{}", demo.toml_note);
-        assert!(demo.toml_note.ends_with("Every reference is known."), "{}", demo.toml_note);
+        // The one reference the demo does not answer: the plugin's Print, on purpose.
+        assert!(
+            demo.toml_note.ends_with("\n\u{26a0} the id of \"Share\" \u{203a} \"Print\": `plugin.share.print` is not an action of the program"),
+            "{}",
+            demo.toml_note
+        );
         assert_eq!(demo.buttons.len(), 7, "edit.toml and plugin.toml merged");
         assert_eq!(demo.ids.selected(&demo.buttons, &[6, 2]), Some("plugin.share.chat"));
         assert_eq!(demo.menu.settings.layout.radius, 130.0);
         assert!(demo.bindings.get(&BindTarget::Title).is_some());
-        // Drawn with the opened menu, the Id row (id_editor) of a button with an id included.
+        // Drawn with the opened menu: the Id row of a button, the marked tree.
+        refresh(&mut demo);
+        assert_eq!(demo.unhandled, [IdKey { path: vec![6, 4], item: None }]);
+        assert!(!demo.buttons[6].children()[4].enabled, "Print has no action: disabled");
         demo.selection = Selection::button([4]);
         frames(&mut demo, |d, ui| d.buttons_tab(ui, ""));
         // Undo is enabled only when the history allows it.
-        let vars = app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin);
-        demo.bindings.set_variables(vars);
-        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
         assert_eq!(demo.ids.button(&[4]), Some("edit.undo"));
         assert!(!demo.buttons[4].enabled, "nothing to undo yet");
         demo.history.run("edit.copy");
-        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
-        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        refresh(&mut demo);
         assert!(demo.buttons[4].enabled);
-        // The plugin's Share button follows the "Share plugin on" switch.
+        // The plugin's buttons follow the "Share plugin on" switch.
         assert!(demo.buttons[6].visible);
         demo.share_plugin = false;
-        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
-        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        refresh(&mut demo);
         assert!(!demo.buttons[6].visible);
         demo.share_plugin = true;
-        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
-        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        refresh(&mut demo);
         // Save to a file of its own and open it alone: the same menu.
         let path = std::env::temp_dir().join(format!("pie_demo_{}.toml", std::process::id()));
         demo.toml_files = path.display().to_string();
-        demo.ids.set(egui_pie_menu::IdKey { path: vec![0], item: None }, "edit.copy_renamed");
+        demo.ids.set(IdKey { path: vec![0], item: None }, "edit.copy_renamed");
+        refresh(&mut demo);
+        assert!(!demo.buttons[0].enabled, "a renamed id the demo does not handle");
         let before = demo.definition();
         demo.save_toml();
         assert!(demo.toml_note.starts_with("Saved"), "{}", demo.toml_note);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("enabled"), "state is not saved");
         demo.buttons.clear();
         demo.open_toml();
-        // The file holds its defaults; the app's values come back when applied.
-        assert_eq!(demo.buttons[4].label, "Undo");
-        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
-        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        refresh(&mut demo);
         let after = demo.definition();
         std::fs::remove_file(&path).ok();
         assert_eq!(format!("{:?}", after.buttons), format!("{:?}", before.buttons));
         assert_eq!(after.ids, before.ids);
         assert_eq!(after.bindings, before.bindings);
+        // With the user's file as well: its removals and changes.
+        demo.toml_files = "examples/menus/edit.toml, examples/menus/plugin.toml, examples/menus/user.toml".to_string();
+        demo.open_toml();
+        refresh(&mut demo);
+        assert!(demo.ids.find("edit.paste_special").is_none());
+        assert!(demo.ids.find("edit.select_all").is_some_and(|k| demo.buttons[k.path[0]].enabled), "an action the demo handles");
         // A missing file is reported, and the menu stays.
+        let count = demo.buttons.len();
         demo.toml_files = "no/such/file.toml".to_string();
         demo.open_toml();
         assert!(demo.toml_note.starts_with("no/such/file.toml: "), "{}", demo.toml_note);
-        assert_eq!(demo.buttons.len(), 7);
+        assert_eq!(demo.buttons.len(), count);
     }
 
     #[test]

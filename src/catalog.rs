@@ -42,7 +42,17 @@
 //! A button is a plain button, a sub-pie (`opens`), a back button (`back = true`) or a
 //! cluster (`items`). `dir` is `N`, `NE`, `E`, .. `NW` (or `North`, `NorthEast`, ..);
 //! `mnemonic` is one character or `"none"` (left out: automatic); `id` names the button for
-//! your code ([`MenuDefinition::ids`]).
+//! your code ([`MenuDefinition::ids`]): the action your program runs, and whose state
+//! (enabled, visible) it sets with [`crate::Actions`] ([`MenuDefinition::apply_actions`]).
+//! Files never say whether a button is enabled or visible.
+//!
+//! **Removing and changing.** `[menu.<name>] remove = ["id", ..]` takes buttons (with their
+//! sub-pies) or cluster items out of the menu, and `[[menu.<name>.change]]` with an `id`
+//! changes the fields it gives (`dir`, `label`, `mnemonic`, `opens`, `style`, `items`; a
+//! cluster item's `label` and `mnemonic`), wherever they were defined. They apply when the
+//! menu is built, after every file: changes in file order, then removals, then the check
+//! that no two buttons share a direction. An id that is not there is noted
+//! ([`MenuDefinition::notes`]), not an error.
 //!
 //! **Values from your program.** A label, an item label, the title, and the colours, strokes
 //! and fonts of the settings ([`SettingsField::is_bindable`]) can each be a literal or a
@@ -57,7 +67,9 @@
 //! (`background_radius = false`). A menu's `title` and `settings` apply when it is built as a
 //! menu of its own; where it opens as a sub-pie, only its buttons (and its `style`) count.
 use crate::dev_tool::{BindTarget, Binding, BindingMode, Bindings, SettingsField, VarValue, Variables};
-use crate::{ButtonIds, ClusterItem, IdKey, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuSettings, SubPieStyle};
+use crate::{
+    Actions, ButtonIds, ClusterItem, IdKey, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuSettings, SubPieStyle,
+};
 use egui::Color32;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -172,40 +184,6 @@ impl Default for TextDef {
     }
 }
 
-/// Whether a button or item is enabled: `false`, or a reference
-/// (`{ var = "app.can_undo", default = true }`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-enum FlagDef {
-    Literal(bool),
-    Var(VarRef<bool>),
-}
-
-impl FlagDef {
-    /// `on`, as a reference to `var` if there is one; `None` for a plain `true` (the default).
-    fn new(on: bool, var: Option<&str>) -> Option<Self> {
-        match var {
-            Some(v) => Some(FlagDef::Var(VarRef { var: v.to_string(), default: Some(on) })),
-            None => (!on).then_some(FlagDef::Literal(false)),
-        }
-    }
-
-    /// The value until a variable fills it: the literal, the default, else on.
-    fn on(&self) -> bool {
-        match self {
-            FlagDef::Literal(b) => *b,
-            FlagDef::Var(r) => r.default.unwrap_or(true),
-        }
-    }
-
-    fn var(&self) -> Option<&str> {
-        match self {
-            FlagDef::Literal(_) => None,
-            FlagDef::Var(r) => Some(&r.var),
-        }
-    }
-}
-
 /// A binding to the variable `name` (bindings from files have no Build / Live mode).
 fn var_binding(name: &str) -> Binding {
     Binding::new(name, BindingMode::Build)
@@ -221,8 +199,6 @@ struct ItemDef {
     id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mnemonic: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    enabled: Option<FlagDef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -236,15 +212,31 @@ struct ButtonDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mnemonic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    enabled: Option<FlagDef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    visible: Option<FlagDef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     opens: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<StyleName>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     back: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    items: Option<Vec<ItemDef>>,
+}
+
+/// `[[menu.<name>.change]]`: changes the fields it gives of the button (or cluster item) with
+/// this `id`, wherever it was defined.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangeDef {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<TextDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mnemonic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opens: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<StyleName>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     items: Option<Vec<ItemDef>>,
 }
@@ -262,6 +254,11 @@ struct MenuDef {
     settings: Table,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     button: Vec<ButtonDef>,
+    /// Ids of buttons or cluster items to take out of the menu, wherever they were defined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    remove: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    change: Vec<ChangeDef>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -703,6 +700,10 @@ struct Merged {
     settings: Table,
     /// The buttons with the file each came from.
     buttons: Vec<(ButtonDef, String)>,
+    /// The changes, in file order, with their file.
+    changes: Vec<(ChangeDef, String)>,
+    /// The ids to remove, with their file.
+    removes: Vec<(String, String)>,
 }
 
 /// Menus collected from TOML files (see the [module documentation](self) for the format).
@@ -760,9 +761,11 @@ impl MenuCatalog {
     }
 
     /// Adds the menus of a TOML text; `source` names it in errors. A menu that is already
-    /// defined is merged: its buttons are added, and its title, style and settings (key by
-    /// key) replace the earlier ones where given. On an error (bad TOML, an unknown key or
-    /// setting, a direction already taken, ..) nothing of the text is added.
+    /// defined is merged: its buttons, changes and removals are added, and its title, style
+    /// and settings (key by key) replace the earlier ones where given. On an error (bad TOML,
+    /// an unknown key or setting, ..) nothing of the text is added. Whether the buttons fit
+    /// together (two in one direction) is checked by [`MenuCatalog::build`], after every
+    /// change and removal, so the order of the files does not matter for those.
     pub fn add_toml(&mut self, source: &str, text: &str) -> Result<(), CatalogError> {
         let file: FileDef = toml::from_str(text).map_err(|e| CatalogError::new(source, e.to_string().trim_end()))?;
         let mut next = self.menus.clone();
@@ -771,6 +774,9 @@ impl MenuCatalog {
             settings_from_table(&def.settings).map_err(err)?;
             for b in &def.button {
                 check_button(b).map_err(err)?;
+            }
+            for c in &def.change {
+                check_change(c).map_err(err)?;
             }
             let i = match next.iter().position(|(n, _)| *n == name) {
                 Some(i) => i,
@@ -787,32 +793,28 @@ impl MenuCatalog {
                 merged.style = def.style;
             }
             merge_settings(&mut merged.settings, &def.settings, "");
-            for b in def.button {
-                let dir = parse_direction(&b.dir);
-                if let Some((taken, from)) = merged.buttons.iter().find(|(x, _)| parse_direction(&x.dir) == dir) {
-                    return Err(err(format!(
-                        "direction {} is taken twice: by {} (from {from}) and {} (from {source})",
-                        b.dir,
-                        button_name(taken),
-                        button_name(&b)
-                    )));
-                }
-                merged.buttons.push((b, source.to_string()));
-            }
+            merged.buttons.extend(def.button.into_iter().map(|b| (b, source.to_string())));
+            merged.changes.extend(def.change.into_iter().map(|c| (c, source.to_string())));
+            merged.removes.extend(def.remove.into_iter().map(|id| (id, source.to_string())));
         }
         self.menus = next;
         Ok(())
     }
 
     /// Builds the menu `name`: its buttons (with the menus they open as sub-pies, from
-    /// whichever files define them), settings, title, ids and bindings. Fails if a button
-    /// opens a menu nobody defines, menus open each other in a circle, or the tree has a
-    /// problem ([`crate::PieMenu::check_buttons`], e.g. a mnemonic used twice).
+    /// whichever files define them), settings, title, ids and bindings. Each menu's buttons
+    /// are those of every file, then changed (`change`, in file order) and then thinned out
+    /// (`remove`). Fails if two buttons then share a direction (the error names their files),
+    /// a button opens a menu nobody defines, menus open each other in a circle, or the tree
+    /// has another problem ([`crate::PieMenu::check_buttons`], e.g. a mnemonic used twice).
+    /// A `change` or `remove` whose id is not there is no error: it is noted in
+    /// [`MenuDefinition::notes`] (the plugin it was for may not be installed).
     pub fn build(&self, name: &str) -> Result<MenuDefinition, CatalogError> {
         let menu = self.get(name).ok_or_else(|| CatalogError::new(name, "no file defines this menu"))?;
         let mut ids = ButtonIds::new();
         let mut bindings = Bindings::new();
-        let buttons = self.level(name, &mut vec![name.to_string()], &mut Vec::new(), &mut ids, &mut bindings)?;
+        let mut notes = Vec::new();
+        let buttons = self.level(name, &mut vec![name.to_string()], &mut Vec::new(), &mut ids, &mut bindings, &mut notes)?;
         let (settings, refs) = settings_from_table(&menu.settings).map_err(|m| CatalogError::new(name, m))?;
         for (field, var) in refs {
             bindings.set(BindTarget::Field(field), var_binding(&var));
@@ -826,7 +828,7 @@ impl MenuCatalog {
             return Err(CatalogError::new(name, lines.join("; ")));
         }
         let title = menu.title.as_ref().map(|t| t.text().to_string());
-        Ok(MenuDefinition { name: name.to_string(), title, settings, buttons, ids, bindings })
+        Ok(MenuDefinition { name: name.to_string(), title, settings, buttons, ids, bindings, notes, unhandled: Vec::new() })
     }
 
     fn level(
@@ -836,10 +838,11 @@ impl MenuCatalog {
         path: &mut Vec<usize>,
         ids: &mut ButtonIds,
         bindings: &mut Bindings,
+        notes: &mut Vec<ReferenceProblem>,
     ) -> Result<Vec<PieButton>, CatalogError> {
-        let menu = self.get(name).ok_or_else(|| CatalogError::new(name, "no file defines this menu"))?;
+        let defs = self.effective_buttons(name, notes)?;
         let mut out = Vec::new();
-        for (n, (def, source)) in menu.buttons.iter().enumerate() {
+        for (n, (def, source)) in defs.iter().enumerate() {
             path.push(n);
             let err = |m: String| CatalogError::new(source.clone(), format!("menu `{name}`, button {}: {m}", button_name(def)));
             let dir = parse_direction(&def.dir).ok_or_else(|| err(format!("unknown direction `{}`", def.dir)))?;
@@ -849,7 +852,7 @@ impl MenuCatalog {
                     return Err(err(format!("menus open each other: {} \u{2192} {target}", stack.join(" \u{2192} "))));
                 }
                 stack.push(target.clone());
-                let children = self.level(target, stack, path, ids, bindings)?;
+                let children = self.level(target, stack, path, ids, bindings, notes)?;
                 stack.pop();
                 PieButton::new(dir).with_children(children).with_sub_pie_style(def.style.or(opened.style).map(Into::into))
             } else if def.back {
@@ -860,12 +863,6 @@ impl MenuCatalog {
                     let mut it = ClusterItem::new(item.number, item.label.text());
                     if let Some(m) = &item.mnemonic {
                         it.mnemonic = parse_mnemonic(m).map_err(err)?;
-                    }
-                    if let Some(e) = &item.enabled {
-                        it = it.with_enabled(e.on());
-                        if let Some(var) = e.var() {
-                            bindings.set(BindTarget::ItemEnabled(path.clone(), item.number), var_binding(var));
-                        }
                     }
                     if let Some(id) = &item.id {
                         ids.set(IdKey { path: path.clone(), item: Some(item.number) }, id.clone());
@@ -888,18 +885,6 @@ impl MenuCatalog {
             if let Some(m) = &def.mnemonic {
                 b.mnemonic = parse_mnemonic(m).map_err(err)?;
             }
-            if let Some(e) = &def.enabled {
-                b.enabled = e.on();
-                if let Some(var) = e.var() {
-                    bindings.set(BindTarget::Enabled(path.clone()), var_binding(var));
-                }
-            }
-            if let Some(v) = &def.visible {
-                b.visible = v.on();
-                if let Some(var) = v.var() {
-                    bindings.set(BindTarget::Visible(path.clone()), var_binding(var));
-                }
-            }
             if let Some(id) = &def.id {
                 ids.set(IdKey { path: path.clone(), item: None }, id.clone());
             }
@@ -908,6 +893,115 @@ impl MenuCatalog {
         }
         Ok(out)
     }
+}
+
+impl MenuCatalog {
+    /// The buttons of the menu `name` after its changes and removals, each with the file it
+    /// came from; changes and removals that found nothing are added to `notes`.
+    fn effective_buttons(&self, name: &str, notes: &mut Vec<ReferenceProblem>) -> Result<Vec<(ButtonDef, String)>, CatalogError> {
+        let menu = self.get(name).ok_or_else(|| CatalogError::new(name, "no file defines this menu"))?;
+        let mut buttons = menu.buttons.clone();
+        for (c, source) in &menu.changes {
+            let err = |m: String| CatalogError::new(source.clone(), format!("menu `{name}`, change of `{}`: {m}", c.id));
+            if let Some((b, _)) = buttons.iter_mut().find(|(b, _)| b.id.as_deref() == Some(c.id.as_str())) {
+                if let Some(d) = &c.dir {
+                    b.dir = d.clone();
+                }
+                if let Some(l) = &c.label {
+                    b.label = Some(l.clone());
+                }
+                if let Some(m) = &c.mnemonic {
+                    b.mnemonic = Some(m.clone());
+                }
+                if let Some(o) = &c.opens {
+                    // Now a sub-pie: no longer a back button or a cluster.
+                    b.opens = Some(o.clone());
+                    b.back = false;
+                    b.items = None;
+                }
+                if let Some(st) = c.style {
+                    b.style = Some(st);
+                }
+                if let Some(items) = &c.items {
+                    b.items = Some(items.clone());
+                    b.opens = None;
+                    b.style = None;
+                    b.back = false;
+                    b.mnemonic = None;
+                }
+                check_button(b).map_err(err)?;
+                continue;
+            }
+            let item = buttons.iter_mut().flat_map(|(b, _)| b.items.iter_mut().flatten()).find(|i| i.id.as_deref() == Some(c.id.as_str()));
+            match item {
+                Some(item) => {
+                    if c.dir.is_some() || c.opens.is_some() || c.style.is_some() || c.items.is_some() {
+                        return Err(err("a cluster item can only change its `label` and `mnemonic`".to_string()));
+                    }
+                    if let Some(l) = &c.label {
+                        item.label = l.clone();
+                    }
+                    if let Some(m) = &c.mnemonic {
+                        item.mnemonic = Some(m.clone());
+                    }
+                }
+                None => notes.push(ReferenceProblem {
+                    place: format!("`change` in menu `{name}` (from {source})"),
+                    name: c.id.clone(),
+                    issue: ReferenceIssue::NothingToChange,
+                }),
+            }
+        }
+        for (id, source) in &menu.removes {
+            let before = buttons.len() + buttons.iter().map(|(b, _)| b.items.as_ref().map_or(0, Vec::len)).sum::<usize>();
+            buttons.retain(|(b, _)| b.id.as_deref() != Some(id.as_str()));
+            for (b, _) in &mut buttons {
+                if let Some(items) = &mut b.items {
+                    items.retain(|i| i.id.as_deref() != Some(id.as_str()));
+                }
+            }
+            let after = buttons.len() + buttons.iter().map(|(b, _)| b.items.as_ref().map_or(0, Vec::len)).sum::<usize>();
+            if after == before {
+                notes.push(ReferenceProblem {
+                    place: format!("`remove` in menu `{name}` (from {source})"),
+                    name: id.clone(),
+                    issue: ReferenceIssue::NothingToRemove,
+                });
+            }
+        }
+        for (i, (a, from_a)) in buttons.iter().enumerate() {
+            let dir = parse_direction(&a.dir);
+            if let Some((b, from_b)) = buttons[i + 1..].iter().find(|(b, _)| parse_direction(&b.dir) == dir) {
+                return Err(CatalogError::new(
+                    from_b.clone(),
+                    format!(
+                        "menu `{name}`: direction {} is taken twice: by {} (from {from_a}) and {} (from {from_b})",
+                        a.dir,
+                        button_name(a),
+                        button_name(b)
+                    ),
+                ));
+            }
+        }
+        Ok(buttons)
+    }
+}
+
+/// The rules of one change: its id, and the values it gives.
+fn check_change(c: &ChangeDef) -> Result<(), String> {
+    if c.id.trim().is_empty() {
+        return Err("a `change` needs the `id` of what it changes".to_string());
+    }
+    if let Some(d) = &c.dir {
+        parse_direction(d).ok_or_else(|| format!("change of `{}`: unknown direction `{d}` (N, NE, E, SE, S, SW, W, NW)", c.id))?;
+    }
+    if let Some(m) = &c.mnemonic {
+        parse_mnemonic(m).map_err(|e| format!("change of `{}`: {e}", c.id))?;
+    }
+    if c.items.is_some() && (c.opens.is_some() || c.mnemonic.is_some()) {
+        return Err(format!("change of `{}`: `items` excludes `opens` and `mnemonic`", c.id));
+    }
+    Ok(())
 }
 
 /// `"Copy" (N)` for errors.
@@ -966,6 +1060,10 @@ pub enum ReferenceIssue {
     WrongKind { found: crate::dev_tool::VarKind, needed: crate::dev_tool::VarKind },
     /// The program does not handle the id.
     UnknownAction,
+    /// A `remove` named an id the menu does not have.
+    NothingToRemove,
+    /// A `change` named an id the menu does not have.
+    NothingToChange,
 }
 
 /// A reference the program does not answer: where it is (`place`, e.g. `the label of
@@ -985,6 +1083,8 @@ impl fmt::Display for ReferenceProblem {
                 write!(f, "{}: `{}` is {} of the program; this needs {}", self.place, self.name, found.name(), needed.name())
             }
             ReferenceIssue::UnknownAction => write!(f, "{}: `{}` is not an action of the program", self.place, self.name),
+            ReferenceIssue::NothingToRemove => write!(f, "{}: `{}` is not in the menu (nothing removed)", self.place, self.name),
+            ReferenceIssue::NothingToChange => write!(f, "{}: `{}` is not in the menu (nothing changed)", self.place, self.name),
         }
     }
 }
@@ -1019,6 +1119,12 @@ pub struct MenuDefinition {
     /// The values that refer to your app's variables (`{ var = .. }`): resolved by
     /// [`MenuDefinition::apply_variables`].
     pub bindings: Bindings,
+    /// What building noted: a `change` or `remove` whose id was not in the menu. Reported
+    /// by [`MenuDefinition::check_references`] as well.
+    pub notes: Vec<ReferenceProblem>,
+    /// The buttons and cluster items whose id the program did not register, as of the last
+    /// [`MenuDefinition::apply_actions`] ([`MenuDefinition::is_unhandled`]).
+    pub unhandled: Vec<IdKey>,
 }
 
 impl MenuDefinition {
@@ -1045,13 +1151,52 @@ impl MenuDefinition {
         changed
     }
 
-    /// The references your program does not answer: names that are not among `vars` (or are
-    /// of another kind than the place needs) and ids that are not among the `actions` your
-    /// program handles. Empty when every reference is known. Run it after loading, e.g. to
-    /// log a typo in a plugin's file.
+    /// Puts your program's state into the buttons: each button or cluster item whose id is
+    /// one of the `actions` takes its [`crate::ActionState`] (enabled, visible); one whose id is not
+    /// is disabled (unless [`Actions::keep_unregistered`]) and remembered as unhandled
+    /// ([`MenuDefinition::is_unhandled`]). Buttons without an id are left alone. Call it when
+    /// the state changes, or every frame.
+    ///
+    /// Returns the ids that became unhandled in this call (each once, not every frame): the
+    /// place to log them, if you want to.
+    pub fn apply_actions(&mut self, actions: &Actions) -> Vec<String> {
+        let now = actions.apply(&self.ids, &mut self.buttons);
+        let mut fresh: Vec<String> = Vec::new();
+        for key in now.iter().filter(|k| !self.unhandled.contains(k)) {
+            let id = match key.item {
+                Some(n) => self.ids.item(&key.path, n),
+                None => self.ids.button(&key.path),
+            };
+            if let Some(id) = id
+                && !fresh.iter().any(|f| f == id)
+            {
+                fresh.push(id.to_string());
+            }
+        }
+        self.unhandled = now;
+        fresh
+    }
+
+    /// Whether the button at `path` has an id the program does not register (as of the last
+    /// [`MenuDefinition::apply_actions`]): for marking it in your render closure, e.g. in
+    /// [`crate::unhandled_color`].
+    pub fn is_unhandled(&self, path: &[usize]) -> bool {
+        self.unhandled.iter().any(|k| k.path == path && k.item.is_none())
+    }
+
+    /// [`MenuDefinition::is_unhandled`] for the item `number` of the cluster at `path`.
+    pub fn is_item_unhandled(&self, path: &[usize], number: usize) -> bool {
+        self.unhandled.iter().any(|k| k.path == path && k.item == Some(number))
+    }
+
+    /// The references your program does not answer: what building noted (a `change` or
+    /// `remove` that found nothing), names that are not among `vars` (or are of another kind
+    /// than the place needs) and ids that are not among the `actions` your program handles.
+    /// Empty when every reference is known. Run it after loading, e.g. to log a typo in a
+    /// plugin's file.
     ///
     /// ```
-    /// use egui_pie_menu::{catalog::MenuCatalog, dev_tool::Variables};
+    /// use egui_pie_menu::{Actions, catalog::MenuCatalog, dev_tool::Variables};
     /// let mut catalog = MenuCatalog::new();
     /// catalog.add_toml("m.toml", r#"
     ///     [[menu.m.button]]
@@ -1061,13 +1206,15 @@ impl MenuDefinition {
     /// "#).unwrap();
     /// let mut vars = Variables::new();
     /// vars.text("i18n.copy", "Copy");
-    /// let problems = catalog.build("m").unwrap().check_references(&vars, &["edit.copy"]);
+    /// let mut actions = Actions::new();
+    /// actions.add("edit.copy");
+    /// let problems = catalog.build("m").unwrap().check_references(&vars, &actions);
     /// assert_eq!(problems.len(), 2);
     /// assert_eq!(problems[0].to_string(), "the label of \"Copy\": `i18n.cpy` is not a variable of the program");
     /// assert_eq!(problems[1].to_string(), "the id of \"Copy\": `edit.cpy` is not an action of the program");
     /// ```
-    pub fn check_references(&self, vars: &Variables, actions: &[impl AsRef<str>]) -> Vec<ReferenceProblem> {
-        let mut out = Vec::new();
+    pub fn check_references(&self, vars: &Variables, actions: &Actions) -> Vec<ReferenceProblem> {
+        let mut out = self.notes.clone();
         // The title, the settings (in their order), then the buttons in tree order.
         let mut targets: Vec<&BindTarget> = self.bindings.iter().map(|(t, _)| t).collect();
         targets.sort_by_key(|t| {
@@ -1094,7 +1241,7 @@ impl MenuDefinition {
         let mut ids: Vec<(&crate::IdKey, &str)> = self.ids.iter().collect();
         ids.sort_by_key(|(k, _)| (k.path.clone(), k.item));
         for (key, id) in ids {
-            if !actions.iter().any(|a| a.as_ref() == id) {
+            if !actions.contains(id) {
                 let place = match key.item {
                     Some(n) => format!("the id of item {n} of {}", labels_along(&self.buttons, &key.path)),
                     None => format!("the id of {}", labels_along(&self.buttons, &key.path)),
@@ -1122,6 +1269,8 @@ impl MenuDefinition {
     /// The definition as a TOML file: this menu first, then one menu per sub-pie, named
     /// after its button's label (`paste_special`). Settings are written where they differ
     /// from the default. [`MenuCatalog::add_toml`] reads it back to the same definition.
+    /// Whether buttons are enabled or visible is the program's state, not the file's
+    /// ([`MenuDefinition::apply_actions`]), and is not written.
     pub fn to_toml(&self) -> String {
         let mut menus: Vec<(String, MenuDef)> = vec![(self.name.clone(), MenuDef::default())];
         let mut taken: Vec<String> = vec![self.name.clone()];
@@ -1162,13 +1311,6 @@ impl MenuDefinition {
         }
     }
 
-    fn fallback_flag(&self, target: &BindTarget, current: bool) -> bool {
-        match self.bindings.fallback(target) {
-            Some(Some(VarValue::Bool(b))) => *b,
-            _ => current,
-        }
-    }
-
     /// The variable `target` refers to (a binding's name; its Build / Live mode is for
     /// generated code and is not written).
     fn var(&self, target: &BindTarget) -> Option<&str> {
@@ -1189,17 +1331,11 @@ impl MenuDefinition {
             let label_target = BindTarget::Label(path.clone());
             let label_var = self.var(&label_target);
             let label = self.fallback_text(&label_target, &b.label);
-            let enabled_target = BindTarget::Enabled(path.clone());
             let mut def = ButtonDef {
                 dir: direction_name(b.direction).to_string(),
                 label: (label != default_label || label_var.is_some()).then(|| TextDef::new(&label, label_var)),
                 id: self.ids.button(path).map(str::to_string),
                 mnemonic: if b.is_cluster() { None } else { mnemonic_name(b.mnemonic) },
-                enabled: FlagDef::new(self.fallback_flag(&enabled_target, b.enabled), self.var(&enabled_target)),
-                visible: {
-                    let t = BindTarget::Visible(path.clone());
-                    FlagDef::new(self.fallback_flag(&t, b.visible), self.var(&t))
-                },
                 back: b.is_back(),
                 ..ButtonDef::default()
             };
@@ -1225,10 +1361,6 @@ impl MenuDefinition {
                                 },
                                 id: self.ids.item(path, i.number).map(str::to_string),
                                 mnemonic: mnemonic_name(i.mnemonic),
-                                enabled: {
-                                    let t = BindTarget::ItemEnabled(path.clone(), i.number);
-                                    FlagDef::new(self.fallback_flag(&t, i.enabled), self.var(&t))
-                                },
                             })
                             .collect(),
                     );
