@@ -58,7 +58,7 @@ pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char
         starts.push(slots.len());
         if b.is_cluster() {
             for item in b.cluster_items() {
-                let live = b.enabled && item.enabled;
+                let live = b.live() && item.enabled;
                 slots.push(Slot {
                     mnemonic: if live { item.mnemonic } else { Mnemonic::None },
                     label: &item.label,
@@ -66,7 +66,7 @@ pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char
                 });
             }
         } else {
-            slots.push(Slot { mnemonic: b.mnemonic, label: &b.label, enabled: b.enabled });
+            slots.push(Slot { mnemonic: b.mnemonic, label: &b.label, enabled: b.live() });
         }
     }
     let resolved = resolve_slots(&slots, auto);

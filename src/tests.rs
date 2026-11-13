@@ -3224,3 +3224,77 @@ mod serde_tests {
         assert_eq!(format!("{settings:?}"), format!("{expected:?}"));
     }
 }
+
+mod hidden_button_tests {
+    use super::*;
+
+    fn key(key: Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]
+    }
+
+    /// One frame of an open menu with the pointer at `pointer`; returns the response and the
+    /// labels the render closure drew.
+    fn frame(m: &mut PieMenu, buttons: &[PieButton], pointer: Pos2, events: Vec<egui::Event>) -> (PieMenuResponse, Vec<String>) {
+        let ctx = egui::Context::default();
+        let (mut resp, mut drawn) = (PieMenuResponse::None, Vec::new());
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            resp = m.show_with_pointer(ui.ctx(), buttons, Some(pointer), true, |ui, b| {
+                drawn.push(b.button.label.clone());
+                ui.label(&b.button.label);
+            });
+        });
+        out.textures_delta.clear();
+        (resp, drawn)
+    }
+
+    fn menu() -> PieMenu {
+        let mut m = PieMenu::new();
+        m.settings.input.auto_mnemonics = true;
+        m.open(Pos2::new(400.0, 300.0));
+        m.reveal();
+        m
+    }
+
+    #[test]
+    fn a_hidden_button_is_not_drawn_and_cannot_be_picked() {
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Paste"),
+        ];
+        let mut m = menu();
+        let (_, drawn) = frame(&mut m, &buttons, Pos2::new(400.0, 300.0), vec![]);
+        assert_eq!(drawn, ["Paste"]);
+        // The pointer above the centre snaps to the only button that can be picked.
+        assert_eq!(PieMenu::pick_button(&buttons, Vec2::new(0.0, -50.0), &[Vec2::new(0.0, -1.0), Vec2::new(0.0, 1.0)]), Some(1));
+        // Its number key (8 for North) does nothing; South's (2) selects Paste.
+        let (resp, _) = frame(&mut m, &buttons, Pos2::new(400.0, 300.0), key(Key::Num8));
+        assert!(matches!(resp, PieMenuResponse::None), "{resp:?}");
+        let (resp, _) = frame(&mut m, &buttons, Pos2::new(400.0, 300.0), key(Key::Num2));
+        assert!(matches!(resp, PieMenuResponse::Selected(1)), "{resp:?}");
+    }
+
+    #[test]
+    fn a_hidden_button_gives_up_its_mnemonic_but_keeps_its_direction() {
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Cut"),
+        ];
+        let m = menu();
+        let keys = m.mnemonics(&buttons);
+        assert_eq!(keys[0], None, "a hidden button gets no key");
+        assert_eq!(keys[1], Some('c'), "so Cut can have its initial");
+        // An explicit key shared with a hidden button is no problem.
+        let shared = vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('x').with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Cut").with_mnemonic('x'),
+        ];
+        assert!(m.check_buttons(&shared).is_empty(), "{:?}", m.check_buttons(&shared));
+        // A direction is still taken by a hidden button.
+        let clash = vec![
+            PieButton::new(PieDirection::North).with_label("A").with_visible(false),
+            PieButton::new(PieDirection::North).with_label("B"),
+        ];
+        assert!(matches!(m.check_buttons(&clash)[..], [ButtonProblem::SharedDirection { .. }]));
+    }
+}

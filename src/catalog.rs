@@ -238,6 +238,8 @@ struct ButtonDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     enabled: Option<FlagDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    visible: Option<FlagDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     opens: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<StyleName>,
@@ -631,7 +633,7 @@ fn take_refs(t: &mut Table, prefix: &str, refs: &mut Vec<(SettingsField, String)
         }
         let field = SettingsField::ALL.into_iter().find(|f| f.path() == path).ok_or_else(|| format!("unknown setting `{path}`"))?;
         if !field.is_bindable() {
-            return Err(format!("`{path}` cannot come from a variable (colours, strokes and fonts can)"));
+            return Err(format!("`{path}` cannot come from a variable (colours, strokes, fonts, numbers and durations can)"));
         }
         let r: VarRef<Value> = Value::Table(v.clone()).try_into().map_err(|e: toml::de::Error| format!("`{path}`: {}", e.message()))?;
         refs.push((field, r.var));
@@ -892,6 +894,12 @@ impl MenuCatalog {
                     bindings.set(BindTarget::Enabled(path.clone()), var_binding(var));
                 }
             }
+            if let Some(v) = &def.visible {
+                b.visible = v.on();
+                if let Some(var) = v.var() {
+                    bindings.set(BindTarget::Visible(path.clone()), var_binding(var));
+                }
+            }
             if let Some(id) = &def.id {
                 ids.set(IdKey { path: path.clone(), item: None }, id.clone());
             }
@@ -1067,13 +1075,12 @@ impl MenuDefinition {
                 BindTarget::Field(f) => SettingsField::ALL.iter().position(|x| x == f).unwrap_or(0) + 1,
                 _ => 0,
             };
-            (
-                t.path().is_some(),
-                field,
-                t.path().map(<[usize]>::to_vec),
-                t.item(),
-                matches!(t, BindTarget::Enabled(_) | BindTarget::ItemEnabled(..)),
-            )
+            let rank = match t {
+                BindTarget::Enabled(_) | BindTarget::ItemEnabled(..) => 1,
+                BindTarget::Visible(_) => 2,
+                _ => 0,
+            };
+            (t.path().is_some(), field, t.path().map(<[usize]>::to_vec), t.item(), rank)
         });
         for target in targets {
             let Some(name) = self.var(target) else { continue };
@@ -1106,6 +1113,7 @@ impl MenuDefinition {
             BindTarget::Title => "the title".to_string(),
             BindTarget::Label(p) => format!("the label of {}", along(p)),
             BindTarget::Enabled(p) => format!("`enabled` of {}", along(p)),
+            BindTarget::Visible(p) => format!("`visible` of {}", along(p)),
             BindTarget::ItemLabel(p, n) => format!("the label of item {n} of {}", along(p)),
             BindTarget::ItemEnabled(p, n) => format!("`enabled` of item {n} of {}", along(p)),
         }
@@ -1188,6 +1196,10 @@ impl MenuDefinition {
                 id: self.ids.button(path).map(str::to_string),
                 mnemonic: if b.is_cluster() { None } else { mnemonic_name(b.mnemonic) },
                 enabled: FlagDef::new(self.fallback_flag(&enabled_target, b.enabled), self.var(&enabled_target)),
+                visible: {
+                    let t = BindTarget::Visible(path.clone());
+                    FlagDef::new(self.fallback_flag(&t, b.visible), self.var(&t))
+                },
                 back: b.is_back(),
                 ..ButtonDef::default()
             };
@@ -1236,6 +1248,7 @@ fn readable_var_value(v: &VarValue) -> Option<Value> {
         VarValue::Color(c) => Value::String(hex(*c)),
         VarValue::Stroke(st) => readable(Value::try_from(st).ok()?, ""),
         VarValue::Font(f) => readable(Value::try_from(f).ok()?, ""),
+        VarValue::Number(n) => Value::Float(format!("{n}").parse().unwrap_or(f64::from(*n))),
         VarValue::Text(_) | VarValue::Bool(_) => return None,
     })
 }

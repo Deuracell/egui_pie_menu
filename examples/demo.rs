@@ -1,13 +1,13 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu::dev_tool::{
-    BindTarget, Bindings, Selection, Variables, id_editor, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
+    BindTarget, Bindings, Selection, Variables, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
     button_tree, button_tree_filtered, field_editor_bound, field_label, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
 };
 use egui_pie_menu::catalog::{MenuCatalog, MenuDefinition};
 use egui_pie_menu::{
-    ButtonIds, IdKey, ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
+    ButtonIds, ButtonView, HintDigits, Mnemonic, PieButton, PieButtonKind, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings,
     SubPieStyle,
 };
 use std::collections::HashMap;
@@ -91,8 +91,9 @@ const LABEL_KEYS: [&str; 8] = ["copy", "paste_special", "redo", "save_as", "dele
 /// What the demo offers the dev tool to bind to, as an app would: `theme.*` from egui's
 /// current visuals (so the Dark / Light switch changes them) and `i18n.*` for the labels and
 /// the title in the current language, which generated code reads with `tr("..")`.
-fn app_variables(visuals: &egui::Visuals, lang: usize, history: &History) -> Variables {
+fn app_variables(visuals: &egui::Visuals, lang: usize, history: &History, share_plugin: bool) -> Variables {
     let mut vars = Variables::new();
+    vars.flag("plugins.share", share_plugin).code("plugins.share_enabled()");
     vars.flag("app.can_undo", history.done > 0).code("history.can_undo()");
     vars.flag("app.can_redo", history.undone > 0).code("history.can_redo()");
     vars.color("theme.accent", visuals.selection.bg_fill)
@@ -211,6 +212,8 @@ struct Demo {
     toml_note: String,
     /// The pretend undo history behind `app.can_undo` / `app.can_redo`.
     history: History,
+    /// The "Share plugin on" switch behind the `plugins.share` variable.
+    share_plugin: bool,
     /// What the canvas shows.
     mode: Mode,
     /// The last tree without problems: what Configure mode previews.
@@ -309,7 +312,7 @@ impl Demo {
         match catalog.build(&name) {
             Ok(def) => {
                 // What the program would log: references it does not answer.
-                let vars = app_variables(&egui::Visuals::dark(), self.lang, &self.history);
+                let vars = app_variables(&egui::Visuals::dark(), self.lang, &self.history, self.share_plugin);
                 let problems = def.check_references(&vars, ACTIONS);
                 self.load_definition(def);
                 self.toml_note = format!("Opened `{name}` (the files define: {}).", names.join(", "));
@@ -354,6 +357,8 @@ impl Demo {
             if ui.button("Save").on_hover_text("Writes the menu below to the first file").clicked() {
                 self.save_toml();
             }
+            ui.checkbox(&mut self.share_plugin, "Share plugin on")
+                .on_hover_text("The demo's `plugins.share` variable: the example plugin's Share button is visible only while it is on.");
         });
         if !self.toml_note.is_empty() {
             ui.label(RichText::new(&self.toml_note).small());
@@ -387,6 +392,7 @@ impl Demo {
             toml_files: "examples/menus/edit.toml, examples/menus/plugin.toml".to_string(),
             toml_note: String::new(),
             history: History::default(),
+            share_plugin: true,
             mode: Mode::Demo,
             snapshot: Vec::new(),
             previews: HashMap::new(),
@@ -1880,13 +1886,12 @@ impl Demo {
             };
             let bindings = &mut self.bindings;
             let ids = &mut self.ids;
-            let out = button_inspector_bound(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, bindings, |ui, path, button| {
+            let out = button_inspector_bound(ui, &mut self.menu.settings, &mut self.buttons, &mut self.selection, bindings, ids, ACTIONS, |ui, path, button| {
                 // Read first, write only on a change: the inspector may have reshaped the
                 // tree this frame, and the table follows only once it returns.
                 if !note.is_empty() {
                     ui.label(RichText::new(&note).small().weak());
                 }
-                id_editor(ui, ids, &IdKey { path: path.to_vec(), item: None }, ACTIONS);
                 let mut d = decor_at(decor, path);
                 if appearance_editor(ui, button, &mut d) {
                     decor.insert(path.to_vec(), d);
@@ -1898,9 +1903,7 @@ impl Demo {
             // changes to the tree's shape need following.
             for edit in &out.edits {
                 rekey(&mut self.decor, edit);
-                self.ids.follow(edit);
             }
-            self.ids.prune(&self.buttons);
         });
     }
 }
@@ -1914,7 +1917,7 @@ impl eframe::App for Demo {
         // menu, which would dismiss/unpin it. A second Esc then goes to the menu.
         let esc_for_sidebar = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         // The app's values the dev tool can bind to; what is bound to one shows its value.
-        self.bindings.set_variables(app_variables(ui.visuals(), self.lang, &self.history));
+        self.bindings.set_variables(app_variables(ui.visuals(), self.lang, &self.history, self.share_plugin));
         self.bindings.apply(&mut self.menu.settings, &mut self.buttons);
         self.bindings.apply_title(&mut self.title);
         egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
@@ -2292,14 +2295,14 @@ mod tests {
     fn app_variables_cover_every_language() {
         assert_eq!(TITLES.len(), LANGS.len());
         for lang in 0..LANGS.len() {
-            let vars = app_variables(&egui::Visuals::dark(), lang, &History::default());
+            let vars = app_variables(&egui::Visuals::dark(), lang, &History::default(), true);
             assert_eq!(vars.get("i18n.edit"), Some(&egui_pie_menu::dev_tool::VarValue::Text(TITLES[lang].to_string())));
             assert_eq!(vars.get("i18n.undo"), Some(&egui_pie_menu::dev_tool::VarValue::Text(LANGS[lang].labels[6].to_string())));
             assert_eq!(vars.code_for("i18n.undo"), "tr(\"undo\")", "generated code reads it with tr");
             assert_eq!(vars.code_for("theme.accent"), "theme.accent");
         }
         let h = History::default();
-        let (light, dark) = (app_variables(&egui::Visuals::light(), 0, &h), app_variables(&egui::Visuals::dark(), 0, &h));
+        let (light, dark) = (app_variables(&egui::Visuals::light(), 0, &h, true), app_variables(&egui::Visuals::dark(), 0, &h, true));
         assert_ne!(light.get("theme.panel"), dark.get("theme.panel"), "the theme switch changes the theme variables");
     }
 
@@ -2380,19 +2383,28 @@ mod tests {
         demo.selection = Selection::button([4]);
         frames(&mut demo, |d, ui| d.buttons_tab(ui, ""));
         // Undo is enabled only when the history allows it.
-        let vars = app_variables(&egui::Visuals::dark(), 0, &demo.history);
+        let vars = app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin);
         demo.bindings.set_variables(vars);
         demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
         assert_eq!(demo.ids.button(&[4]), Some("edit.undo"));
         assert!(!demo.buttons[4].enabled, "nothing to undo yet");
         demo.history.run("edit.copy");
-        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history));
+        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
         demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
         assert!(demo.buttons[4].enabled);
+        // The plugin's Share button follows the "Share plugin on" switch.
+        assert!(demo.buttons[6].visible);
+        demo.share_plugin = false;
+        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
+        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
+        assert!(!demo.buttons[6].visible);
+        demo.share_plugin = true;
+        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
+        demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
         // Save to a file of its own and open it alone: the same menu.
         let path = std::env::temp_dir().join(format!("pie_demo_{}.toml", std::process::id()));
         demo.toml_files = path.display().to_string();
-        demo.ids.set(IdKey { path: vec![0], item: None }, "edit.copy_renamed");
+        demo.ids.set(egui_pie_menu::IdKey { path: vec![0], item: None }, "edit.copy_renamed");
         let before = demo.definition();
         demo.save_toml();
         assert!(demo.toml_note.starts_with("Saved"), "{}", demo.toml_note);
@@ -2400,7 +2412,7 @@ mod tests {
         demo.open_toml();
         // The file holds its defaults; the app's values come back when applied.
         assert_eq!(demo.buttons[4].label, "Undo");
-        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history));
+        demo.bindings.set_variables(app_variables(&egui::Visuals::dark(), 0, &demo.history, demo.share_plugin));
         demo.bindings.apply(&mut demo.menu.settings, &mut demo.buttons);
         let after = demo.definition();
         std::fs::remove_file(&path).ok();

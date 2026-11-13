@@ -958,7 +958,7 @@ impl PieMenu {
     fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton], items: bool) -> Option<(usize, Option<usize>)> {
         let mirror = self.settings.mirror_horizontal;
         if self.settings.input.use_number_keys {
-            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.live() && !b.is_cluster()) {
                 let dir = Self::eff(&button.direction, mirror);
                 let key = Self::direction_number_key(&dir);
                 let digit = Self::direction_digit(&dir).to_string();
@@ -984,7 +984,7 @@ impl PieMenu {
             let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
             // Every key that can be pressed, in button order, items after their cluster's turn.
             let mut owners: Vec<(char, usize, Option<usize>)> = Vec::new();
-            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.live()) {
                 if button.is_cluster() {
                     if !items {
                         continue;
@@ -1081,6 +1081,9 @@ impl PieMenu {
                     centers.resize(idx + 1, final_center);
                 }
                 centers[idx] = final_center;
+            }
+            if !button.visible {
+                continue;
             }
             let dimmed = level.dim_except.is_some_and(|keep| keep != idx);
             let is_hovered = level.hovered == Some(idx) && !dimmed;
@@ -1425,7 +1428,7 @@ impl PieMenu {
                     let nearest_child = fan_dirs
                         .iter()
                         .zip(fan.children)
-                        .filter(|(_, child)| child.enabled)
+                        .filter(|(_, child)| child.live())
                         .map(|(d, _)| Self::angle_diff(angle, d.y.atan2(d.x)))
                         .fold(f32::MAX, f32::min);
                     let blocked = Self::angle_diff(angle, back.y.atan2(back.x)) < 67.5f32.to_radians()
@@ -1693,7 +1696,7 @@ impl PieMenu {
                         && it.rect.contains(p)
                         && buttons.get(it.button).is_some_and(|b| {
                             // A declared item can also be disabled by its declaration.
-                            b.enabled
+                            b.live()
                                 && b.is_cluster()
                                 && b.cluster_items().iter().all(|d| d.number != it.n || d.enabled)
                         })

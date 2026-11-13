@@ -1,6 +1,7 @@
 //! The button tree ([`button_tree`]) and the inspector of the selected node
 //! ([`button_inspector`]), and what to preview for a selection ([`preview_target`]).
-use super::bindings::{BindTarget, Bindings, bound_row};
+use super::bindings::{BindTarget, Bindings, bound_row, id_editor};
+use crate::{ButtonIds, IdKey};
 use super::fields::*;
 use super::legality::*;
 use super::{KindChoice, kind_choice};
@@ -265,7 +266,8 @@ fn node_text(button: &PieButton, settings: &PieMenuSettings) -> String {
         PieButtonKind::Back => " \u{25c2}",
         PieButtonKind::Action => "",
     };
-    format!("{} \u{b7} {label}{glyph}", dir_short(button.direction))
+    let hidden = if button.visible { "" } else { " (hidden)" };
+    format!("{} \u{b7} {label}{glyph}{hidden}", dir_short(button.direction))
 }
 
 fn node_title(text: String, bad: bool) -> RichText {
@@ -463,6 +465,7 @@ enum Intent {
     Kind(KindChoice),
     Style(Option<SubPieStyle>),
     Enabled(bool),
+    Visible(bool),
     Mnemonic(MnemonicChange),
     Remove,
     Add(Vec<usize>, AddKind),
@@ -518,6 +521,10 @@ impl Applied<'_> {
             }
             Intent::Enabled(on) => {
                 set_enabled(self.buttons, &path, item_of(self), on)?;
+                self.out.changed = true;
+            }
+            Intent::Visible(on) => {
+                button_at_mut(self.buttons, &path).ok_or("no such button")?.visible = on;
                 self.out.changed = true;
             }
             Intent::Mnemonic(change) => {
@@ -688,6 +695,7 @@ fn button_sections(
     buttons: &[PieButton],
     selection: &Selection,
     mut bindings: Option<&mut Bindings>,
+    ids: Option<(&mut ButtonIds, &[String])>,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     let path = &selection.path;
@@ -696,6 +704,9 @@ fn button_sections(
     let menu = problem_menu_for(settings);
 
     section(ui, "Identity", true, |ui| {
+        if let Some((ids, actions)) = ids {
+            id_editor(ui, ids, &IdKey { path: path.clone(), item: None }, actions);
+        }
         let label_row = |ui: &mut Ui| {
             ui.label("Label");
             let mut label = button.label.clone();
@@ -778,12 +789,31 @@ fn button_sections(
             }
             false
         };
-        match bindings {
+        match bindings.as_deref_mut() {
             Some(b) => {
                 bound_row(ui, b, &BindTarget::Enabled(path.clone()), enabled_row);
             }
             None => {
                 ui.horizontal(enabled_row);
+            }
+        }
+        let visible_row = |ui: &mut Ui| {
+            let mut visible = button.visible;
+            if ui
+                .checkbox(&mut visible, "visible")
+                .on_hover_text("A hidden button is not drawn and cannot be picked; it keeps its place and direction.")
+                .changed()
+            {
+                intents.push(Intent::Visible(visible));
+            }
+            false
+        };
+        match bindings {
+            Some(b) => {
+                bound_row(ui, b, &BindTarget::Visible(path.clone()), visible_row);
+            }
+            None => {
+                ui.horizontal(visible_row);
             }
         }
         if remove_block_reason(buttons, path).is_none() && ui.button("Remove").clicked() {
@@ -841,6 +871,7 @@ fn item_sections(
     buttons: &[PieButton],
     selection: &Selection,
     mut bindings: Option<&mut Bindings>,
+    ids: Option<(&mut ButtonIds, &[String])>,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     let Some(cluster) = button_at(buttons, &selection.path) else { return intents };
@@ -851,6 +882,9 @@ fn item_sections(
         intents.push(Intent::Select(Selection::button(selection.path.clone())));
     }
     section(ui, "Identity", true, |ui| {
+        if let Some((ids, actions)) = ids {
+            id_editor(ui, ids, &IdKey { path: selection.path.clone(), item: Some(item.number) }, actions);
+        }
         ui.horizontal(|ui| {
             ui.label("Number");
             let mut number = item.number;
@@ -934,22 +968,29 @@ pub fn button_inspector(
     selection: &mut Selection,
     extras: impl FnMut(&mut Ui, &[usize], &mut PieButton),
 ) -> InspectorOutput {
-    inspect(ui, settings, buttons, selection, None, extras, true)
+    inspect(ui, settings, buttons, selection, None, None, extras, true)
 }
 
-/// [`button_inspector`] that also edits [`Bindings`]: a bind toggle on the label of a button
-/// or cluster item (with the expression and Build / Live below while bound), and the
-/// menu-wide settings drawn with [`field_editor_bound`]. The bindings follow the tree: a
-/// removed button's go with it, later siblings' move down, a renumbered item's follow it.
+/// [`button_inspector`] that also edits what ties the menu to your program: [`Bindings`] (a
+/// bind toggle on the label, `enabled` and `visible` of a button or cluster item, with the
+/// name and Build / Live below while bound, and the menu-wide settings drawn with
+/// [`field_editor_bound`]) and the [`ButtonIds`] of buttons and cluster items (an "Id" row,
+/// [`id_editor`], offering the `actions` your program handles). Bindings and ids follow the
+/// tree: a removed button's go with it, later siblings' move down, a renumbered item's
+/// follow it.
+#[allow(clippy::too_many_arguments)]
 pub fn button_inspector_bound(
     ui: &mut Ui,
     settings: &mut PieMenuSettings,
     buttons: &mut Vec<PieButton>,
     selection: &mut Selection,
     bindings: &mut Bindings,
+    ids: &mut ButtonIds,
+    actions: &[impl AsRef<str>],
     extras: impl FnMut(&mut Ui, &[usize], &mut PieButton),
 ) -> InspectorOutput {
-    inspect(ui, settings, buttons, selection, Some(bindings), extras, true)
+    let actions: Vec<String> = actions.iter().map(|a| a.as_ref().to_string()).collect();
+    inspect(ui, settings, buttons, selection, Some(bindings), Some((ids, &actions)), extras, true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -959,6 +1000,7 @@ fn inspect(
     buttons: &mut Vec<PieButton>,
     selection: &mut Selection,
     mut bindings: Option<&mut Bindings>,
+    mut ids: Option<(&mut ButtonIds, &[String])>,
     mut extras: impl FnMut(&mut Ui, &[usize], &mut PieButton),
     menu_wide: bool,
 ) -> InspectorOutput {
@@ -996,8 +1038,10 @@ fn inspect(
             section(ui, "Contents", true, |ui| level_contents(ui, settings, buttons, &[], &mut intents));
             intents
         }
-        SelectionKind::ClusterItem => item_sections(ui, settings, buttons, selection, bindings.as_deref_mut()),
-        _ => button_sections(ui, settings, buttons, selection, bindings.as_deref_mut()),
+        SelectionKind::ClusterItem => {
+            item_sections(ui, settings, buttons, selection, bindings.as_deref_mut(), ids.as_mut().map(|(i, a)| (&mut **i, *a)))
+        }
+        _ => button_sections(ui, settings, buttons, selection, bindings.as_deref_mut(), ids.as_mut().map(|(i, a)| (&mut **i, *a))),
     };
     {
         let mut applied = Applied { buttons, settings, selection, stashes: &mut stashes, out: &mut out };
@@ -1012,8 +1056,13 @@ fn inspect(
             match applied.apply(intent) {
                 Ok(()) => {
                     error = None;
-                    if let (Some((path, from, to)), Some(b)) = (renumber, bindings.as_deref_mut()) {
-                        b.renumber_item(&path, from, to);
+                    if let Some((path, from, to)) = renumber {
+                        if let Some(b) = bindings.as_deref_mut() {
+                            b.renumber_item(&path, from, to);
+                        }
+                        if let Some((i, _)) = ids.as_mut() {
+                            i.renumber_item(&path, from, to);
+                        }
                     }
                 }
                 Err(reason) => error = Some((applied.selection.clone(), reason)),
@@ -1025,6 +1074,12 @@ fn inspect(
             b.follow(edit);
         }
         b.prune(buttons);
+    }
+    if let Some((i, _)) = ids.as_mut() {
+        for edit in &out.edits {
+            i.follow(edit);
+        }
+        i.prune(buttons);
     }
     if out.changed && !out.edits.is_empty() {
         ui.ctx().request_repaint();
@@ -1098,7 +1153,7 @@ pub fn buttons_editor(ui: &mut Ui, buttons: &mut Vec<PieButton>, auto_mnemonics:
     let mut selection: Selection = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     button_tree(ui, &settings, buttons, &mut selection);
     ui.separator();
-    let out = inspect(ui, &mut settings, buttons, &mut selection, None, |_, _, _| {}, false);
+    let out = inspect(ui, &mut settings, buttons, &mut selection, None, None, |_, _, _| {}, false);
     ui.data_mut(|d| d.insert_temp(id, selection));
     out.changed
 }
@@ -1355,15 +1410,19 @@ mod tests {
             };
             bindings.set(target, Binding::new("tr(\"x\")", BindingMode::Live));
         }
-        let before = (format!("{buttons:?}"), bindings.clone());
+        let mut ids = ButtonIds::new();
+        ids.set(IdKey { path: vec![0], item: None }, "a.b");
+        let before = (format!("{buttons:?}"), bindings.clone(), ids.clone());
         for sel in every_selection(&buttons) {
             let mut settings = PieMenuSettings::default();
             let mut selection = sel.clone();
             let mut seen = None;
-            run(|ui| seen = Some(button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, |_, _, _| {})));
+            run(|ui| {
+                seen = Some(button_inspector_bound(ui, &mut settings, &mut buttons, &mut selection, &mut bindings, &mut ids, &["a.b"], |_, _, _| {}))
+            });
             assert_eq!(seen, Some(InspectorOutput::default()), "{sel:?}");
         }
-        assert_eq!(before, (format!("{buttons:?}"), bindings));
+        assert_eq!(before, (format!("{buttons:?}"), bindings, ids));
     }
 
     #[test]

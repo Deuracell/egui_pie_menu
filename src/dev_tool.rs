@@ -200,9 +200,11 @@ pub fn settings_changes_bound(s: &PieMenuSettings, bindings: &Bindings) -> Vec<S
         .collect()
 }
 
-/// A bound field's value: the expression, in `Some(..)` for an optional field.
+/// A bound field's value: the expression (milliseconds made a `Duration` for a duration), in
+/// `Some(..)` for an optional field.
 fn field_value_code(field: SettingsField, expr: &str) -> String {
-    if field.is_optional_value() { format!("Some({expr})") } else { expr.to_string() }
+    let value = if field.is_duration() { format!("Duration::from_secs_f32(({expr}) / 1000.0)") } else { expr.to_string() };
+    if field.is_optional_value() { format!("Some({value})") } else { value }
 }
 
 /// The `.configure(|s| { ... })` closure that turns the default settings into `s`, listing only
@@ -292,6 +294,11 @@ fn button_expr(b: &PieButton, ind: usize, path: &mut Vec<usize>, bindings: &Bind
     } else if !b.enabled {
         s += ".with_enabled(false)";
     }
+    if let Some(expr) = bindings.code_expr(&BindTarget::Visible(path.clone()), BindingMode::Build) {
+        s += &format!(".with_visible({expr})");
+    } else if !b.visible {
+        s += ".with_visible(false)";
+    }
     match &b.kind {
         PieButtonKind::SubPie { children, style } => {
             let kids: Vec<String> = children
@@ -374,7 +381,11 @@ pub fn live_bindings_code(buttons: &[PieButton], bindings: &Bindings) -> Vec<Str
                 let route: Vec<String> = path.iter().map(|p| p.to_string()).collect();
                 format!("button_at_mut(&mut buttons, &[{}])", route.join(", "))
             };
-            for (target, field) in [(BindTarget::Label(path.clone()), "label"), (BindTarget::Enabled(path.clone()), "enabled")] {
+            for (target, field) in [
+                (BindTarget::Label(path.clone()), "label"),
+                (BindTarget::Enabled(path.clone()), "enabled"),
+                (BindTarget::Visible(path.clone()), "visible"),
+            ] {
                 if let Some(expr) = live(&target) {
                     out.push(if path.len() == 1 {
                         format!("{at}.{field} = {expr};")
@@ -418,7 +429,7 @@ pub fn menu_to_code_bound(title: Option<&str>, settings: &PieMenuSettings, butto
     let config = settings_to_code_bound(settings, bindings);
     let live = live_bindings_code(buttons, bindings);
     let mut out = String::from("use egui_pie_menu::*;\n");
-    if config.contains("Duration::") {
+    if config.contains("Duration::") || live.iter().any(|l| l.contains("Duration::")) {
         out += "use std::time::Duration;\n";
     }
     let mut names: Vec<String> = Vec::new();
@@ -1148,6 +1159,69 @@ buttons[1].label = format!(\"Undo ({})\", history.len());\n\
             if let Some(item) = buttons[1].cluster_item_mut(1) { item.enabled = can_undo; }
         );
         assert_eq!(strip(&live_bindings_code(&buttons, &live).join("\n")), strip(tokens));
+    }
+
+    #[test]
+    fn visible_compiles() {
+        let share_on = true;
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Hidden").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Share"),
+        ];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Visible(vec![1]), "share_on", BindingMode::Build);
+        let built: Vec<PieButton> = vec![
+            PieButton::new(PieDirection::North).with_label("Hidden").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Share").with_visible(share_on),
+        ];
+        let tokens = stringify!(vec![
+            PieButton::new(PieDirection::North).with_label("Hidden").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Share").with_visible(share_on),
+        ]);
+        assert_eq!(strip(&buttons_to_code_bound(&buttons, &b)), strip(tokens));
+        assert!(!built[0].visible && built[1].visible);
+        let mut live = Bindings::new();
+        bind(&mut live, BindTarget::Visible(vec![1]), "share_on", BindingMode::Live);
+        let mut buttons = buttons;
+        buttons[1].visible = share_on;
+        assert_eq!(live_bindings_code(&buttons, &live), ["buttons[1].visible = share_on;"]);
+    }
+
+    #[test]
+    fn number_bindings_compile() {
+        struct Prefs {
+            radius: f32,
+            anim_ms: f32,
+        }
+        let prefs = Prefs { radius: 90.0, anim_ms: 250.0 };
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Field(SettingsField::LayoutRadius), "prefs.radius", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::FanOutRadius), "prefs.radius", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::RevealDuration), "prefs.anim_ms", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::SlideFade), "prefs.anim_ms", BindingMode::Build);
+        let built = PieMenu::new()
+            .configure(|s| {
+                s.layout.radius = prefs.radius;
+                s.animations.reveal_duration = Duration::from_secs_f32((prefs.anim_ms) / 1000.0);
+                s.animations.slide_fade = Some(Duration::from_secs_f32((prefs.anim_ms) / 1000.0));
+                s.sub_pies.fan_out.radius = Some(prefs.radius);
+            })
+            .settings;
+        let tokens = stringify!(.configure(|s| {
+            s.layout.radius = prefs.radius;
+            s.animations.reveal_duration = Duration::from_secs_f32((prefs.anim_ms) / 1000.0);
+            s.animations.slide_fade = Some(Duration::from_secs_f32((prefs.anim_ms) / 1000.0));
+            s.sub_pies.fan_out.radius = Some(prefs.radius);
+        }));
+        let generated = settings_to_code_bound(&PieMenuSettings::default(), &b);
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(built.animations.reveal_duration, Duration::from_millis(250));
+        // A live duration also brings the import.
+        let mut live = Bindings::new();
+        bind(&mut live, BindTarget::Field(SettingsField::HoverDuration), "prefs.anim_ms", BindingMode::Live);
+        let code = menu_to_code_bound(None, &PieMenuSettings::default(), &[], &live);
+        assert!(code.contains("use std::time::Duration;\n"), "{code}");
+        assert!(code.contains("menu.settings.animations.hover_duration = Duration::from_secs_f32((prefs.anim_ms) / 1000.0);"), "{code}");
     }
 
     #[test]
