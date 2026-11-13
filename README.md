@@ -993,6 +993,10 @@ Everything else is additive:
 - `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
 - Pie Designer, a crate of its own in this repository (`egui_pie_menu_designer`): the editors and the app ([Examples and Pie Designer](#examples-and-pie-designer)). The demo of v0.36.1 is now part of it; the core has two short examples instead.
 
+## Acknowledgements
+
+Inspired by [Blender](https://www.blender.org/)'s pie menus. Built on [egui](https://github.com/emilk/egui).
+
 ## License
 
 MIT
