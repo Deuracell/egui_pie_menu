@@ -113,6 +113,8 @@ Each button's `mnemonic` is a `Mnemonic`:
 
 With `auto_mnemonics` on (off by default), all `Auto` buttons are assigned together (with reshuffling) so as many as possible get a distinct letter from their label, preferring word initials, then the remaining letters left to right. Only a button with no possible letter gets none. Generated letters can move when other buttons or labels change (a button may give up its letter so another one gets any at all), so **if a particular letter matters, set it with `with_mnemonic`**. The keys in effect are on the `ButtonView` in the render closure (`b.mnemonic`), or from `menu.mnemonics(&buttons)` outside it.
 
+If the menu is opened by holding a keyboard key, tell it which: `menu.settings.input.trigger_key = Some(egui::Key::C)`. A held key repeats, so it can never be a mnemonic: generated mnemonics skip it, and an explicit `with_mnemonic` equal to it is dropped and reported by `check_buttons` as `MnemonicIsTriggerKey` (debug builds assert). If it is a digit, that number key selects nothing and its hint is not shown.
+
 Mnemonic keys are consumed by the menu while it is open, so they won't trigger other shortcuts in the same frame. A Latin mnemonic does not fire as part of a Ctrl/Cmd chord (Ctrl+C is not the mnemonic `c`). Duplicate mnemonics on one level panic in debug builds (see `check_buttons` below).
 
 ### Disabled buttons and hover query
@@ -526,6 +528,7 @@ menu.settings.title.padding    = egui::Margin::same(5);
 menu.settings.input.use_number_keys    = true;
 menu.settings.input.use_mnemonic_keys  = true;
 menu.settings.input.auto_mnemonics     = true;   // generate keys for Mnemonic::Auto buttons (default false)
+menu.settings.input.trigger_key        = Some(egui::Key::C); // the key held to keep the menu open: never a mnemonic or number key
 menu.settings.input.double_tap_window  = Duration::from_millis(400);
 ```
 

@@ -224,7 +224,7 @@ mod tests {
                 lab(PieDirection::North, "Cut").with_mnemonic('x'),
                 lab(PieDirection::East, "Cat").with_mnemonic('c'),
             ];
-            let p = button_problems(&b, &resolve_mnemonics(&b, true));
+            let p = button_problems(&b, &resolve_mnemonics(&b, true, None));
             assert_eq!(
                 p,
                 vec![
@@ -242,10 +242,10 @@ mod tests {
                 lab(PieDirection::North, "Copy").with_mnemonic('c'),
                 lab(PieDirection::East, "Cat").with_mnemonic('c').with_enabled(false),
             ];
-            assert!(button_problems(&b, &resolve_mnemonics(&b, true)).is_empty());
+            assert!(button_problems(&b, &resolve_mnemonics(&b, true, None)).is_empty());
             // Another level may reuse the same direction and key: checked separately.
             let other = vec![lab(PieDirection::North, "Cut").with_mnemonic('c')];
-            assert!(button_problems(&other, &resolve_mnemonics(&other, true)).is_empty());
+            assert!(button_problems(&other, &resolve_mnemonics(&other, true, None)).is_empty());
         }
 
         #[cfg(debug_assertions)]
@@ -273,7 +273,7 @@ mod tests {
         #[test]
         fn disabled_buttons_get_no_generated_mnemonic() {
             let b = vec![PieButton::new(PieDirection::North).with_label("Copy").with_enabled(false)];
-            assert_eq!(resolve_mnemonics(&b, true), vec![None]);
+            assert_eq!(resolve_mnemonics(&b, true, None), vec![None]);
         }
     }
 

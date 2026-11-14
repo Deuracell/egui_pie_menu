@@ -33,8 +33,12 @@ pub enum Mnemonic {
 ///   letters left to right. Only a button with no possible letter is left without one.
 ///   Any alphabetic letter of any script can be generated (combining marks are skipped;
 ///   Hebrew final forms and Arabic alef variants are folded to one key).
-pub(crate) fn resolve_mnemonics(buttons: &[PieButton], auto: bool) -> Vec<Option<char>> {
-    resolve_all(buttons, auto).0
+///
+/// `reserved` is the held trigger key ([`PieMenuInput::trigger_key`]) as a folded
+/// character: no button gets it, generated or explicit (an explicit one is reported by
+/// [`PieMenu::check_buttons`]).
+pub(crate) fn resolve_mnemonics(buttons: &[PieButton], auto: bool, reserved: Option<char>) -> Vec<Option<char>> {
+    resolve_all(buttons, auto, reserved).0
 }
 
 /// One thing that can own a mnemonic: a button, or an item of a cluster.
@@ -50,7 +54,11 @@ struct Slot<'a> {
 /// and per cluster the entries of its items in declaration order (empty for other
 /// buttons). A disabled item, or any item of a disabled cluster, gets no key and reserves
 /// none.
-pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char>>, Vec<Vec<Option<char>>>) {
+pub(crate) fn resolve_all(
+    buttons: &[PieButton],
+    auto: bool,
+    reserved: Option<char>,
+) -> (Vec<Option<char>>, Vec<Vec<Option<char>>>) {
     let mut slots: Vec<Slot> = Vec::new();
     // Where each button's slot (or its items' slots) start.
     let mut starts = Vec::with_capacity(buttons.len());
@@ -69,7 +77,7 @@ pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char
             slots.push(Slot { mnemonic: b.mnemonic, label: &b.label, enabled: b.enabled });
         }
     }
-    let resolved = resolve_slots(&slots, auto);
+    let resolved = resolve_slots(&slots, auto, reserved);
     let mut per_button = Vec::with_capacity(buttons.len());
     let mut per_item = Vec::with_capacity(buttons.len());
     for (b, &start) in buttons.iter().zip(&starts) {
@@ -84,18 +92,19 @@ pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char
     (per_button, per_item)
 }
 
-fn resolve_slots(buttons: &[Slot], auto: bool) -> Vec<Option<char>> {
+fn resolve_slots(buttons: &[Slot], auto: bool, reserved: Option<char>) -> Vec<Option<char>> {
     let mut resolved: Vec<Option<char>> = buttons
         .iter()
         .map(|b| match b.mnemonic {
-            Mnemonic::Key(c) => Some(fold_char(c)),
+            // The held trigger key can never be a mnemonic: its key repeat would select.
+            Mnemonic::Key(c) => Some(fold_char(c)).filter(|c| Some(*c) != reserved),
             _ => None,
         })
         .collect();
     if !auto {
         return resolved;
     }
-    let taken: Vec<char> = resolved.iter().flatten().copied().collect();
+    let taken: Vec<char> = resolved.iter().flatten().copied().chain(reserved).collect();
 
     // Candidate letters per Auto button, best first: word initials, then every other letter.
     let candidates: Vec<Vec<char>> = buttons
@@ -281,6 +290,16 @@ pub(crate) fn is_mnemonic_letter(c: char) -> bool {
     c.is_alphabetic() && !is_combining_mark(c)
 }
 
+/// The character a key types, folded like a mnemonic: letters and digits only (`None`
+/// for Space, Tab, …, which can never be a mnemonic).
+pub(crate) fn key_to_char(key: Key) -> Option<char> {
+    let mut chars = key.name().chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_alphanumeric() => Some(fold_char(c)),
+        _ => None,
+    }
+}
+
 /// The egui key of an ASCII letter, for matching mnemonics by key code.
 pub(crate) fn char_to_key(c: char) -> Option<Key> {
     c.is_ascii_alphabetic().then(|| Key::from_name(c.to_ascii_uppercase().encode_utf8(&mut [0; 4]))).flatten()
@@ -303,26 +322,26 @@ mod tests {
         #[test]
         fn auto_off_only_explicit_keys() {
             let b = vec![btn("Copy"), btn("Cut").with_mnemonic('C'), btn("Paste").without_mnemonic()];
-            assert_eq!(resolve_mnemonics(&b, false), vec![None, Some('c'), None]);
+            assert_eq!(resolve_mnemonics(&b, false, None), vec![None, Some('c'), None]);
         }
 
         #[test]
         fn explicit_kept_and_not_duplicated() {
             let b = vec![btn("Copy"), btn("Cut").with_mnemonic('c'), btn("Paste")];
             // 'c' is reserved by the explicit key, so Copy takes its next letter.
-            assert_eq!(resolve_mnemonics(&b, true), vec![Some('o'), Some('c'), Some('p')]);
+            assert_eq!(resolve_mnemonics(&b, true, None), vec![Some('o'), Some('c'), Some('p')]);
         }
 
         #[test]
         fn none_never_gets_one_and_reserves_nothing() {
             let b = vec![btn("Copy").without_mnemonic(), btn("Cut")];
-            assert_eq!(resolve_mnemonics(&b, true), vec![None, Some('c')]);
+            assert_eq!(resolve_mnemonics(&b, true, None), vec![None, Some('c')]);
         }
 
         #[test]
         fn reshuffles_so_everyone_gets_one() {
             // Greedy would give "Ab" 'a' and leave "A" with nothing.
-            assert_eq!(resolve_mnemonics(&[btn("Ab"), btn("A")], true), vec![Some('b'), Some('a')]);
+            assert_eq!(resolve_mnemonics(&[btn("Ab"), btn("A")], true, None), vec![Some('b'), Some('a')]);
         }
 
         #[test]
@@ -330,7 +349,7 @@ mod tests {
             let pick = |reserved: &[char]| {
                 let mut b: Vec<PieButton> = reserved.iter().map(|&c| btn("").with_mnemonic(c)).collect();
                 b.push(btn("Select All Items"));
-                *resolve_mnemonics(&b, true).last().unwrap()
+                *resolve_mnemonics(&b, true, None).last().unwrap()
             };
             assert_eq!(pick(&[]), Some('s')); // 1st word initial
             assert_eq!(pick(&['s']), Some('a')); // 2nd word initial
@@ -341,14 +360,14 @@ mod tests {
 
         #[test]
         fn exhausted_gets_none() {
-            assert_eq!(resolve_mnemonics(&[btn("A"), btn("A")], true)[1], None);
+            assert_eq!(resolve_mnemonics(&[btn("A"), btn("A")], true, None)[1], None);
         }
 
         #[test]
         fn all_auto_demo_labels_are_distinct() {
             let labels = ["Copy", "Paste Special", "Redo", "Save As…", "Delete Permanently", "Cut", "Undo Last Change", "Word wrap"];
             let b: Vec<PieButton> = labels.iter().map(|l| btn(l)).collect();
-            let r = resolve_mnemonics(&b, true);
+            let r = resolve_mnemonics(&b, true, None);
             let mut got: Vec<char> = r.iter().flatten().copied().collect();
             assert_eq!(got.len(), labels.len(), "everyone gets one: {r:?}");
             got.sort();
@@ -357,8 +376,20 @@ mod tests {
         }
 
         #[test]
+        fn reserved_key_is_never_generated_and_an_explicit_one_is_dropped() {
+            // Without the reservation Copy gets 'c'.
+            assert_eq!(resolve_mnemonics(&[btn("Copy")], true, Some('c')), vec![Some('o')]);
+            assert_eq!(resolve_mnemonics(&[btn("C")], true, Some('c')), vec![None]);
+            let b = vec![btn("Copy").with_mnemonic('C'), btn("Cut")];
+            assert_eq!(resolve_mnemonics(&b, true, Some('c')), vec![None, Some('u')]);
+            assert_eq!(key_to_char(Key::C), Some('c'));
+            assert_eq!(key_to_char(Key::Num4), Some('4'));
+            assert_eq!(key_to_char(Key::Space), None);
+        }
+
+        #[test]
         fn empty_label_gets_none() {
-            assert_eq!(resolve_mnemonics(&[btn("")], true), vec![None]);
+            assert_eq!(resolve_mnemonics(&[btn("")], true, None), vec![None]);
         }
     }
 
@@ -371,7 +402,7 @@ mod tests {
                 .map(|&c| PieButton::new(PieDirection::East).with_mnemonic(c))
                 .collect();
             b.push(PieButton::new(PieDirection::North).with_label(label));
-            resolve_mnemonics(&b, true).last().copied().flatten()
+            resolve_mnemonics(&b, true, None).last().copied().flatten()
         }
 
         #[test]

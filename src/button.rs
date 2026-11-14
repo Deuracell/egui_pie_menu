@@ -276,6 +276,10 @@ pub enum ButtonProblem {
     /// An explicit mnemonic key is shared by two enabled owners, at least one of them a
     /// cluster item.
     DuplicateItemMnemonic { first: MnemonicOwner, second: MnemonicOwner, key: char },
+    /// An explicit mnemonic key is the menu's held trigger key
+    /// ([`PieMenuInput::trigger_key`]), whose key repeat would select it; the mnemonic
+    /// is dropped.
+    MnemonicIsTriggerKey { owner: MnemonicOwner, key: char },
     /// A problem among the fan-out children of button `parent`.
     InFanOut { parent: usize, problem: Box<ButtonProblem> },
 }
@@ -290,6 +294,7 @@ impl ButtonProblem {
             ButtonProblem::BlockedDirection { button, .. } | ButtonProblem::NestedInFanOut { button } => vec![*button],
             ButtonProblem::InFanOut { parent, .. } => vec![*parent],
             ButtonProblem::DuplicateItemNumber { cluster, .. } => vec![*cluster],
+            ButtonProblem::MnemonicIsTriggerKey { owner, .. } => vec![owner.button()],
             ButtonProblem::DuplicateItemMnemonic { first, second, .. } => {
                 let (a, b) = (first.button(), second.button());
                 if a == b { vec![a] } else { vec![a, b] }
@@ -318,6 +323,9 @@ impl std::fmt::Display for ButtonProblem {
             }
             ButtonProblem::DuplicateItemMnemonic { first, second, key } => {
                 write!(f, "{first} and {second} share the mnemonic '{key}'")
+            }
+            ButtonProblem::MnemonicIsTriggerKey { owner, key } => {
+                write!(f, "{owner} has the mnemonic '{key}', which is the key held to keep the menu open")
             }
             ButtonProblem::InFanOut { parent, problem } => {
                 write!(f, "in the fan-out of button {parent}: {problem}")
@@ -369,6 +377,24 @@ pub(crate) fn button_problems(buttons: &[PieButton], mnemonics: &[Option<char>])
             problems.push(ButtonProblem::DuplicateMnemonic { first: *first, second: i, key: c });
         } else {
             keys.push((c, i));
+        }
+    }
+    problems
+}
+
+/// Enabled buttons and cluster items of one level whose explicit mnemonic is `trigger`,
+/// the menu's held trigger key (folded).
+pub(crate) fn trigger_key_problems(buttons: &[PieButton], trigger: Option<char>) -> Vec<ButtonProblem> {
+    let Some(key) = trigger else { return Vec::new() };
+    let clash = |m: Mnemonic| matches!(m, Mnemonic::Key(c) if crate::mnemonic::fold_char(c) == key);
+    let mut problems = Vec::new();
+    for (i, b) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+        if b.is_cluster() {
+            for (item, _) in b.cluster_items().iter().enumerate().filter(|(_, it)| it.enabled && clash(it.mnemonic)) {
+                problems.push(ButtonProblem::MnemonicIsTriggerKey { owner: MnemonicOwner::Item { cluster: i, item }, key });
+            }
+        } else if clash(b.mnemonic) {
+            problems.push(ButtonProblem::MnemonicIsTriggerKey { owner: MnemonicOwner::Button(i), key });
         }
     }
     problems

@@ -51,8 +51,8 @@ mod tests;
 pub use button::{ButtonProblem, ButtonView, ClusterItem, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
 pub use mnemonic::{Mnemonic, mnemonic_text};
 
-use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};
-use mnemonic::{char_to_key, fold_char, resolve_all, resolve_mnemonics};
+use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems, trigger_key_problems};
+use mnemonic::{char_to_key, fold_char, key_to_char, resolve_all, resolve_mnemonics};
 
 /// Outcome of a [`PieMenu::show`] call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,16 +327,22 @@ impl PieMenu {
     /// on several enabled buttons (or cluster items, which share the level's keys); two
     /// items of a cluster with the same number; and, for each button that opens a fan-out, the same
     /// among its children plus children in a blocked direction or with sub-pies of their
-    /// own ([`ButtonProblem::InFanOut`]). Debug builds assert on these when the level
+    /// own ([`ButtonProblem::InFanOut`]); and an explicit mnemonic that is the held
+    /// [`PieMenuInput::trigger_key`]. Debug builds assert on these when the level
     /// opens; call this to check (or show the problems) yourself, e.g. in an editor, in
     /// any build. Pass the buttons of a single level.
     pub fn check_buttons(&self, buttons: &[PieButton]) -> Vec<ButtonProblem> {
-        let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
+        let trigger = self.trigger_char();
+        let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics, trigger);
         let mut problems = button_problems(buttons, &mnemonics);
         problems.extend(item_problems(buttons, &mnemonics, &item_mnemonics));
+        problems.extend(trigger_key_problems(buttons, trigger));
         for (parent, button) in buttons.iter().enumerate().filter(|(_, b)| self.opens_fan(b)) {
             let children = button.children();
-            for problem in fan_out_problems(button.direction, children, &self.mnemonics(children)) {
+            let in_fan = fan_out_problems(button.direction, children, &self.mnemonics(children))
+                .into_iter()
+                .chain(trigger_key_problems(children, trigger));
+            for problem in in_fan {
                 problems.push(ButtonProblem::InFanOut { parent, problem: Box::new(problem) });
             }
         }
@@ -358,7 +364,13 @@ impl PieMenu {
     /// [`Mnemonic`] and [`PieMenuInput::auto_mnemonics`], for use outside the render closure. Inside it, prefer [`ButtonView::mnemonic`] and
     /// [`ButtonView::label_text`]. Cheap: a few microseconds for eight buttons.
     pub fn mnemonics(&self, buttons: &[PieButton]) -> Vec<Option<char>> {
-        resolve_mnemonics(buttons, self.settings.input.auto_mnemonics)
+        resolve_mnemonics(buttons, self.settings.input.auto_mnemonics, self.trigger_char())
+    }
+
+    /// The character of the held trigger key ([`PieMenuInput::trigger_key`]), which no
+    /// mnemonic may be.
+    fn trigger_char(&self) -> Option<char> {
+        self.settings.input.trigger_key.and_then(key_to_char)
     }
 
     /// The mnemonic key in effect for each declared item of each cluster among `buttons`:
@@ -367,13 +379,14 @@ impl PieMenu {
     /// out twice; see [`ClusterItem`]. Inside the render closure, prefer
     /// [`ButtonView::item_mnemonic`] and [`ButtonView::item_label`].
     pub fn cluster_mnemonics(&self, buttons: &[PieButton]) -> Vec<Vec<Option<char>>> {
-        resolve_all(buttons, self.settings.input.auto_mnemonics).1
+        resolve_all(buttons, self.settings.input.auto_mnemonics, self.trigger_char()).1
     }
 
     /// The number-key hint for `button`, for drawing inside your own button so the button
     /// grows to fit it, e.g. `egui::Button::new((label, hint.text)).gap(spacing)`.
     ///
-    /// Returns `None` when number keys are off. Inside the render closure, prefer
+    /// Returns `None` when number keys are off, and for the direction whose digit is the
+    /// held [`PieMenuInput::trigger_key`]. Inside the render closure, prefer
     /// [`ButtonView::number_hint`], which also knows whether the button is hovered
     /// (this one gives the colour for a non-hovered button in a dark theme).
     pub fn number_hint(&self, button: &PieButton) -> Option<NumberHint> {
@@ -384,7 +397,8 @@ impl PieMenu {
     fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
         let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
         let hints = &self.settings.number_hints;
-        (self.settings.input.use_number_keys && !button.is_cluster()).then(|| NumberHint {
+        let usable = self.settings.input.trigger_key != Some(Self::direction_number_key(&dir));
+        (self.settings.input.use_number_keys && usable && !button.is_cluster()).then(|| NumberHint {
             text: self.hint_digit(&dir).to_string(),
             color: button_text_color(hints.color, visuals, hovered, button.enabled),
             on_right: self.hint_on_right(&dir),
@@ -917,6 +931,10 @@ impl PieMenu {
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
                 let dir = Self::eff(&button.direction, mirror);
                 let key = Self::direction_number_key(&dir);
+                // The held trigger key repeats: it never selects.
+                if self.settings.input.trigger_key == Some(key) {
+                    continue;
+                }
                 let digit = Self::direction_digit(&dir).to_string();
                 let hit = ctx.input_mut(|i| {
                     let hit = i.consume_key(egui::Modifiers::NONE, key);
@@ -937,7 +955,7 @@ impl PieMenu {
         }
 
         if self.settings.input.use_mnemonic_keys {
-            let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
+            let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics, self.trigger_char());
             // Every key that can be pressed, in button order, items after their cluster's turn.
             let mut owners: Vec<(char, usize, Option<usize>)> = Vec::new();
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
@@ -1002,7 +1020,7 @@ impl PieMenu {
         let mirror = self.settings.mirror_horizontal;
         let shape_factor = self.settings.layout.shape_factor;
         // Resolved once per frame for the view handed to the render closure.
-        let (mnemonics, item_mnemonics) = resolve_all(level.buttons, self.settings.input.auto_mnemonics);
+        let (mnemonics, item_mnemonics) = resolve_all(level.buttons, self.settings.input.auto_mnemonics, self.trigger_char());
         let visuals = ctx.global_style().visuals.clone();
         let body_font = ctx.global_style().text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
 

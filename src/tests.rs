@@ -2995,3 +2995,107 @@ mod first_frame_tests {
         }
     }
 }
+
+mod trigger_key_tests {
+    use super::*;
+
+    fn c_held(repeat: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::Key { key: Key::C, physical_key: None, pressed: true, repeat, modifiers: egui::Modifiers::NONE },
+            egui::Event::Text("c".into()),
+        ]
+    }
+
+    /// One frame of an app that opens the menu when C goes down and keeps it open while held.
+    fn frame(ctx: &egui::Context, m: &mut PieMenu, buttons: &[PieButton], events: Vec<egui::Event>) -> (PieMenuResponse, Vec<Option<char>>) {
+        let (mut resp, mut seen) = (PieMenuResponse::None, Vec::new());
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            if ui.ctx().input(|i| i.key_pressed(Key::C)) && !m.is_open() {
+                m.open(Pos2::new(400.0, 300.0));
+            }
+            resp = m.show(ui.ctx(), buttons, true, |ui, b| {
+                seen.push(b.mnemonic);
+                ui.label("x");
+            });
+        });
+        out.textures_delta.clear();
+        (resp, seen)
+    }
+
+    fn menu() -> PieMenu {
+        let mut m = PieMenu::new();
+        m.settings.show_behavior = ShowBehavior::Instant;
+        m.settings.input.auto_mnemonics = true;
+        m.settings.input.trigger_key = Some(Key::C);
+        m
+    }
+
+    #[test]
+    fn the_held_trigger_key_never_selects_and_generated_mnemonics_avoid_it() {
+        let buttons = [PieButton::new(PieDirection::North).with_label("Copy")];
+        let ctx = egui::Context::default();
+        let mut m = menu();
+        // The opening press, then key repeats while held: nothing is selected.
+        assert_eq!(frame(&ctx, &mut m, &buttons, c_held(false)).0, PieMenuResponse::None);
+        let (resp, seen) = frame(&ctx, &mut m, &buttons, c_held(true));
+        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(seen, [Some('o')], "Copy moved to its next letter");
+        assert_eq!(m.mnemonics(&buttons), [Some('o')]);
+        assert!(m.check_buttons(&buttons).is_empty());
+    }
+
+    #[test]
+    fn an_explicit_mnemonic_on_the_trigger_key_is_reported_and_dropped() {
+        let buttons = [
+            PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('C'),
+            PieButton::new(PieDirection::East).with_label("More").with_fan_out(vec![
+                PieButton::new(PieDirection::East).with_label("Cut").with_mnemonic('c'),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(7, "Clear").with_mnemonic('c')]),
+        ];
+        let m = menu();
+        let fan = ButtonProblem::MnemonicIsTriggerKey { owner: MnemonicOwner::Button(0), key: 'c' };
+        assert_eq!(
+            m.check_buttons(&buttons),
+            vec![
+                ButtonProblem::MnemonicIsTriggerKey { owner: MnemonicOwner::Button(0), key: 'c' },
+                ButtonProblem::MnemonicIsTriggerKey { owner: MnemonicOwner::Item { cluster: 2, item: 0 }, key: 'c' },
+                ButtonProblem::InFanOut { parent: 1, problem: Box::new(fan) },
+            ]
+        );
+        assert_eq!(m.mnemonics(&buttons)[0], None);
+        assert_eq!(m.cluster_mnemonics(&buttons)[2], [None]);
+        // Without a trigger key the same buttons are fine apart from sharing 'c'.
+        let mut free = menu();
+        free.settings.input.trigger_key = None;
+        assert_eq!(free.mnemonics(&buttons)[0], Some('c'));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "held to keep the menu open")]
+    fn show_asserts_on_an_explicit_mnemonic_on_the_trigger_key() {
+        let buttons = [PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c')];
+        frame(&egui::Context::default(), &mut menu(), &buttons, c_held(false));
+    }
+
+    #[test]
+    fn a_digit_trigger_key_disables_that_number_key_and_its_hint() {
+        let buttons = [PieButton::new(PieDirection::North), PieButton::new(PieDirection::South)];
+        let mut m = PieMenu::new();
+        m.settings.show_behavior = ShowBehavior::Instant;
+        m.settings.input.trigger_key = Some(Key::Num8);
+        assert_eq!(m.number_hint(&buttons[0]), None);
+        assert_eq!(m.number_hint(&buttons[1]).unwrap().text, "2");
+        m.open(Pos2::new(400.0, 300.0));
+        let ctx = egui::Context::default();
+        let press = |key| vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::NONE }];
+        assert_eq!(frame(&ctx, &mut m, &buttons, press(Key::Num8)).0, PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, &buttons, press(Key::Num2)).0, PieMenuResponse::Selected(1));
+    }
+}

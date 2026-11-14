@@ -284,6 +284,14 @@ pub struct PieMenuInput {
     /// [`crate::Mnemonic::Auto`]. Explicit keys ([`crate::Mnemonic::Key`]) are kept and
     /// reserved; [`crate::Mnemonic::None`] buttons never get one. Off by default.
     pub auto_mnemonics: bool,
+    /// The keyboard key that is held to keep the menu open, if it is opened that way.
+    /// While it is held the OS repeats it, so it can never select anything: generated
+    /// mnemonics skip its character, an explicit [`crate::Mnemonic::Key`] equal to it is
+    /// dropped and reported by [`crate::PieMenu::check_buttons`]
+    /// ([`crate::ButtonProblem::MnemonicIsTriggerKey`]; debug builds assert), and if it
+    /// is a digit that number key selects no button and gets no number hint.
+    /// `None` (default): no such key (a mouse button, a click-driven or pinned menu).
+    pub trigger_key: Option<Key>,
     /// Maximum gap between two [`crate::PieMenuResponse::QuickTap`]s to produce a
     /// [`crate::PieMenuResponse::DoubleTap`].
     pub double_tap_window: Duration,
@@ -312,6 +320,7 @@ impl Default for PieMenuInput {
             use_number_keys: true,
             use_mnemonic_keys: true,
             auto_mnemonics: false,
+            trigger_key: None,
             double_tap_window: Duration::from_millis(400),
             select_on_primary_click: true,
             dismiss_inputs: vec![
