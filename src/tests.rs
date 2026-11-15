@@ -3142,3 +3142,204 @@ mod trigger_key_tests {
         assert_eq!(frame(&ctx, &mut m, &buttons, press(Key::Num2)).0, PieMenuResponse::Selected(1));
     }
 }
+
+mod open_modes_and_identity_tests {
+    use super::*;
+
+    const CENTER: Pos2 = Pos2::new(400.0, 300.0);
+    const NORTH: Pos2 = Pos2::new(400.0, 180.0);
+
+    fn buttons() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_id("copy"),
+            PieButton::new(PieDirection::East).with_label("More").with_id("more").with_fan_out(vec![
+                PieButton::new(PieDirection::East).with_label("Beyond").with_id("beyond"),
+            ]),
+            PieButton::cluster(PieDirection::South).with_id("tools").with_items(vec![ClusterItem::new(7, "Zap").with_mnemonic('z')]),
+            PieButton::new(PieDirection::West).with_label("Plain"),
+        ]
+    }
+
+    struct Rig {
+        ctx: egui::Context,
+        menu: PieMenu,
+        time: f64,
+        /// Per button the last frame drew: its path and `b.scale()`.
+        scales: Vec<(Vec<usize>, f32)>,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let mut menu = PieMenu::new();
+            menu.settings.animations.reveal = RevealAnimation::None;
+            Self { ctx: egui::Context::default(), menu, time: 0.0, scales: Vec::new() }
+        }
+
+        fn frame(&mut self, pointer: Pos2, key_down: bool, events: Vec<egui::Event>) -> PieMenuResponse {
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let mut resp = PieMenuResponse::None;
+            let mut scales = Vec::new();
+            let (menu, buttons) = (&mut self.menu, buttons());
+            let mut out = self.ctx.run_ui(input, |ui| {
+                resp = menu.show_with_pointer(ui.ctx(), &buttons, Some(pointer), key_down, |ui, b| {
+                    scales.push((b.path.to_vec(), b.scale()));
+                    ui.label(b.label_text());
+                });
+            });
+            out.textures_delta.clear();
+            self.scales = scales;
+            resp
+        }
+
+        fn key(&mut self, key: Key) -> PieMenuResponse {
+            let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+            self.frame(CENTER, true, vec![event])
+        }
+
+        fn click(&mut self, pos: Pos2, key_down: bool) -> PieMenuResponse {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(pos, key_down, vec![egui::Event::PointerMoved(pos), button(true), button(false)])
+        }
+    }
+
+    #[test]
+    fn a_drag_right_after_a_quick_tap_opens_the_menu() {
+        let mut rig = Rig::new();
+        rig.menu.open(CENTER);
+        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::QuickTap);
+        // Pressed again within the double-tap window and held still: nothing is shown …
+        rig.menu.open(CENTER);
+        assert_eq!(rig.frame(CENTER, true, vec![]), PieMenuResponse::None);
+        assert!(rig.scales.is_empty());
+        // … but moving past the threshold is a drag: the menu opens and selects as usual.
+        assert_eq!(rig.frame(NORTH, true, vec![]), PieMenuResponse::None);
+        assert!(!rig.scales.is_empty(), "the menu is shown");
+        rig.frame(NORTH, true, vec![]);
+        assert_eq!(rig.frame(NORTH, false, vec![]), PieMenuResponse::Selected(0));
+        // The drag was not a tap: the next tap is a first tap again.
+        rig.menu.open(CENTER);
+        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::QuickTap);
+        rig.menu.open(CENTER);
+        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::DoubleTap);
+    }
+
+    #[test]
+    fn a_sticky_menu_stays_open_with_no_key_held_until_a_click() {
+        let mut rig = Rig::new();
+        rig.menu.open_sticky(CENTER);
+        for pointer in [CENTER, CENTER, NORTH, CENTER] {
+            assert_eq!(rig.frame(pointer, false, vec![]), PieMenuResponse::None);
+            assert!(!rig.scales.is_empty(), "shown at once and kept open");
+        }
+        assert!(rig.menu.is_open() && !rig.menu.is_pinned());
+        assert_eq!(rig.click(NORTH, false), PieMenuResponse::Selected(0));
+        assert!(!rig.menu.is_open(), "unlike a pinned menu it closes after a selection");
+
+        // A click on the centre dismisses it, and it is no tap: nothing counts towards a double tap.
+        rig.menu.open_sticky(CENTER);
+        rig.frame(CENTER, false, vec![]);
+        assert_eq!(rig.click(CENTER, false), PieMenuResponse::Dismissed);
+        // Right after a quick tap it still opens (the usual reaction to one).
+        rig.menu.open(CENTER);
+        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::QuickTap);
+        rig.menu.open_sticky(CENTER);
+        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::None);
+        assert!(!rig.scales.is_empty());
+    }
+
+    #[test]
+    fn selected_id_names_the_chosen_button() {
+        let id = |name: &str| Some(egui::Id::new(name));
+        let mut rig = Rig::new();
+        let open = |rig: &mut Rig| {
+            rig.menu.open(CENTER);
+            rig.menu.reveal();
+            assert_eq!(rig.menu.selected_id(), None, "cleared by open");
+            rig.frame(CENTER, true, vec![]);
+        };
+        open(&mut rig);
+        assert_eq!(rig.key(Key::Num8), PieMenuResponse::Selected(0));
+        assert_eq!(rig.menu.selected_id(), id("copy"));
+        // A fan child: its own id, not the opener's.
+        open(&mut rig);
+        assert_eq!(rig.key(Key::Num6), PieMenuResponse::None);
+        assert_eq!(rig.key(Key::Num6), PieMenuResponse::Selected(0));
+        assert_eq!(rig.menu.selected_id(), id("beyond"));
+        // A cluster item: the cluster button's id; the item is the number in the response.
+        open(&mut rig);
+        assert_eq!(rig.key(Key::Z), PieMenuResponse::Selected(7));
+        assert_eq!(rig.menu.selected_id(), id("tools"));
+        // A button without an id.
+        open(&mut rig);
+        assert_eq!(rig.key(Key::Num4), PieMenuResponse::Selected(3));
+        assert_eq!(rig.menu.selected_id(), None);
+    }
+
+    #[test]
+    fn hover_emphasis_starts_fresh_for_each_opening() {
+        let grown = HoverEmphasis { shift: 0.0, scale: 1.5 };
+        let scale_of_north = |rig: &Rig| rig.scales.iter().find(|(path, _)| path == &[0]).unwrap().1;
+        let mut rig = Rig::new();
+        rig.menu.settings.animations.hover_emphasis = grown;
+        rig.menu.open(CENTER);
+        rig.menu.reveal();
+        // The button under the pointer when the ring first appears is emphasised at once …
+        rig.frame(NORTH, true, vec![]);
+        assert_eq!(scale_of_north(&rig), 1.5);
+        assert_eq!(rig.frame(NORTH, false, vec![]), PieMenuResponse::Selected(0));
+        // … and none of that leaks into the next opening, which then eases in as usual.
+        rig.menu.open(CENTER);
+        rig.menu.reveal();
+        rig.frame(CENTER, true, vec![]);
+        assert_eq!(scale_of_north(&rig), 1.0);
+        rig.frame(NORTH, true, vec![]);
+        let easing = scale_of_north(&rig);
+        assert!(easing > 1.0 && easing < 1.5, "eases in: {easing}");
+        for _ in 0..10 {
+            rig.frame(NORTH, true, vec![]);
+        }
+        assert_eq!(scale_of_north(&rig), 1.5);
+    }
+
+    #[test]
+    fn directions_are_declared_in_the_order_of_all() {
+        // `fan_out_slots` indexes `ALL` by the declaration order: straight ahead is the middle slot.
+        for dir in PieDirection::ALL {
+            assert_eq!(dir.fan_out_slots()[2], dir);
+            assert_eq!(dir.opposite().opposite(), dir);
+        }
+    }
+
+    #[test]
+    fn settings_types_have_defaults_and_compare() {
+        assert_eq!(PieMenuSettings::default(), PieMenuSettings::default());
+        assert_eq!(ShowBehavior::default(), ShowBehavior::OnMovement { threshold: 10.0 });
+        assert_eq!(RevealAnimation::default(), RevealAnimation::Fade);
+        assert_eq!(HintSide::default(), HintSide::Trailing);
+        assert_eq!(HoverEmphasis::default(), HoverEmphasis::NONE);
+        let mut changed = PieMenuSettings::default();
+        changed.layout.radius += 1.0;
+        assert_ne!(changed, PieMenuSettings::default());
+        assert_eq!(buttons(), buttons());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn settings_types_are_serde() {
+        fn serde<T: serde::Serialize + serde::de::DeserializeOwned>() {}
+        serde::<PieMenuSettings>();
+        serde::<PieDirection>();
+        serde::<HighlightShape>();
+    }
+}

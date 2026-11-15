@@ -4,6 +4,7 @@ use std::f32::consts::TAU;
 use std::time::Duration;
 
 /// The eight directions a button can occupy in the pie menu.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PieDirection {
     North,
@@ -43,9 +44,9 @@ impl PieDirection {
         }
     }
 
-    /// Position in [`PieDirection::ALL`] (clockwise from North).
+    /// Position in [`PieDirection::ALL`] (clockwise from North, the declaration order).
     fn index(self) -> usize {
-        Self::ALL.iter().position(|d| *d == self).unwrap_or(0)
+        self as usize
     }
 
     /// The five directions a fan-out sub-pie opened by a button in this direction may
@@ -90,7 +91,9 @@ impl PieDirection {
 /// let shape = HighlightShape { arc: true, ..HighlightShape::SLICE }; // arc + wedge
 /// assert!(!shape.is_none());
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct HighlightShape {
     /// An arc drawn along the indicator radius.
     pub arc: bool,
@@ -117,7 +120,9 @@ impl HighlightShape {
 }
 
 /// Appearance of the center indicator (background circle + directional highlight).
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuCenterIndicatorSettings {
     /// Radius of the static background circle. `None` draws no circle.
     pub background_radius: Option<f32>,
@@ -162,7 +167,9 @@ impl Default for PieMenuCenterIndicatorSettings {
 
 /// Appearance of the optional title shown above the center indicator.
 /// The text itself is [`crate::PieMenu::title`].
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuTitleSettings {
     /// Whether to show the title.
     pub show: bool,
@@ -192,7 +199,8 @@ impl Default for PieMenuTitleSettings {
 }
 
 /// An input event that dismisses the pie menu.
-#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieMenuDismissInput {
     /// A keyboard key press.
     Key(Key),
@@ -203,6 +211,7 @@ pub enum PieMenuDismissInput {
 /// How a button's sub-pie is shown. The two styles are not interchangeable designs: pick
 /// one for the menu with [`PieMenuSubPieSettings::style`]; a single button can override
 /// it ([`crate::PieButton::with_fan_out`], [`crate::PieButton::with_sub_pie_style`]).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SubPieStyle {
     /// The sub-pie replaces its parent: one level is on screen at a time, to any depth.
@@ -229,6 +238,7 @@ pub enum SubPieStyle {
 
 /// What selecting the opening button of an open fan-out does
 /// ([`PieMenuFanOutSettings::opener_action`]).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FanOpenerAction {
     /// Selecting the fan's own opening button (releasing the key on it, or clicking it)
@@ -243,6 +253,7 @@ pub enum FanOpenerAction {
 }
 
 /// Where a sub-pie is centred when it opens (and where its parent reappears on going back).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SubPieCenter {
     /// At the pointer (default), so every direction is equally far away. Going back
@@ -258,7 +269,8 @@ pub enum SubPieCenter {
 }
 
 /// Controls when the pie menu becomes visible after the trigger is held.
-#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ShowBehavior {
     /// Show the menu immediately on key hold.
     ///
@@ -272,8 +284,17 @@ pub enum ShowBehavior {
     OnMovement { threshold: f32 },
 }
 
+impl Default for ShowBehavior {
+    /// [`ShowBehavior::OnMovement`] with a threshold of 10 pixels.
+    fn default() -> Self {
+        Self::OnMovement { threshold: 10.0 }
+    }
+}
+
 /// Input and dismissal behaviour.
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuInput {
     /// Allow number keys 1–9 (numpad or number row; egui does not distinguish them) to activate buttons by direction.
     pub use_number_keys: bool,
@@ -334,12 +355,14 @@ impl Default for PieMenuInput {
 }
 
 /// How the buttons appear when the menu is revealed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RevealAnimation {
     /// No animation: buttons appear instantly.
     None,
     /// Buttons fade in linearly over [`PieMenuAnimations::reveal_duration`]. The default;
     /// with the default 200 ms it matches egui's own area fade.
+    #[default]
     Fade,
     /// Buttons slide out to their positions over [`PieMenuAnimations::reveal_duration`].
     /// Where they start is set by [`PieMenuAnimations::slide_start_radius`] and
@@ -351,7 +374,9 @@ pub enum RevealAnimation {
 /// Small digit hints (the number key that selects each button), drawn by your render
 /// closure inside the button from [`crate::ButtonView::number_hint`]. Only produced when
 /// [`PieMenuInput::use_number_keys`] is on.
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuNumberHints {
     /// Force the digit colour, whether hovered or not (Blender-style). `None` (default)
     /// uses egui's widget text colours like the labels: `widgets.inactive` normally,
@@ -368,6 +393,7 @@ pub struct PieMenuNumberHints {
 
 /// Digit shapes used for number hints. The keys pressed are the same in every case;
 /// only the drawn digit changes.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HintDigits {
     /// 0123456789 (default).
@@ -380,10 +406,12 @@ pub enum HintDigits {
 }
 
 /// Side of the label on which a number hint is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HintSide {
     /// After the label in reading order (default): right of it for left-to-right text,
     /// left of it for right-to-left text.
+    #[default]
     Trailing,
     /// The side facing away from the centre: right for eastern buttons, left for western
     /// ones, right for North/South. Based on the displayed position, so it follows a
@@ -411,7 +439,9 @@ impl Default for PieMenuNumberHints {
 /// to its content, see [`HoverEmphasis::scale`].
 /// Set separately for the root pie ([`PieMenuAnimations::hover_emphasis`]) and for
 /// sub-pies and fan-outs ([`PieMenuAnimations::sub_pie_hover_emphasis`]).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct HoverEmphasis {
     /// How far the highlighted button moves outward, in logical pixels (`0.0`: not at all).
     pub shift: f32,
@@ -433,8 +463,17 @@ impl HoverEmphasis {
     }
 }
 
+impl Default for HoverEmphasis {
+    /// [`HoverEmphasis::NONE`].
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// Reveal and hover animation settings.
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
     pub reveal: RevealAnimation,
@@ -482,7 +521,9 @@ impl Default for PieMenuAnimations {
 }
 
 /// Geometry of the ring.
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuLayoutSettings {
     /// Distance from the menu centre to the inner edge of each button, in logical pixels.
     pub radius: f32,
@@ -519,7 +560,9 @@ impl Default for PieMenuLayoutSettings {
 }
 
 /// Fan-out sub-pies ([`SubPieStyle::FanOut`]).
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuFanOutSettings {
     /// How long the pointer must rest on the opening button before its fan opens.
     /// Default: zero (opens as the pointer reaches the button).
@@ -543,7 +586,9 @@ impl Default for PieMenuFanOutSettings {
 }
 
 /// How sub-pies are shown and navigated.
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuSubPieSettings {
     /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].
     pub style: SubPieStyle,
@@ -576,7 +621,9 @@ impl Default for PieMenuSubPieSettings {
 }
 
 /// Top-level settings for a [`crate::PieMenu`].
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PieMenuSettings {
     /// Geometry of the ring.
     pub layout: PieMenuLayoutSettings,
@@ -615,7 +662,7 @@ impl Default for PieMenuSettings {
     fn default() -> Self {
         Self {
             layout: PieMenuLayoutSettings::default(),
-            show_behavior: ShowBehavior::OnMovement { threshold: 10.0 },
+            show_behavior: ShowBehavior::default(),
             input: PieMenuInput::default(),
             center_indicator: PieMenuCenterIndicatorSettings::default(),
             title: PieMenuTitleSettings::default(),

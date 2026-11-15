@@ -94,9 +94,17 @@ enum LevelEvent {
     BreakOut(usize),
 }
 
+/// The mnemonic keys in effect for one ring: per button, and per cluster its items'
+/// (see [`resolve_all`]). Resolved once per frame.
+type RingKeys = (Vec<Option<char>>, Vec<Vec<Option<char>>>);
+
 /// What [`PieMenu::draw_level`] needs to draw one ring of buttons.
 struct LevelDraw<'a> {
     buttons: &'a [PieButton],
+    /// Each button's layout vector ([`PieMenu::layout_dirs`]).
+    dirs: &'a [Vec2],
+    /// The mnemonic keys in effect for the buttons.
+    keys: &'a RingKeys,
     center: Pos2,
     /// Layout radius of this ring.
     radius: f32,
@@ -116,6 +124,9 @@ struct LevelDraw<'a> {
     /// Multiplied into every button's opacity (1.0: untouched; the fading main ring of a
     /// break-out uses `1 - fade`).
     opacity_scale: f32,
+    /// The ring is drawn for the first time since the menu opened: its hover emphasis
+    /// starts from this frame's state instead of easing from the previous opening's.
+    snap_emphasis: bool,
 }
 
 /// An open fan-out, laid out for this frame.
@@ -123,6 +134,8 @@ struct Fan<'a> {
     /// Index of the button that opened it, in the level being shown.
     trigger: usize,
     children: &'a [PieButton],
+    /// The children's layout vectors.
+    dirs: Vec<Vec2>,
     center: Pos2,
     radius: f32,
     /// The opening button's rect: the pointer on it selects nothing in the fan.
@@ -208,9 +221,14 @@ pub struct PieMenu {
     level_centers: Vec<Pos2>,
     /// Sub-pie hover timer: the hovered sub-pie button and the egui time it became so.
     hover_since: Option<(usize, f64)>,
-    /// Bumped by every `open`, so animation state kept by egui (button emphasis, fan
-    /// dimming) starts fresh for each opening and does not leak from the previous one.
-    anim_gen: u64,
+    /// The rings drawn since the menu opened. Animation state kept by egui (button
+    /// emphasis) is reset the first time a ring is drawn in an opening, so it does not
+    /// leak from the previous one.
+    drawn_rings: Vec<egui::Id>,
+    /// Set by `open()`: the fan dimming kept by egui is reset on the next draw.
+    dim_reset: bool,
+    /// The [`PieButton::id`] of the last selection (see [`PieMenu::selected_id`]).
+    selected_id: Option<egui::Id>,
     /// Where the menu's centre was actually drawn last frame (the position clamped to the
     /// screen). The centre click that goes back is tested against this, not `position`.
     display_center: Pos2,
@@ -283,7 +301,9 @@ impl PieMenu {
             button_centers: Vec::new(),
             level_centers: Vec::new(),
             hover_since: None,
-            anim_gen: 0,
+            drawn_rings: Vec::new(),
+            dim_reset: true,
+            selected_id: None,
             display_center: Pos2::ZERO,
             fan: None,
             last_fan: None,
@@ -448,7 +468,9 @@ impl PieMenu {
         self.close_fan();
         self.last_fan = None;
         self.fan_suppressed = None;
-        self.anim_gen = self.anim_gen.wrapping_add(1);
+        self.drawn_rings.clear();
+        self.dim_reset = true;
+        self.selected_id = None;
         self.display_center = pos;
         self.level_fresh = true;
         self.inert_hover = None;
@@ -475,6 +497,31 @@ impl PieMenu {
         self.open(center);
         self.pinned = true;
         self.reveal();
+    }
+
+    /// Opens the menu centred at `pos` as a click-driven one: visible at once, and it
+    /// stays open with no key held, until a button is clicked or picked by key, or it is
+    /// dismissed (a click on the centre or outside the pointer area, a dismiss input, or
+    /// [`PieMenu::close`]). Pass `key_down: false` to [`PieMenu::show`].
+    ///
+    /// The usual reaction to [`PieMenuResponse::QuickTap`] when a tap should leave the
+    /// menu open (Blender-style); unlike [`PieMenu::pin`] it closes after a selection and
+    /// blocks the widgets behind it.
+    pub fn open_sticky(&mut self, pos: Pos2) {
+        self.open(pos);
+        self.reveal();
+        // There is no key to release, and this opening is not the start of a double tap.
+        self.release_handled = true;
+        self.fresh_open = false;
+    }
+
+    /// Whether ring `id` is drawn for the first time since the menu opened.
+    fn first_draw(&mut self, id: egui::Id) -> bool {
+        let first = !self.drawn_rings.contains(&id);
+        if first {
+            self.drawn_rings.push(id);
+        }
+        first
     }
 
     /// Closes the menu without a response. Does nothing if it is not open.
@@ -608,11 +655,15 @@ impl PieMenu {
         key_down: bool,
         render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
-        let before = (self.path.clone(), self.fan);
+        if !self.is_open {
+            return PieMenuResponse::None;
+        }
+        // A level change always changes the depth (one level per frame, or back to the root).
+        let before = (self.path.len(), self.fan);
         let response = self.show_inner(ctx, buttons, pointer, key_down, render_button);
         // A new level or fan is drawn on the next frame; make sure there is one even if
         // nothing else (input, animation) would ask for it, e.g. after a hover timer.
-        if self.path != before.0 || self.fan != before.1 {
+        if self.path.len() != before.0 || self.fan != before.1 {
             ctx.request_repaint();
         }
         response
@@ -626,9 +677,6 @@ impl PieMenu {
         key_down: bool,
         mut render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
-        if !self.is_open {
-            return PieMenuResponse::None;
-        }
         let current_mouse_pos = pointer.filter(|p| self.pointer_area.is_none_or(|area| area.contains(*p)));
         // A pinned menu has no key to release.
         let key_down = key_down || self.pinned;
@@ -683,12 +731,14 @@ impl PieMenu {
                     self.descend(idx, current_mouse_pos, key_down);
                     PieMenuResponse::None
                 } else {
+                    self.selected_id = button.and_then(|b| b.id);
                     self.selected_path = self.path.clone();
                     self.selected_path.push(idx);
                     PieMenuResponse::Selected(idx)
                 }
             }
             LevelEvent::ClusterPick(button, item) => {
+                self.selected_id = level.get(button).and_then(|b| b.id);
                 self.selected_path = self.path.clone();
                 self.selected_path.extend([button, item]);
                 PieMenuResponse::Selected(item)
@@ -702,11 +752,12 @@ impl PieMenu {
                 PieMenuResponse::None
             }
             LevelEvent::FanPick(trigger, child) => {
-                let is_back = level.get(trigger).and_then(|b| b.children().get(child)).is_some_and(|b| b.is_back());
-                if is_back {
+                let picked = level.get(trigger).and_then(|b| b.children().get(child));
+                if picked.is_some_and(|b| b.is_back()) {
                     self.dismiss_fan();
                     PieMenuResponse::None
                 } else {
+                    self.selected_id = picked.and_then(|b| b.id);
                     self.selected_path = self.path.clone();
                     self.selected_path.extend([trigger, child]);
                     PieMenuResponse::Selected(child)
@@ -748,6 +799,14 @@ impl PieMenu {
     /// button's index within its level: `[.., cluster_button_index, n]`.
     pub fn selected_path(&self) -> &[usize] {
         &self.selected_path
+    }
+
+    /// After [`PieMenuResponse::Selected`]: the [`PieButton::id`] of the chosen button
+    /// ([`PieButton::with_id`]), `None` if it has none. For an item of a cluster it is the
+    /// cluster button's id; the item is the number in the response. Unlike the index and
+    /// [`PieMenu::selected_path`] it does not change when buttons are reordered.
+    pub fn selected_id(&self) -> Option<egui::Id> {
+        self.selected_id
     }
 
     fn resolve_level<'a>(root: &'a [PieButton], path: &[usize]) -> Option<&'a [PieButton]> {
@@ -808,7 +867,7 @@ impl PieMenu {
         self.level_radius = Some(radius);
         self.breakout = Some(parent);
         // The parent's dimming must not ease back up under the new centre.
-        ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), false, 0.0);
+        ctx.animate_bool_with_time(self.id.with("fan_dim"), false, 0.0);
     }
 
     /// Forgets a break-out in progress (the level shown is an ordinary one again).
@@ -878,16 +937,15 @@ impl PieMenu {
         self.release_handled = !key_down;
     }
 
-    /// Shifts `center` so the ring of `buttons` (sizes from `sizes`) at `radius` stays
-    /// within the screen with the configured margin.
-    fn clamp_center(&self, center: Pos2, buttons: &[PieButton], sizes: &[Vec2], radius: f32, screen: Rect) -> Pos2 {
+    /// Shifts `center` so the ring of `buttons` (sizes from `sizes`, layout vectors from
+    /// `dirs`) at `radius` stays within the screen with the configured margin.
+    fn clamp_center(&self, center: Pos2, buttons: &[PieButton], sizes: &[Vec2], dirs: &[Vec2], radius: f32, screen: Rect) -> Pos2 {
         let mirror = self.settings.mirror_horizontal;
         let margin = self.settings.layout.screen_margin;
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
-        for (button, &size) in buttons.iter().zip(sizes) {
-            let dir = Self::eff(&button.direction, mirror);
-            let offset = self.button_offset(&dir, size, radius, self.settings.layout.shape_factor);
+        for ((button, &size), &layout) in buttons.iter().zip(sizes).zip(dirs) {
+            let offset = Self::offset_on(&Self::eff(&button.direction, mirror), layout, size, radius);
             bb_min = bb_min.min(offset - size / 2.0);
             bb_max = bb_max.max(offset + size / 2.0);
         }
@@ -925,7 +983,8 @@ impl PieMenu {
     ///
     /// Returns the button's index and, for a mnemonic of a cluster's item, its number.
     /// `items`: whether cluster items take part (not in a fan-out).
-    fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton], items: bool) -> Option<(usize, Option<usize>)> {
+    /// `keys`: the mnemonics in effect for `buttons`.
+    fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton], items: bool, keys: &RingKeys) -> Option<(usize, Option<usize>)> {
         let mirror = self.settings.mirror_horizontal;
         if self.settings.input.use_number_keys {
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
@@ -955,7 +1014,7 @@ impl PieMenu {
         }
 
         if self.settings.input.use_mnemonic_keys {
-            let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics, self.trigger_char());
+            let (mnemonics, item_mnemonics) = keys;
             // Every key that can be pressed, in button order, items after their cluster's turn.
             let mut owners: Vec<(char, usize, Option<usize>)> = Vec::new();
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
@@ -1019,10 +1078,10 @@ impl PieMenu {
         let items = std::cell::RefCell::new(Vec::new());
         let mirror = self.settings.mirror_horizontal;
         let shape_factor = self.settings.layout.shape_factor;
-        // Resolved once per frame for the view handed to the render closure.
-        let (mnemonics, item_mnemonics) = resolve_all(level.buttons, self.settings.input.auto_mnemonics, self.trigger_char());
-        let visuals = ctx.global_style().visuals.clone();
-        let body_font = ctx.global_style().text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
+        let (mnemonics, item_mnemonics) = level.keys;
+        let style = ctx.global_style();
+        let visuals = &style.visuals;
+        let body_font = style.text_styles.get(&egui::TextStyle::Body).cloned().unwrap_or_default();
 
         // Reveal animation: movement and opacity progress, each 0..1.
         let anim = &self.settings.animations;
@@ -1049,7 +1108,7 @@ impl PieMenu {
             // the same Y and SE/SW at the same Y even when button widths differ.
             let eff_dir = Self::eff(&button.direction, mirror);
             let cached_size = sizes[idx];
-            let final_center = level.center + self.button_offset(&eff_dir, cached_size, level.radius, shape_factor);
+            let final_center = level.center + Self::offset_on(&eff_dir, level.dirs[idx], cached_size, level.radius);
             if let Some(centers) = centers.as_deref_mut() {
                 if centers.len() <= idx {
                     centers.resize(idx + 1, final_center);
@@ -1081,9 +1140,9 @@ impl PieMenu {
             // Hover emphasis, part 1: the eased amount, which scales the button's content
             // through the font size (see `ButtonView::scale`).
             let emphasis = ctx.animate_bool_with_time(
-                level.id.with((self.anim_gen, level.path_prefix, idx, "hover")),
+                level.id.with((idx, "hover")),
                 is_hovered && !level.emphasis.is_none(),
-                anim.hover_duration.as_secs_f32(),
+                if level.snap_emphasis { 0.0 } else { anim.hover_duration.as_secs_f32() },
             );
             let scale = 1.0 + (level.emphasis.scale.max(0.0) - 1.0) * emphasis;
 
@@ -1121,10 +1180,10 @@ impl PieMenu {
                         enabled: button.enabled,
                         button,
                         mnemonic: mnemonics[idx],
-                        number_hint: self.number_hint_styled(button, is_hovered, &visuals),
+                        number_hint: self.number_hint_styled(button, is_hovered, visuals),
                         rtl: mirror,
-                        text_color: button_text_color(self.settings.text_color, &visuals, is_hovered, button.enabled),
-                        body_font: body_font.clone(),
+                        text_color: button_text_color(self.settings.text_color, visuals, is_hovered, button.enabled),
+                        body_font: &body_font,
                         opens_fan: self.opens_fan(button),
                         scale,
                         items: &items,
@@ -1178,13 +1237,18 @@ impl PieMenu {
 
         // Update visible: latch on once the show condition is met.
         // (shown_at is stamped below, once visible has latched)
-        // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`).
-        if !self.visible && !self.double_tap_pending {
+        // A double-tap-and-hold must not reveal the menu (see `double_tap_pending`), but
+        // moving past the threshold is a drag, not a second tap: it opens the menu as usual.
+        if !self.visible {
             match self.settings.show_behavior {
-                ShowBehavior::Instant => self.visible = true,
+                ShowBehavior::Instant => self.visible = !self.double_tap_pending,
                 ShowBehavior::OnMovement { threshold } => {
                     if current_mouse_pos.is_some_and(|p| (p - center).length() > threshold) {
                         self.visible = true;
+                        // The tap before it no longer starts a double tap either.
+                        if std::mem::take(&mut self.double_tap_pending) {
+                            self.last_quick_tap = None;
+                        }
                     }
                 }
             }
@@ -1238,14 +1302,16 @@ impl PieMenu {
             return LevelEvent::Dismissed;
         }
 
-        let shape_factor = self.settings.layout.shape_factor;
         let mirror = self.settings.mirror_horizontal;
         let radius = self.level_radius();
         let dead_zone = self.settings.layout.dead_zone_radius;
 
         // Shift the whole menu so every button stays within the screen rect with a margin.
         let screen_rect = ctx.content_rect();
-        let center = self.clamp_center(center, buttons, &self.ring_sizes[&ring], radius, screen_rect);
+        // Each button's displayed layout vector, worked out once for the frame: for the
+        // clamping, hover picking, the centre highlight and drawing.
+        let dirs = self.layout_dirs(buttons, &self.ring_sizes[&ring], radius);
+        let center = self.clamp_center(center, buttons, &self.ring_sizes[&ring], &dirs, radius, screen_rect);
         self.display_center = center;
 
         // Block hover/interaction on background widgets while the menu is open.
@@ -1275,7 +1341,6 @@ impl PieMenu {
 
         // The button the pointer points at in this level, by angle against each button's
         // displayed layout vector. Nothing inside the dead zone.
-        let dirs = self.layout_dirs(buttons, &self.ring_sizes[&ring], radius);
         let level_pick = current_mouse_pos.and_then(|p| {
             let mouse_vec = p - center;
             (mouse_vec.length() > dead_zone).then(|| Self::pick_button(buttons, mouse_vec, &dirs)).flatten()
@@ -1306,14 +1371,16 @@ impl PieMenu {
             fan_ring = self.fan_ring_id(&self.path, trigger);
             self.ensure_ring_sizes(fan_ring, children.len());
             let size = self.ring_sizes[&ring][trigger];
-            let button_center = center + self.button_offset(&Self::eff(&button.direction, mirror), size, radius, shape_factor);
+            let button_center = center + Self::offset_on(&Self::eff(&button.direction, mirror), dirs[trigger], size, radius);
             let fan_radius = self.settings.sub_pies.fan_out.radius.unwrap_or(radius);
             self.fan_display_radius = fan_radius;
-            let fan_center = self.clamp_center(button_center, children, &self.ring_sizes[&fan_ring], fan_radius, screen_rect);
+            let fan_dirs = self.layout_dirs(children, &self.ring_sizes[&fan_ring], fan_radius);
+            let fan_center = self.clamp_center(button_center, children, &self.ring_sizes[&fan_ring], &fan_dirs, fan_radius, screen_rect);
             self.fan_display_center = fan_center;
             Fan {
                 trigger,
                 children,
+                dirs: fan_dirs,
                 center: fan_center,
                 radius: fan_radius,
                 trigger_rect: Rect::from_center_size(button_center, size),
@@ -1323,8 +1390,10 @@ impl PieMenu {
         // The parent's centre (circle, highlight, title) and its other buttons are greyed out
         // while a fan is open, easing in and out with it.
         // After a break-out it stays at rest: the main ring and old centre fade out instead.
-        let dim_time = if self.breakout.is_some() { 0.0 } else { 0.12 };
-        let dim = ctx.animate_bool_with_time(self.id.with(("fan_dim", self.anim_gen)), fan.is_some(), dim_time);
+        // Nor does it ease in from the previous opening's state.
+        let dim_reset = std::mem::take(&mut self.dim_reset);
+        let dim_time = if self.breakout.is_some() || dim_reset { 0.0 } else { 0.12 };
+        let dim = ctx.animate_bool_with_time(self.id.with("fan_dim"), fan.is_some(), dim_time);
         let dim_opacity = 1.0 + (DIMMED_OPACITY - 1.0) * dim;
 
         // A break-out's fades: the old centre and main ring out, the new centre in. One
@@ -1365,16 +1434,19 @@ impl PieMenu {
         // Keys: an open fan has the keyboard to itself. Decided now, acted on once this
         // frame's buttons are drawn: the level then changes without a frame that shows no
         // buttons (and `button_centers` is this level's when a sub-pie is centred on one).
+        let auto = self.settings.input.auto_mnemonics;
+        let keys = resolve_all(buttons, auto, self.trigger_char());
+        let fan_keys = fan.as_ref().map(|fan| resolve_all(fan.children, auto, self.trigger_char()));
         let mut key_event = None;
         if keys_for_menu {
-            match &fan {
-                Some(fan) => {
-                    if let Some((child, _)) = self.key_pick(ctx, fan.children, false) {
+            match (&fan, &fan_keys) {
+                (Some(fan), Some(fan_keys)) => {
+                    if let Some((child, _)) = self.key_pick(ctx, fan.children, false, fan_keys) {
                         key_event = Some(LevelEvent::FanPick(fan.trigger, child));
                     }
                 }
-                None => {
-                    match self.key_pick(ctx, buttons, true) {
+                _ => {
+                    match self.key_pick(ctx, buttons, true, &keys) {
                         Some((idx, Some(item))) => key_event = Some(LevelEvent::ClusterPick(idx, item)),
                         Some((idx, None)) => key_event = Some(LevelEvent::Pick(idx)),
                         None => {}
@@ -1392,7 +1464,7 @@ impl PieMenu {
                 // parent (the blocked sector: three of the eight 45° slices).
                 self.hovered_index = Some(fan.trigger);
                 self.hover_since = None;
-                let fan_dirs = self.layout_dirs(fan.children, &self.ring_sizes[&fan_ring], fan.radius);
+                let fan_dirs = &fan.dirs;
                 self.fan_hover = current_mouse_pos.and_then(|p| {
                     let v = p - fan.center;
                     let angle = v.y.atan2(v.x);
@@ -1410,7 +1482,7 @@ impl PieMenu {
                     if fan.trigger_rect.contains(p) || v.length() <= dead_zone || blocked {
                         return None;
                     }
-                    Self::pick_button(fan.children, v, &fan_dirs)
+                    Self::pick_button(fan.children, v, fan_dirs)
                 });
             }
             None => {
@@ -1564,11 +1636,14 @@ impl PieMenu {
         let path = self.path.clone();
         let mut sizes = self.ring_sizes.remove(&ring).unwrap_or_default();
         let mut centers = std::mem::take(&mut self.button_centers);
+        let snap_emphasis = self.first_draw(ring);
         let cluster_items = self.draw_level(
             ctx,
             now,
             &LevelDraw {
                 buttons,
+                dirs: &dirs,
+                keys: &keys,
                 center,
                 radius,
                 shown_at: self.shown_at,
@@ -1586,6 +1661,7 @@ impl PieMenu {
                 id: ring,
                 path_prefix: &path,
                 opacity_scale: 1.0,
+                snap_emphasis,
             },
             &mut sizes,
             Some(&mut centers),
@@ -1602,8 +1678,12 @@ impl PieMenu {
                 let parent_ring = self.level_ring_id(up);
                 self.ensure_ring_sizes(parent_ring, parent.len());
                 let mut parent_sizes = self.ring_sizes.remove(&parent_ring).unwrap_or_default();
+                let parent_dirs = self.layout_dirs(parent, &parent_sizes, b.parent_radius);
+                let parent_keys = resolve_all(parent, auto, self.trigger_char());
                 let draw = LevelDraw {
                     buttons: parent,
+                    dirs: &parent_dirs,
+                    keys: &parent_keys,
                     center: b.parent_center,
                     radius: b.parent_radius,
                     shown_at: None,
@@ -1618,6 +1698,7 @@ impl PieMenu {
                     id: parent_ring,
                     path_prefix: up,
                     opacity_scale: 1.0 - fade,
+                    snap_emphasis: self.first_draw(parent_ring),
                 };
                 self.draw_level(ctx, now, &draw, &mut parent_sizes, None, render_button);
                 self.ring_sizes.insert(parent_ring, parent_sizes);
@@ -1625,8 +1706,9 @@ impl PieMenu {
             self.breakout = Some(b);
         }
 
-        if let Some(fan) = &fan {
+        if let (Some(fan), Some(fan_keys)) = (&fan, &fan_keys) {
             let shown_at = *self.fan_shown_at.get_or_insert(now);
+            let snap_emphasis = self.first_draw(fan_ring);
             let mut fan_path = path.clone();
             fan_path.push(fan.trigger);
             let mut sizes = self.ring_sizes.remove(&fan_ring).unwrap_or_default();
@@ -1637,6 +1719,8 @@ impl PieMenu {
                 now,
                 &LevelDraw {
                     buttons: fan.children,
+                    dirs: &fan.dirs,
+                    keys: fan_keys,
                     center: fan.center,
                     radius: fan.radius,
                     shown_at: Some(shown_at),
@@ -1647,6 +1731,7 @@ impl PieMenu {
                     id: fan_ring,
                     path_prefix: &fan_path,
                     opacity_scale: 1.0,
+                    snap_emphasis,
                 },
                 &mut sizes,
                 fan_centers.as_mut(),

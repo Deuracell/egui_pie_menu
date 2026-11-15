@@ -22,6 +22,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Tests
         run: cargo test
+      - name: Serde feature
+        run: cargo clippy --all-targets --features serde -- -D warnings
       - name: Docs
         run: cargo doc --no-deps
         env:

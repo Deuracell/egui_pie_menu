@@ -114,8 +114,9 @@ fn resolve_slots(buttons: &[Slot], auto: bool, reserved: Option<char>) -> Vec<Op
             if button.mnemonic == Mnemonic::Auto && button.enabled {
                 let label = button.label;
                 let letters = |c: &char| is_mnemonic_letter(*c);
+                // A combining mark belongs to its letter: it does not end the word.
                 let initials = label
-                    .split(|c: char| !c.is_alphanumeric())
+                    .split(|c: char| !is_word_char(c))
                     .filter_map(|w| w.chars().next())
                     .filter(letters);
                 for c in initials.chain(label.chars().filter(letters)) {
@@ -205,12 +206,12 @@ pub(crate) fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: ch
     for (i, ch) in text.char_indices() {
         if fold_char(ch) == mnemonic_folded {
             first.get_or_insert((i, ch));
-            if !prev_alnum && ch.is_alphanumeric() {
+            if !prev_alnum && is_word_char(ch) {
                 initial = Some((i, ch));
                 break;
             }
         }
-        prev_alnum = ch.is_alphanumeric();
+        prev_alnum = is_word_char(ch);
     }
     let Some((idx, c)) = initial.or(first) else {
         job.append(text, 0.0, format);
@@ -300,6 +301,11 @@ pub(crate) fn is_combining_mark(c: char) -> bool {
         0x0300..=0x036F | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
         | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06DC | 0x06DF..=0x06E4
         | 0x06E7..=0x06E8 | 0x06EA..=0x06ED)
+}
+
+/// Characters that make up a word, for finding word initials.
+pub(crate) fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || is_combining_mark(c)
 }
 
 pub(crate) fn is_mnemonic_letter(c: char) -> bool {
@@ -452,6 +458,15 @@ mod tests {
             // Not any word's initial: first occurrence anywhere.
             let job = mnemonic_text("Select All", 'e', TextFormat::default());
             assert_eq!(at(&job), (1, "e".to_string()));
+        }
+
+        #[test]
+        fn a_combining_mark_does_not_start_a_new_word() {
+            // "café s" decomposed: the s after e + acute is not a word initial.
+            assert_eq!(one("cafe\u{0301}s", &['c']), Some('a'));
+            let job = mnemonic_text("as cafe\u{0301}s", 's', TextFormat::default());
+            let s = job.sections.iter().find(|s| s.format.underline != Stroke::NONE).unwrap();
+            assert_eq!(usize::from(s.byte_range.start), 1, "the s of 'as', not the one after the accent");
         }
 
         #[test]

@@ -31,25 +31,13 @@ impl PieMenu {
             PieDirection::NorthWest => 0.625,
         };
         let angle = TAU * fraction;
-        let circle = Vec2::new(angle.cos(), angle.sin());
-
         match dir {
             PieDirection::NorthEast
             | PieDirection::SouthEast
             | PieDirection::SouthWest
-            | PieDirection::NorthWest => {
-                if shape_factor > 0.0 {
-                    let l_inf = circle / circle.x.abs().max(circle.y.abs());
-                    circle * (1.0 - shape_factor) + l_inf * shape_factor
-                } else if shape_factor < 0.0 {
-                    let l1 = circle / (circle.x.abs() + circle.y.abs());
-                    let t = -shape_factor;
-                    circle * (1.0 - t) + l1 * t
-                } else {
-                    circle
-                }
-            }
-            _ => circle,
+            | PieDirection::NorthWest => Self::curve_vec(angle, shape_factor),
+            // Cardinals are the same on every shape.
+            _ => Vec2::new(angle.cos(), angle.sin()),
         }
     }
 
@@ -104,12 +92,24 @@ impl PieMenu {
     /// factor `sf`: its inner face/corner on the layout shape ([`Self::layout_vec`]), then
     /// pushed outward by half its size on each axis it points along.
     pub(crate) fn button_offset(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
-        let dn = Self::direction_vec(dir, sf).normalized();
-        // 0.5 threshold: diagonal components are ~0.707, cardinal near-zero components are
-        // floating-point noise (~1e-17) and must not contribute.
-        let side = |c: f32| if c > 0.5 { 1.0 } else if c < -0.5 { -1.0 } else { 0.0 };
-        let (sx, sy) = (side(dn.x), side(dn.y));
-        self.layout_vec(dir, size, radius, sf) * radius + Vec2::new(size.x / 2.0 * sx, size.y / 2.0 * sy)
+        Self::offset_on(dir, self.layout_vec(dir, size, radius, sf), size, radius)
+    }
+
+    /// [`Self::button_offset`] for a layout vector already computed ([`Self::layout_vec`]),
+    /// so a ring's vectors are worked out once per frame.
+    pub(crate) fn offset_on(dir: &PieDirection, layout: Vec2, size: Vec2, radius: f32) -> Vec2 {
+        // The axes the direction points along: -1, 0 or 1 each.
+        let (sx, sy) = match dir {
+            PieDirection::North => (0.0, -1.0),
+            PieDirection::NorthEast => (1.0, -1.0),
+            PieDirection::East => (1.0, 0.0),
+            PieDirection::SouthEast => (1.0, 1.0),
+            PieDirection::South => (0.0, 1.0),
+            PieDirection::SouthWest => (-1.0, 1.0),
+            PieDirection::West => (-1.0, 0.0),
+            PieDirection::NorthWest => (-1.0, -1.0),
+        };
+        layout * radius + Vec2::new(size.x / 2.0 * sx, size.y / 2.0 * sy)
     }
 
     pub(crate) fn direction_digit(dir: &PieDirection) -> char {

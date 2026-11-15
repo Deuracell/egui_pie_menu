@@ -11,7 +11,7 @@ use egui::{Color32, FontId, Rect};
 use std::cell::RefCell;
 
 /// What a button does when it is selected.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum PieButtonKind {
     /// An ordinary button: selecting it produces [`PieMenuResponse::Selected`].
     #[default]
@@ -35,7 +35,7 @@ pub enum PieButtonKind {
 /// An item a cluster declares ([`PieButton::with_items`]): its number (what
 /// [`PieMenuResponse::Selected`] returns), its label and its mnemonic. Where it is drawn is
 /// up to your render closure, which registers the widget with [`ButtonView::item`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ClusterItem {
     /// The number the item is selected as; keep it unique within one cluster.
     pub number: usize,
@@ -91,7 +91,7 @@ pub(crate) struct ItemHit {
 /// Defines *where* the button sits (`direction`), its keyboard mnemonic and the
 /// label text used to generate one. All visual content is rendered by the caller
 /// via the closure passed to [`PieMenu::show`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PieButton {
     /// Which of the eight directions this button occupies.
     pub direction: PieDirection,
@@ -109,6 +109,10 @@ pub struct PieButton {
     /// mnemonic) and gets no generated mnemonic. It is still drawn by your closure;
     /// check [`ButtonView::enabled`] to grey it out.
     pub enabled: bool,
+    /// An identity of your own ([`PieButton::with_id`]) that [`PieMenu::selected_id`]
+    /// returns when the button is selected, so a selection can be told apart without
+    /// relying on the button's position. `None` (default): none.
+    pub id: Option<egui::Id>,
 }
 
 impl PieButton {
@@ -120,6 +124,7 @@ impl PieButton {
             label: String::new(),
             kind: PieButtonKind::Action,
             enabled: true,
+            id: None,
         }
     }
 
@@ -176,6 +181,14 @@ impl PieButton {
     /// Enables or disables this button. See [`PieButton::enabled`].
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Gives the button an identity of your own (anything hashable: a string, an enum, a
+    /// number), reported by [`PieMenu::selected_id`] when it is selected:
+    /// `menu.selected_id() == Some(egui::Id::new("copy"))`. See [`PieButton::id`].
+    pub fn with_id(mut self, id: impl std::hash::Hash + std::fmt::Debug) -> Self {
+        self.id = Some(egui::Id::new(id));
         self
     }
 
@@ -464,7 +477,7 @@ pub struct ButtonView<'a> {
     /// puts its prefix (icon) on the right.
     pub rtl: bool,
     pub(crate) text_color: Color32,
-    pub(crate) body_font: FontId,
+    pub(crate) body_font: &'a FontId,
     pub(crate) opens_fan: bool,
     pub(crate) scale: f32,
     /// Where [`Self::item`] records the cluster's items for this ring.
