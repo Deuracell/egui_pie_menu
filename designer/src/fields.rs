@@ -83,10 +83,14 @@ fn reset<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, default: &T) -> bool 
     if space > 0.0 {
         ui.add_space(space);
     }
+    // Exactly `RESET_W` wide, whatever the button would size itself to: a row that is wider
+    // than it was given makes a resizable panel grow, frame after frame.
+    let height = ui.spacing().interact_size.y;
     let clicked = ui
-        .add_enabled(*value != *default, egui::Button::new("\u{21ba}").small())
-        .on_hover_text("Reset to default")
-        .clicked();
+        .add_enabled_ui(*value != *default, |ui| {
+            ui.add_sized([RESET_W, height], egui::Button::new("\u{21ba}").small()).on_hover_text("Reset to default").clicked()
+        })
+        .inner;
     if clicked {
         *value = default.clone();
     }
@@ -227,7 +231,16 @@ fn opt_row<T: Copy + PartialEq + Send + Sync + 'static>(
     let mut changed = setting_row_with(
         ui,
         |ui| {
-            toggled = ui.add(egui::Checkbox::new(&mut on, field_label(field))).on_hover_text(field.path()).changed();
+            // The box, then the name truncated to the column (a checkbox's own text would not
+            // truncate and would make the row wider than it was given).
+            let boxed = ui.add(egui::Checkbox::without_text(&mut on)).on_hover_text(field.path());
+            let name = ui
+                .add(egui::Label::new(field_label(field)).truncate().sense(egui::Sense::click()))
+                .on_hover_text(field.path());
+            if name.clicked() {
+                on = !on;
+            }
+            toggled = boxed.changed() || name.clicked();
             toggled
         },
         |ui| {

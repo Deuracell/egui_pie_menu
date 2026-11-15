@@ -9,7 +9,7 @@
 
 ## In the browser
 
-Pie Designer also runs as a web page, built by the repository's `Pages` workflow (`.github/workflows/pages.yml`) on every push to `main` and published with GitHub Pages. To build it yourself:
+Pie Designer also runs as a web page, built by the repository's `Pages` workflow (`.github/workflows/pages.yml`) on every push to the `0.36.2` branch (the workflow says where to change that) and published with GitHub Pages. The repository's Pages source must be "GitHub Actions", and the `github-pages` environment must allow deployments from that branch. To build it yourself:
 
 ```sh
 cargo install trunk            # once
