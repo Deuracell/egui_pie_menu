@@ -278,6 +278,17 @@ mod tests {
         }
 
         #[test]
+        fn tooth_is_a_highlight_shape_that_combines_with_the_others() {
+            use crate::HighlightShape;
+            assert!(!HighlightShape::TOOTH.is_none());
+            assert!(HighlightShape::TOOTH.tooth && !HighlightShape::TOOTH.slice);
+            let both = HighlightShape { tooth: true, ..HighlightShape::SLICE };
+            assert!(both.tooth && both.slice);
+            assert!(!HighlightShape::default().tooth);
+            assert!(HighlightShape::NONE.is_none());
+        }
+
+        #[test]
         fn no_tooth_without_progress_or_with_bad_input() {
             let s = PieMenuToothSettings::default();
             assert!(outline(0.3, 0.0, &s).is_none());

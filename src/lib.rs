@@ -1486,7 +1486,7 @@ impl PieMenu {
         // Center highlight — progress driven by mouse distance from center.
         let indicator = &self.settings.center_indicator;
         if let Some(highlight_radius) = indicator.highlight_radius
-            && (!indicator.highlight_shape.is_none() || indicator.tooth.is_some())
+            && !indicator.highlight_shape.is_none()
         {
             let progress = current_mouse_pos
                 .filter(|_| self.hovered_index.is_some())
@@ -1530,7 +1530,8 @@ impl PieMenu {
             // The tooth: grows out of the background circle's rim (or the highlight circle
             // when there is none), coloured like the rest of the highlight, and never
             // reaching past three quarters of the layout radius.
-            if let Some(tooth) = &indicator.tooth {
+            if indicator.highlight_shape.tooth {
+                let tooth = &indicator.tooth;
                 let base_radius = indicator
                     .background_radius
                     .map_or(highlight_radius, |r| r + indicator.background_stroke.width / 2.0);

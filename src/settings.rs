@@ -88,6 +88,7 @@ impl PieDirection {
 /// ```
 /// use egui_pie_menu::HighlightShape;
 /// let shape = HighlightShape { arc: true, ..HighlightShape::SLICE }; // arc + wedge
+/// let shape = HighlightShape { tooth: true, ..HighlightShape::NONE }; // just the tooth
 /// assert!(!shape.is_none());
 /// ```
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
@@ -99,17 +100,22 @@ pub struct HighlightShape {
     pub slice: bool,
     /// A dot offset from the center in the hovered direction.
     pub circle: bool,
+    /// A tooth growing out of the background circle toward the pointer. Its shape is set
+    /// by [`PieMenuCenterIndicatorSettings::tooth`].
+    pub tooth: bool,
 }
 
 impl HighlightShape {
     /// No highlight drawn.
-    pub const NONE: Self = Self { arc: false, slice: false, circle: false };
+    pub const NONE: Self = Self { arc: false, slice: false, circle: false, tooth: false };
     /// Only the arc.
     pub const ARC: Self = Self { arc: true, ..Self::NONE };
     /// Only the filled wedge (the default).
     pub const SLICE: Self = Self { slice: true, ..Self::NONE };
     /// Only the dot.
     pub const CIRCLE: Self = Self { circle: true, ..Self::NONE };
+    /// Only the tooth.
+    pub const TOOTH: Self = Self { tooth: true, ..Self::NONE };
 
     /// Whether nothing is drawn.
     pub fn is_none(self) -> bool {
@@ -143,11 +149,11 @@ pub struct PieMenuCenterIndicatorSettings {
     /// Snap the highlight to the hovered button's direction instead of following the mouse.
     pub highlight_snapping: bool,
 
-    /// A tooth that grows out of the background circle toward the pointer. `None` (the
-    /// default) draws none. It is filled with [`highlight_fill_color`](Self::highlight_fill_color)
-    /// and outlined with [`highlight_stroke`](Self::highlight_stroke), and follows the same
-    /// direction, snapping and progress as the highlight. See [`PieMenuToothSettings`].
-    pub tooth: Option<PieMenuToothSettings>,
+    /// The shape of the tooth, drawn when [`HighlightShape::tooth`] is set. It is filled with
+    /// [`highlight_fill_color`](Self::highlight_fill_color) and outlined with
+    /// [`highlight_stroke`](Self::highlight_stroke), and follows the same direction,
+    /// snapping and progress as the rest of the highlight. See [`PieMenuToothSettings`].
+    pub tooth: PieMenuToothSettings,
 }
 
 /// A tooth that grows out of the rim of the center indicator toward the pointer.
@@ -164,9 +170,10 @@ pub struct PieMenuCenterIndicatorSettings {
 /// the pointer travels. The default is the "thorn" look.
 ///
 /// ```
-/// use egui_pie_menu::{PieMenu, PieMenuToothSettings};
+/// use egui_pie_menu::{HighlightShape, PieMenu};
 /// let mut menu = PieMenu::new();
-/// menu.settings.center_indicator.tooth = Some(PieMenuToothSettings::default());
+/// menu.settings.center_indicator.highlight_shape = HighlightShape::TOOTH;
+/// menu.settings.center_indicator.tooth.length = 40.0;
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
@@ -233,7 +240,7 @@ impl Default for PieMenuCenterIndicatorSettings {
             highlight_angle: TAU / 8.0,
             highlight_circle_radius: 5.0,
             highlight_snapping: false,
-            tooth: None,
+            tooth: PieMenuToothSettings::default(),
         }
     }
 }

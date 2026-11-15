@@ -621,35 +621,37 @@ menu.settings.animations.hover_duration = Duration::from_millis(100);    // easi
 
 ### Highlight shapes
 
-`HighlightShape` controls what is drawn at the center indicator when a direction is active. It has three independent components:
+`HighlightShape` controls what is drawn at the center indicator when a direction is active. It has four independent components:
 
 | Field | Draws |
 |---|---|
 | `arc` | arc along the indicator radius |
 | `slice` | filled wedge |
 | `circle` | dot offset in the hovered direction |
+| `tooth` | a tooth growing out of the background circle (see [Tooth](#tooth)) |
 
 ```rust
 use egui_pie_menu::HighlightShape;
 
-menu.settings.center_indicator.highlight_shape = HighlightShape::SLICE; // default; also NONE, ARC, CIRCLE
-menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, circle: true, slice: false };
+menu.settings.center_indicator.highlight_shape = HighlightShape::SLICE; // default; also NONE, ARC, CIRCLE, TOOTH
+menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, circle: true, ..HighlightShape::NONE };
 ```
 
 ### Tooth
 
-An optional tooth grows out of the center circle toward the pointer: round at first, then longer, narrower and sharper the farther the pointer travels from the dead zone to the layout radius. Its base is the circle's own arc, so nothing is drawn inside the circle. It is off by default (`None`) and needs no `HighlightShape`; it takes its fill from `highlight_fill_color` and its outline from `highlight_stroke`, and follows `highlight_snapping`, the fade and the dimming like the rest of the highlight.
+A tooth grows out of the center circle toward the pointer: round at first, then longer, narrower and sharper the farther the pointer travels from the dead zone to the layout radius. Its base is the circle's own arc, so nothing is drawn inside the circle. Switch it on with `HighlightShape::tooth` (alone, or combined with `arc`, `slice` and `circle`) and shape it with `center_indicator.tooth`. It takes its fill from `highlight_fill_color` and its outline from `highlight_stroke`, and follows `highlight_snapping`, the fade and the dimming like the rest of the highlight.
 
 ```rust
-use egui_pie_menu::PieMenuToothSettings;
+use egui_pie_menu::{HighlightShape, PieMenuToothSettings};
 
-menu.settings.center_indicator.tooth = Some(PieMenuToothSettings::default()); // the "thorn" look
-menu.settings.center_indicator.tooth = Some(PieMenuToothSettings {
+menu.settings.center_indicator.highlight_shape = HighlightShape::TOOTH; // just the tooth, the default "thorn" look
+menu.settings.center_indicator.highlight_shape = HighlightShape { tooth: true, ..HighlightShape::SLICE }; // wedge + tooth
+menu.settings.center_indicator.tooth = PieMenuToothSettings {
     length: 40.0,
     end_sharpness: 1.0, // a straight-sided cone instead of a concave thorn
     outline_base: true, // also stroke where the tooth meets the circle
     ..Default::default()
-});
+};
 ```
 
 | Field | Meaning |
@@ -744,7 +746,7 @@ match self.menu.show(ctx, &buttons, key_down, |ui, b| {
 ### Types
 
 - `SmartFloat<f32>` (`background_radius`, `highlight_radius`; `NAN` = off) is now `Option<f32>` (`None` = off). `SmartFloat` and the `num-traits` dependency are gone.
-- `PieMenuHighlightShape` (eight variants) is now `HighlightShape { arc, slice, circle }` with the constants `NONE`, `ARC`, `SLICE` and `CIRCLE`; for example `ArcSlice` becomes `HighlightShape { arc: true, slice: true, circle: false }`.
+- `PieMenuHighlightShape` (eight variants) is now `HighlightShape { arc, slice, circle }` with the constants `NONE`, `ARC`, `SLICE` and `CIRCLE`; for example `ArcSlice` becomes `HighlightShape { arc: true, slice: true, circle: false }`. (v0.36.2 adds a fourth field, `tooth`, and the constant `TOOTH`: write struct literals with `..HighlightShape::NONE`.)
 - `Padding` is replaced by `egui::Margin`.
 - `PieDirection` is `Copy` now (drop the `.clone()` calls).
 
