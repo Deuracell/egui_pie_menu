@@ -192,9 +192,10 @@ const DEFAULT_SUB_HOVER_MS: u64 = 400;
 /// Where a sub-pie or back marker is drawn on its button.
 #[derive(Clone, Copy, PartialEq)]
 enum MarkerPlacement {
-    /// At the button's far end: the right edge, or the left when the layout is mirrored.
+    /// At the button's outer end, the side facing away from the pie centre. North and
+    /// South buttons use the right edge (the left when the layout is mirrored).
     FarEnd,
-    /// Before the label, ahead of the button's icon (the opposite end to `FarEnd`).
+    /// At the inner end, ahead of the button's icon (the opposite end to `FarEnd`).
     Start,
 }
 
@@ -214,11 +215,14 @@ struct MarkerIcons {
     sub_pie: String,
     back: String,
     placement: MarkerPlacement,
+    /// Rotate a known arrow glyph (▶ ▷ →) to point away from the centre; a back marker
+    /// points towards it.
+    point_outwards: bool,
 }
 
 impl Default for MarkerIcons {
     fn default() -> Self {
-        Self { sub_pie: "▶".into(), back: "◀".into(), placement: MarkerPlacement::FarEnd }
+        Self { sub_pie: "▶".into(), back: "◀".into(), placement: MarkerPlacement::FarEnd, point_outwards: true }
     }
 }
 
@@ -230,6 +234,44 @@ impl MarkerIcons {
             (_, true) => &self.back,
             _ => "",
         }
+    }
+
+    /// The marker to draw on `cfg`'s button, which sits in `dir` (rotated for the
+    /// displayed layout when `rtl`), plus whether it goes on the left edge.
+    fn placed(&self, cfg: &ButtonConfig, dir: PieDirection, rtl: bool) -> (String, bool) {
+        use PieDirection::*;
+        let marker = self.marker(cfg);
+        // Which way is outwards on screen? (dx, dy) with y pointing down.
+        let (mut dx, dy) = match dir {
+            North => (0, -1),
+            NorthEast => (1, -1),
+            East => (1, 0),
+            SouthEast => (1, 1),
+            South => (0, 1),
+            SouthWest => (-1, 1),
+            West => (-1, 0),
+            NorthWest => (-1, -1),
+        };
+        if rtl {
+            dx = -dx;
+        }
+        let outer_left = if dx != 0 { dx < 0 } else { rtl };
+        let on_left = outer_left == (self.placement == MarkerPlacement::FarEnd);
+        if !self.point_outwards || marker.is_empty() {
+            return (marker.to_string(), on_left);
+        }
+        const FAMILIES: [[&str; 4]; 3] = [
+            ["▶", "◀", "▲", "▼"],
+            ["▷", "◁", "△", "▽"],
+            ["→", "←", "↑", "↓"],
+        ];
+        let Some(fam) = FAMILIES.iter().find(|f| f.contains(&marker)) else {
+            return (marker.to_string(), on_left);
+        };
+        // A back marker points at the centre, the others away from it.
+        let (dx, dy) = if cfg.back { (-dx, -dy) } else { (dx, dy) };
+        let i = if dx > 0 { 0 } else if dx < 0 { 1 } else if dy < 0 { 2 } else { 3 };
+        (fam[i].to_string(), on_left)
     }
 }
 
@@ -689,6 +731,17 @@ fn section(
         .show(ui, add_contents);
 }
 
+/// A colour button that fills the row, so colour fields line up with the drag values and
+/// dropdowns of the settings panel.
+fn color_bar(ui: &mut egui::Ui, color: &mut Color32) -> egui::Response {
+    ui.scope(|ui| {
+        let w = ui.available_width();
+        ui.spacing_mut().interact_size.x = w;
+        ui.color_edit_button_srgba(color)
+    })
+    .inner
+}
+
 /// Small "⟲" button that resets a value; disabled while the value is already the default.
 fn reset_button(ui: &mut egui::Ui, is_default: bool) -> bool {
     ui.add_enabled(!is_default, egui::Button::new("⟲").small())
@@ -875,7 +928,7 @@ fn button_list_editor(
             .body(|ui| ui.add_enabled_ui(cfg.present, |ui| {
                 egui::Grid::new(("button_grid", i)).num_columns(2).show(ui, |ui| {
                     ui.label("Label");
-                    ui.add(egui::TextEdit::singleline(&mut cfg.label).desired_width(130.0));
+                    ui.add(egui::TextEdit::singleline(&mut cfg.label).desired_width(ui.available_width()));
                     ui.end_row();
 
                     ui.label("Icon");
@@ -935,7 +988,7 @@ fn button_list_editor(
                     ui.end_row();
 
                     ui.label("Tooltip");
-                    ui.add(egui::TextEdit::singleline(&mut cfg.tooltip).desired_width(130.0));
+                    ui.add(egui::TextEdit::singleline(&mut cfg.tooltip).desired_width(ui.available_width()));
                     ui.end_row();
 
                     ui.label("Enabled");
@@ -1175,7 +1228,7 @@ impl eframe::App for Demo {
                         .on_hover_text("Height of every pie button. Content taller than this (e.g. a large icon) still makes a button taller.");
                     px_drag(ui, &mut self.button_height, DEFAULT_BUTTON_HEIGHT, 20.0..=60.0);
 
-                    ui.horizontal(|ui| {
+                    {
                         let mut forced = self.menu.settings.text_color.is_some();
                         if ui.checkbox(&mut forced, "Force contrast text")
                             .on_hover_text("On: this colour whether hovered or not (Blender-style, white by default). Off: egui's widget colours (dimmer normally, brighter on hover). Disabled buttons are greyed out either way.")
@@ -1184,11 +1237,11 @@ impl eframe::App for Demo {
                             self.menu.settings.text_color = forced.then_some(self.label_color);
                         }
                         ui.add_enabled_ui(forced, |ui| {
-                            if ui.color_edit_button_srgba(&mut self.label_color).changed() {
+                            if color_bar(ui, &mut self.label_color).changed() {
                                 self.menu.settings.text_color = Some(self.label_color);
                             }
                         });
-                    });
+                    }
                 });
 
                 section(ui, &query, &mut shown, "Number hints",
@@ -1197,7 +1250,7 @@ impl eframe::App for Demo {
                     ui.add_enabled_ui(self.show_hints, |ui| {
                         ui.label("Side");
                         let current = self.menu.settings.number_hints.side;
-                        egui::ComboBox::from_id_salt("hint_side")
+                        egui::ComboBox::from_id_salt("hint_side").width(ui.available_width())
                             .selected_text(hint_side_label(current))
                             .show_ui(ui, |ui| {
                                 for &s in ALL_HINT_SIDES {
@@ -1217,7 +1270,7 @@ impl eframe::App for Demo {
                             self.menu.settings.number_hints.color = custom.then_some(self.hint_color);
                         }
                         ui.add_enabled_ui(custom, |ui| {
-                            if ui.color_edit_button_srgba(&mut self.hint_color).changed() {
+                            if color_bar(ui, &mut self.hint_color).changed() {
                                 self.menu.settings.number_hints.color = Some(self.hint_color);
                             }
                         });
@@ -1258,7 +1311,7 @@ impl eframe::App for Demo {
                         SubPieStyle::Replace => "Replace the parent",
                         SubPieStyle::FanOut => "Fan out beside the parent",
                     };
-                    egui::ComboBox::from_id_salt("sub_pie_style_menu")
+                    egui::ComboBox::from_id_salt("sub_pie_style_menu").width(ui.available_width())
                         .selected_text(style_label(self.menu.settings.sub_pies.style))
                         .show_ui(ui, |ui| {
                             for s in [SubPieStyle::Replace, SubPieStyle::FanOut] {
@@ -1269,16 +1322,18 @@ impl eframe::App for Demo {
                     ui.label("Marker position")
                         .on_hover_text("Where the sub-pie and back markers sit on their buttons. Separate from the button's icon, which never replaces them.");
                     let place_label = |p: MarkerPlacement| match p {
-                        MarkerPlacement::FarEnd => "Far end of the button",
-                        MarkerPlacement::Start => "Start, before the icon",
+                        MarkerPlacement::FarEnd => "Outer end (away from the centre)",
+                        MarkerPlacement::Start => "Inner end, before the icon",
                     };
-                    egui::ComboBox::from_id_salt("marker_placement")
+                    egui::ComboBox::from_id_salt("marker_placement").width(ui.available_width())
                         .selected_text(place_label(self.icons.placement))
                         .show_ui(ui, |ui| {
                             for p in [MarkerPlacement::FarEnd, MarkerPlacement::Start] {
                                 ui.selectable_value(&mut self.icons.placement, p, place_label(p));
                             }
                         });
+                    ui.checkbox(&mut self.icons.point_outwards, "Point markers outwards")
+                        .on_hover_text("Rotate a ▶ ▷ → marker to point away from the centre on each button (a back marker points towards it).");
                     ui.label("Sub-pie button look")
                         .on_hover_text("How buttons that open a sub-pie are drawn, to tell them from actions. Uses ButtonView::opens_sub_pie.");
                     let look_label = |l: SubPieLook| match l {
@@ -1286,7 +1341,7 @@ impl eframe::App for Demo {
                         SubPieLook::Outlined => "Outlined, paler fill",
                         SubPieLook::Dimmer => "Dimmer fill",
                     };
-                    egui::ComboBox::from_id_salt("sub_pie_look")
+                    egui::ComboBox::from_id_salt("sub_pie_look").width(ui.available_width())
                         .selected_text(look_label(self.sub_pie_look))
                         .show_ui(ui, |ui| {
                             for l in [SubPieLook::Same, SubPieLook::Outlined, SubPieLook::Dimmer] {
@@ -1295,10 +1350,10 @@ impl eframe::App for Demo {
                         });
                     ui.label("Sub-pie marker")
                         .on_hover_text("Drawn on a button that opens a sub-pie, whatever its icon. Empty: none.");
-                    ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(60.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(f32::INFINITY));
                     ui.label("Back marker")
                         .on_hover_text("Drawn on a back button, whatever its icon. Empty: none.");
-                    ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(60.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(f32::INFINITY));
 
                     ui.label(RichText::new("Fan-out").strong());
                     ui.label("Delay before it opens (ms)");
@@ -1325,7 +1380,7 @@ impl eframe::App for Demo {
                         FanOpenerAction::BreakOut => "Break out as a sub-pie",
                         FanOpenerAction::Dismiss => "Dismiss the menu",
                     };
-                    egui::ComboBox::from_id_salt("fan_opener_action")
+                    egui::ComboBox::from_id_salt("fan_opener_action").width(ui.available_width())
                         .selected_text(opener_label(self.menu.settings.sub_pies.fan_out.opener_action))
                         .show_ui(ui, |ui| {
                             for a in [FanOpenerAction::BreakOut, FanOpenerAction::Dismiss] {
@@ -1341,7 +1396,7 @@ impl eframe::App for Demo {
                         SubPieCenter::Parent => "Same as the parent",
                         SubPieCenter::Button => "At the opening button",
                     };
-                    egui::ComboBox::from_id_salt("sub_pie_center")
+                    egui::ComboBox::from_id_salt("sub_pie_center").width(ui.available_width())
                         .selected_text(label(self.menu.settings.sub_pies.center))
                         .show_ui(ui, |ui| {
                             for c in [SubPieCenter::Pointer, SubPieCenter::Parent, SubPieCenter::Button] {
@@ -1373,14 +1428,14 @@ impl eframe::App for Demo {
                     }
 
                     ui.label("Fill color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_fill_color);
+                    color_bar(ui, &mut self.menu.settings.center_indicator.background_fill_color);
 
                     ui.label("Stroke width");
                     px_drag(ui, &mut self.menu.settings.center_indicator.background_stroke.width,
                         d.center_indicator.background_stroke.width, 0.0..=10.0);
 
                     ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.background_stroke.color);
+                    color_bar(ui, &mut self.menu.settings.center_indicator.background_stroke.color);
                 });
 
                 section(ui, &query, &mut shown, "Highlight",
@@ -1410,14 +1465,14 @@ impl eframe::App for Demo {
                         d.center_indicator.highlight_circle_radius, 1.0..=40.0);
 
                     ui.label("Fill color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_fill_color);
+                    color_bar(ui, &mut self.menu.settings.center_indicator.highlight_fill_color);
 
                     ui.label("Stroke width");
                     px_drag(ui, &mut self.menu.settings.center_indicator.highlight_stroke.width,
                         d.center_indicator.highlight_stroke.width, 0.0..=10.0);
 
                     ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.center_indicator.highlight_stroke.color);
+                    color_bar(ui, &mut self.menu.settings.center_indicator.highlight_stroke.color);
 
                     ui.checkbox(&mut self.menu.settings.center_indicator.highlight_snapping, "Snap to button");
                 });
@@ -1426,20 +1481,20 @@ impl eframe::App for Demo {
                     "title text color colour background stroke width", |ui| {
                     ui.checkbox(&mut self.menu.settings.title.show, "Show title");
                     ui.label("Text color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.title.text_color);
+                    color_bar(ui, &mut self.menu.settings.title.text_color);
                     ui.label("Background color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.title.background_color);
+                    color_bar(ui, &mut self.menu.settings.title.background_color);
                     ui.label("Stroke width");
                     px_drag(ui, &mut self.menu.settings.title.background_stroke.width,
                         d.title.background_stroke.width, 0.0..=4.0);
                     ui.label("Stroke color");
-                    ui.color_edit_button_srgba(&mut self.menu.settings.title.background_stroke.color);
+                    color_bar(ui, &mut self.menu.settings.title.background_stroke.color);
                 });
 
                 section(ui, &query, &mut shown, "Show behaviour",
                     "behavior instant movement threshold quick tap double tap", |ui| {
                     let is_instant = matches!(self.menu.settings.show_behavior, ShowBehavior::Instant);
-                    egui::ComboBox::from_id_salt("show_behavior")
+                    egui::ComboBox::from_id_salt("show_behavior").width(ui.available_width())
                         .selected_text(if is_instant { "Instant" } else { "On movement" })
                         .show_ui(ui, |ui| {
                             if ui.selectable_label(is_instant, "Instant").clicked() {
@@ -1466,7 +1521,7 @@ impl eframe::App for Demo {
                 section(ui, &query, &mut shown, "Reveal animation",
                     "animation fade none instant slide slideout duration start radius shape factor diamond square opacity", |ui| {
                     let current = self.menu.settings.animations.reveal;
-                    egui::ComboBox::from_id_salt("reveal")
+                    egui::ComboBox::from_id_salt("reveal").width(ui.available_width())
                         .selected_text(reveal_label(current))
                         .show_ui(ui, |ui| {
                             for &r in ALL_REVEALS {
@@ -1544,7 +1599,7 @@ impl eframe::App for Demo {
 
                 section(ui, &query, &mut shown, "Language / RTL", "language rtl right to left mirror hebrew arabic persian farsi russian unicode digits", |ui| {
                     let mut changed = false;
-                    egui::ComboBox::from_id_salt("lang")
+                    egui::ComboBox::from_id_salt("lang").width(ui.available_width())
                         .selected_text(LANGS[self.lang].name)
                         .show_ui(ui, |ui| {
                             for (i, l) in LANGS.iter().enumerate() {
@@ -1596,7 +1651,7 @@ impl eframe::App for Demo {
                 // which come from the theme, can be checked in both.
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker at their far end (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
+                ui.label("Right-click or hold Space to open  ·  Number keys 1–9 to pick  ·  Esc / 5 to dismiss  ·  Sub-pie buttons carry a marker at their outer end (Backspace or centre click: back; a fan-out closes when the pointer returns)  ·  Pinned: only Esc unpins");
             });
             // Result of the last action: near the top so the menu never covers it, and
             // centred on the same x as the pinned menu.
@@ -1766,21 +1821,17 @@ impl eframe::App for Demo {
                 // Sub-pie and back buttons carry a marker (from the "Sub-pies" section) in a
                 // slot of its own: at the far end, or before the icon. The icon is the
                 // button's own and never replaces it.
-                let marker = icons.marker(cfg);
-                let far_end = icons.placement == MarkerPlacement::FarEnd;
+                let (marker, marker_left) = icons.placed(cfg, b.button.direction, b.rtl);
                 let mut prefix = String::new();
-                if !marker.is_empty() && !far_end {
-                    prefix += &format!("{marker}  ");
-                }
                 if cfg.icon_kind == IconKind::Text && !cfg.icon.is_empty() {
                     prefix += &format!("{}  ", cfg.icon);
                 }
                 if !prefix.is_empty() {
                     label = label.prefix(prefix);
                 }
-                // Far end: in the label's colour, set apart from the text by a little space.
-                let far_marker = (!marker.is_empty() && far_end).then(|| {
-                    let text = if b.rtl { format!("{marker}  ") } else { format!("  {marker}") };
+                // In the label's colour, set apart from the text by a little space.
+                let far_marker = (!marker.is_empty()).then(|| {
+                    let text = if marker_left { format!("{marker}  ") } else { format!("  {marker}") };
                     RichText::new(text).color(b.text_color())
                 });
                 let text: egui::WidgetText = label.into();
@@ -1806,8 +1857,7 @@ impl eframe::App for Demo {
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.set_min_height(button_h);
-                                    // Mirrored: the far end is the left.
-                                    if b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
+                                    if marker_left && let Some(m) = &far_marker { ui.label(m.clone()); }
                                     if let Some((h, false)) = &hint { ui.label(h.clone()); }
                                     let mut display = cfg.checked;
                                     if b.rtl {
@@ -1821,7 +1871,7 @@ impl eframe::App for Demo {
                                         ui.label(text);
                                     }
                                     if let Some((h, true)) = &hint { ui.label(h.clone()); }
-                                    if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
+                                    if !marker_left && let Some(m) = &far_marker { ui.label(m.clone()); }
                                 },
                             );
                         })
@@ -1840,7 +1890,7 @@ impl eframe::App for Demo {
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.set_min_height(button_h);
-                                    if b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
+                                    if marker_left && let Some(m) = &far_marker { ui.label(m.clone()); }
                                     if let Some((h, false)) = &hint { ui.label(h.clone()); }
                                     if b.rtl {
                                         ui.label(text);
@@ -1850,7 +1900,7 @@ impl eframe::App for Demo {
                                         ui.label(text);
                                     }
                                     if let Some((h, true)) = &hint { ui.label(h.clone()); }
-                                    if !b.rtl && let Some(m) = &far_marker { ui.label(m.clone()); }
+                                    if !marker_left && let Some(m) = &far_marker { ui.label(m.clone()); }
                                 },
                             );
                         })
@@ -1865,7 +1915,7 @@ impl eframe::App for Demo {
                         if let Some(m) = far_marker {
                             // egui lays text out left to right, so a mirrored layout's far
                             // end is the left edge.
-                            button = if b.rtl { button.left_text(m) } else { button.right_text(m) };
+                            button = if marker_left { button.left_text(m) } else { button.right_text(m) };
                         }
                         ui.add(button)
                     }
