@@ -487,10 +487,10 @@ mod tests {
         fn hint_follows_mirrored_layout() {
             let mut m = PieMenu::new();
             let east = PieButton::new(PieDirection::East);
-            assert_eq!(m.number_hint(&east).unwrap().text, "6");
+            assert_eq!(m.number_hint(&east, &egui::Visuals::dark()).unwrap().text, "6");
             m.settings.mirror_horizontal = true;
-            assert_eq!(m.number_hint(&east).unwrap().text, "4"); // East is shown on the west side
-            assert!(!m.number_hint(&east).unwrap().on_right); // Trailing = left when mirrored
+            assert_eq!(m.number_hint(&east, &egui::Visuals::dark()).unwrap().text, "4"); // East is shown on the west side
+            assert!(!m.number_hint(&east, &egui::Visuals::dark()).unwrap().on_right); // Trailing = left when mirrored
         }
     }
 

@@ -31,7 +31,7 @@ impl PieDirection {
     ];
 
     /// The direction straight across the centre (North↔South, NE↔SW, …).
-    pub fn opposite(&self) -> PieDirection {
+    pub fn opposite(self) -> PieDirection {
         match self {
             PieDirection::North => PieDirection::South,
             PieDirection::NorthEast => PieDirection::SouthWest,
@@ -69,7 +69,7 @@ impl PieDirection {
     }
 
     /// The direction reflected across the vertical axis (East↔West, NE↔NW, SE↔SW).
-    pub fn mirrored(&self) -> PieDirection {
+    pub fn mirrored(self) -> PieDirection {
         match self {
             PieDirection::North => PieDirection::North,
             PieDirection::South => PieDirection::South,
@@ -123,6 +123,7 @@ impl HighlightShape {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuCenterIndicatorSettings {
     /// Radius of the static background circle. `None` draws no circle.
     pub background_radius: Option<f32>,
@@ -170,6 +171,7 @@ impl Default for PieMenuCenterIndicatorSettings {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuTitleSettings {
     /// Whether to show the title.
     pub show: bool,
@@ -295,6 +297,7 @@ impl Default for ShowBehavior {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuInput {
     /// Allow number keys 1–9 (numpad or number row; egui does not distinguish them) to activate buttons by direction.
     pub use_number_keys: bool,
@@ -377,6 +380,7 @@ pub enum RevealAnimation {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuNumberHints {
     /// Force the digit colour, whether hovered or not (Blender-style). `None` (default)
     /// uses egui's widget text colours like the labels: `widgets.inactive` normally,
@@ -474,6 +478,7 @@ impl Default for HoverEmphasis {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuAnimations {
     /// Animation used when the buttons are revealed.
     pub reveal: RevealAnimation,
@@ -524,6 +529,7 @@ impl Default for PieMenuAnimations {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuLayoutSettings {
     /// Distance from the menu centre to the inner edge of each button, in logical pixels.
     pub radius: f32,
@@ -563,6 +569,7 @@ impl Default for PieMenuLayoutSettings {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuFanOutSettings {
     /// How long the pointer must rest on the opening button before its fan opens.
     /// Default: zero (opens as the pointer reaches the button).
@@ -589,6 +596,7 @@ impl Default for PieMenuFanOutSettings {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuSubPieSettings {
     /// How sub-pies are shown, for buttons that don't say themselves. See [`SubPieStyle`].
     pub style: SubPieStyle,
@@ -620,10 +628,29 @@ impl Default for PieMenuSubPieSettings {
     }
 }
 
+/// What the menu does when the buttons of a level it opens have a problem
+/// ([`crate::PieMenu::check_buttons`]): two in one direction, a shared mnemonic, …
+/// The level is checked once each time it opens.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ButtonChecks {
+    /// Debug builds assert (panic) with the problems; release builds don't check. For
+    /// menus written in code, where a problem is a bug to fix. The default.
+    #[default]
+    DebugPanic,
+    /// Log the problems as a warning through the [`log`](https://docs.rs/log) crate, in
+    /// every build, and carry on. For menus built from data (user-defined or
+    /// translated), where a problem must not take the app down.
+    Warn,
+    /// Don't check.
+    Off,
+}
+
 /// Top-level settings for a [`crate::PieMenu`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
 pub struct PieMenuSettings {
     /// Geometry of the ring.
     pub layout: PieMenuLayoutSettings,
@@ -656,6 +683,8 @@ pub struct PieMenuSettings {
     /// so the app's theme applies. Disabled buttons are faded by egui either way.
     /// Number hints have their own [`PieMenuNumberHints::color`].
     pub text_color: Option<Color32>,
+    /// What to do about badly formed buttons when a level opens. See [`ButtonChecks`].
+    pub button_checks: ButtonChecks,
 }
 
 impl Default for PieMenuSettings {
@@ -672,6 +701,7 @@ impl Default for PieMenuSettings {
             mirror_horizontal: false,
             number_hints: PieMenuNumberHints::default(),
             text_color: None,
+            button_checks: ButtonChecks::default(),
         }
     }
 }

@@ -28,6 +28,8 @@ Release tags mirror the egui version they target: the minor version tracks egui 
 
 > **Until 1.0, patch releases may contain breaking changes** — the minor version is reserved for the egui version. Read the commit log or release notes before moving to a newer tag. Since the crate is pinned by git tag, nothing updates without you changing the tag.
 
+> **Coming from v0.36.1?** `main` has a second, smaller round of breaking changes: see [Upgrading from v0.36.1](#upgrading-from-v0361).
+
 > **Coming from v0.36.0?** v0.36.1 changes the API a lot (the `show` call, button and settings types, many renames). [Upgrading from v0.36.0](#upgrading-from-v0360) lists every breaking change with before and after.
 
 | Tag | egui / eframe |
@@ -130,9 +132,21 @@ menu.hovered(); // Option<usize>: the currently highlighted button
 
 Pointing at a direction with no (enabled) button snaps to the closest available one.
 
+A selection is reported by position (`Selected(idx)`, `selected_path()`). To tell buttons apart however they are ordered, give them an identity of your own, anything hashable:
+
+```rust
+let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy").with_id("copy")];
+// … on PieMenuResponse::Selected(_):
+if menu.selected_id() == Some(egui::Id::new("copy")) { /* … */ }
+```
+
+For a cluster item `selected_id()` is the cluster button's id and the response carries the item's number.
+
 Number keys are consumed by the menu, so the digit does not also reach other handlers or text fields.
 
 In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
+
+That suits menus written in code, where a problem is a bug. For menus built from data (user-defined or translated), set `menu.settings.button_checks = ButtonChecks::Warn` to log the problems through the `log` crate in every build and carry on, or `ButtonChecks::Off` to skip the check.
 
 To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, `DuplicateItemNumber` / `DuplicateItemMnemonic` for cluster items (see "Clusters"; `MnemonicOwner` names a button or an item), plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
 
@@ -266,7 +280,7 @@ if ctx.input(|i| i.pointer.secondary_pressed())
 }
 ```
 
-`show` does nothing while the menu is closed, and closes it again on any response other than `None`, so call it unconditionally and handle only the responses you care about.
+`show` does nothing while the menu is closed, and closes it again on any response other than `Idle`, so call it unconditionally and handle only the responses you care about.
 
 ```rust
 use egui_pie_menu::PieMenuResponse;
@@ -283,7 +297,7 @@ match self.menu.show(ctx, &buttons, key_down, |ui, b| {
     PieMenuResponse::Selected(idx) => println!("selected {idx}, route {:?}", self.menu.selected_path()),
     PieMenuResponse::QuickTap  => { /* default action */ }
     PieMenuResponse::DoubleTap => { /* alternate action */ }
-    PieMenuResponse::Dismissed | PieMenuResponse::None => {}
+    PieMenuResponse::Dismissed | PieMenuResponse::Idle => {}
 }
 ```
 
@@ -304,7 +318,9 @@ pub fn show(
 | Call / field | Meaning |
 |---|---|
 | `menu.open(pos)` | Open at `pos` |
+| `menu.open_sticky(pos)` | Open visible and click-driven, with no key held (see "Interaction model") |
 | `menu.pin(center)` | Open as a pinned menu (see "Pinned / persistent menus") |
+| `menu.selected_path()` / `menu.selected_id()` | After `Selected`: the route to the chosen button, and its `with_id` identity |
 | `menu.close()` | Close without a response |
 | `menu.is_open()` / `menu.is_pinned()` | State queries |
 | `menu.title = Some("Edit".into())` | Text above the centre indicator (`with_title` at construction) |
@@ -323,8 +339,8 @@ pub fn show(
 | Release in a fan-out on a fan button | `Selected(..)` of that button |
 | Release in a fan-out on its opening button | `BreakOut` (default): nothing, the fan becomes a replace-style sub-pie (click or keyboard driven); `Dismiss`: `Dismissed` (`settings.sub_pies.fan_out.opener_action`) |
 | Release in a fan-out over nothing (blocked sector, dead zone, outside the window) | `Dismissed` |
-| Click in a fan-out on its opening button | `BreakOut` (default): the fan becomes a replace-style sub-pie; `Dismiss`: the fan closes (`None`) |
-| Click in a fan-out on nothing else | The fan closes, the menu stays open (`None`) |
+| Click in a fan-out on its opening button | `BreakOut` (default): the fan becomes a replace-style sub-pie; `Dismiss`: the fan closes (`Idle`) |
+| Click in a fan-out on nothing else | The fan closes, the menu stays open (`Idle`) |
 | Release with nothing selectable (every button disabled, no pointer) | `Dismissed` |
 | Tap and release before crossing threshold (`OnMovement` only) | `QuickTap` |
 | Two quick taps within `double_tap_window` (`OnMovement` only) | `DoubleTap` |
@@ -336,6 +352,14 @@ pub fn show(
 
 - **`ShowBehavior::OnMovement { threshold }`** — the menu is not drawn until the mouse moves `threshold` pixels from the open position. Releasing before crossing that distance returns `QuickTap` or `DoubleTap`, so a plain tap feels instant with no visual flicker.
 - **`ShowBehavior::Instant`** — the menu appears immediately on key hold. `QuickTap` and `DoubleTap` are never returned in this mode.
+
+A second press within `double_tap_window` of a quick tap shows nothing while it is held still (releasing gives `DoubleTap`); moving past the threshold makes it an ordinary drag and the menu opens.
+
+**Click-driven (sticky) menus.** `menu.open_sticky(pos)` opens the menu visible at once and keeps it open with no key held: pass `key_down: false`, and a click or key picks a button, a click on the centre dismisses. To leave the menu open after a tap, Blender-style, call it when `show` returns `QuickTap`:
+
+```rust
+PieMenuResponse::QuickTap => self.menu.open_sticky(pos),
+```
 
 ## Sub-pies
 
@@ -477,7 +501,7 @@ Keyboard: a blocking menu (`block_background = true`, not pinned) takes keyboard
 
 ## Settings
 
-All settings live on `PieMenu::settings: PieMenuSettings` and can be changed at any time. Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug` (the response is also `Copy + PartialEq`). Degenerate highlight settings (a `NaN` radius, zero-width strokes or arcs) draw nothing instead of panicking.
+All settings live on `PieMenu::settings: PieMenuSettings` and can be changed at any time. Settings structs, `PieButton` and `PieMenuResponse` derive `Clone`/`Debug`/`PartialEq` (the response is also `Copy`). The settings structs are `#[non_exhaustive]`: start from `Default::default()` (or the menu's own `settings`) and assign fields. With the crate's `serde` feature they also implement `Serialize`/`Deserialize`, so an app can save and load them. Degenerate highlight settings (a `NaN` radius, zero-width strokes or arcs) draw nothing instead of panicking.
 
 At a glance:
 
@@ -494,6 +518,7 @@ At a glance:
 | `settings.block_background` | Whether the menu swallows pointer input meant for widgets behind it |
 | `settings.mirror_horizontal` | Mirror the layout for right-to-left UIs |
 | `settings.text_color` | Force the label colour |
+| `settings.button_checks` | What happens when a level's buttons are badly formed: `DebugPanic` (default), `Warn`, `Off` |
 
 ```rust
 use egui_pie_menu::ShowBehavior;
@@ -591,6 +616,39 @@ cargo run --example demo
 ```
 
   Right-click anywhere in the window to open the menu. The left panel exposes all settings as live drag fields and colour pickers.
+
+## Upgrading from v0.36.1
+
+A smaller round than the last one. The compiler points at each item; everything not listed keeps working.
+
+| Before (v0.36.1) | After |
+|---|---|
+| `PieMenuResponse::None` | `PieMenuResponse::Idle`. The old name still compiles, with a deprecation warning. |
+| `menu.number_hint(&button)` (always dark-theme colours) | `menu.number_hint(&button, &visuals)`, e.g. `ui.visuals()` |
+| `PieMenuInput { use_number_keys: true, .. }` and other settings struct literals | The settings structs are `#[non_exhaustive]`: `let mut input = PieMenuInput::default(); input.use_number_keys = true;` (assigning through `menu.settings` is unchanged) |
+| An exhaustive `match` on `ButtonProblem` | Add a `_ =>` arm: the enum is `#[non_exhaustive]` and has the new variant `MnemonicIsTriggerKey` |
+| `PieButton { direction, mnemonic, label, kind, enabled }` literals | Add `id: None`, or build with `PieButton::new(dir)` and the `with_…` methods |
+
+`PieDirection::opposite` and `mirrored` take `self` instead of `&self`; calls compile unchanged. `ShowBehavior` and `PieMenuDismissInput` are `Copy` now (clippy may ask you to drop a `.clone()`). The crate depends on `log`.
+
+### Behaviour changes
+
+- **The held trigger key.** If the menu is opened by holding a keyboard key, set `settings.input.trigger_key`. Before, that key's repeat selected the button whose mnemonic it was. With it set, generated mnemonics avoid the key (so they can differ from before), an explicit one equal to it is dropped and reported by `check_buttons`, and a digit trigger selects nothing by number.
+- **Mnemonic underline.** The underlined letter is the one that starts a word when there is one ("Paste **S**pecial", not "Pa**s**te Special"), matching how mnemonics are generated. A letter after a combining accent no longer counts as starting a word.
+- **`intercardinal_height` on a full diamond** (`shape_factor = -1.0`) is applied; it was ignored.
+- **Key navigation** draws the level on the frame a number key or mnemonic picks a button (there was one frame without buttons), and a key-opened sub-pie with `SubPieCenter::Button` is centred on the right button.
+- **A press-and-drag right after a quick tap** opens the menu; it used to be held back as a possible double tap.
+- **A highlight wider than half a turn** (`highlight_angle` above π) is filled correctly.
+
+### New
+
+Nothing below needs changes in existing code:
+
+- `menu.open_sticky(pos)`: a click-driven menu (see [Interaction model](#interaction-model)).
+- `PieButton::with_id` and `menu.selected_id()`: a selection's identity, independent of button order (see [Disabled buttons and hover query](#disabled-buttons-and-hover-query)).
+- `settings.button_checks`: warn instead of panic on badly formed buttons, or switch the check off.
+- `PartialEq` on the settings types and `PieButton`; `Default` on `ShowBehavior`, `RevealAnimation`, `HintSide` and `HoverEmphasis`; an optional `serde` feature for the settings.
+- Less work per frame: the highlight arc uses a handful of points instead of over a hundred, and mnemonics and layout are worked out once per ring.
 
 ## Upgrading from v0.36.0
 

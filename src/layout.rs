@@ -10,8 +10,8 @@ use std::f32::consts::TAU;
 
 impl PieMenu {
     /// The direction as displayed: mirrored when [`PieMenuSettings::mirror_horizontal`] is on.
-    pub(crate) fn eff(dir: &PieDirection, mirror: bool) -> PieDirection {
-        if mirror { dir.mirrored() } else { *dir }
+    pub(crate) fn eff(dir: PieDirection, mirror: bool) -> PieDirection {
+        if mirror { dir.mirrored() } else { dir }
     }
 
     /// Converts a [`PieDirection`] to a [`Vec2`] offset, applying the shape factor.
@@ -19,7 +19,7 @@ impl PieMenu {
     /// - `0.0`  → circle: all buttons equidistant (L2, unit vector)
     /// - `+1.0` → square: diagonals pushed out to the corners (L∞ norm)
     /// - `-1.0` → diamond: diagonals pulled in toward the centre (L1 norm)
-    pub(crate) fn direction_vec(dir: &PieDirection, shape_factor: f32) -> Vec2 {
+    pub(crate) fn direction_vec(dir: PieDirection, shape_factor: f32) -> Vec2 {
         let fraction = match dir {
             PieDirection::North => 0.75,
             PieDirection::NorthEast => 0.875,
@@ -63,7 +63,7 @@ impl PieMenu {
     /// shape to the point that puts its centre at that height (so it follows the curve);
     /// this depends on the button's size and the radius. Its angle is also the angle used
     /// for hover picking and the centre highlight.
-    pub(crate) fn layout_vec(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
+    pub(crate) fn layout_vec(&self, dir: PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
         let v = Self::direction_vec(dir, sf);
         // By direction, not by vector: the full diamond's diagonals are exactly (0.5, 0.5).
         let diagonal = matches!(
@@ -91,13 +91,13 @@ impl PieMenu {
     /// Offset of a button's centre from the menu centre, for a layout `radius` and shape
     /// factor `sf`: its inner face/corner on the layout shape ([`Self::layout_vec`]), then
     /// pushed outward by half its size on each axis it points along.
-    pub(crate) fn button_offset(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
+    pub(crate) fn button_offset(&self, dir: PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
         Self::offset_on(dir, self.layout_vec(dir, size, radius, sf), size, radius)
     }
 
     /// [`Self::button_offset`] for a layout vector already computed ([`Self::layout_vec`]),
     /// so a ring's vectors are worked out once per frame.
-    pub(crate) fn offset_on(dir: &PieDirection, layout: Vec2, size: Vec2, radius: f32) -> Vec2 {
+    pub(crate) fn offset_on(dir: PieDirection, layout: Vec2, size: Vec2, radius: f32) -> Vec2 {
         // The axes the direction points along: -1, 0 or 1 each.
         let (sx, sy) = match dir {
             PieDirection::North => (0.0, -1.0),
@@ -112,7 +112,7 @@ impl PieMenu {
         layout * radius + Vec2::new(size.x / 2.0 * sx, size.y / 2.0 * sy)
     }
 
-    pub(crate) fn direction_digit(dir: &PieDirection) -> char {
+    pub(crate) fn direction_digit(dir: PieDirection) -> char {
         match dir {
             PieDirection::North => '8',
             PieDirection::NorthEast => '9',
@@ -149,7 +149,7 @@ impl PieMenu {
             .filter(|&idx| !buttons[idx].is_cluster())
     }
 
-    pub(crate) fn direction_number_key(dir: &PieDirection) -> Key {
+    pub(crate) fn direction_number_key(dir: PieDirection) -> Key {
         match dir {
             PieDirection::North => Key::Num8,
             PieDirection::NorthEast => Key::Num9,
@@ -183,7 +183,7 @@ mod tests {
 
         /// Default layout vectors (no intercardinal height), as displayed.
         fn dirs(b: &[PieButton], mirror: bool) -> Vec<Vec2> {
-            b.iter().map(|b| PieMenu::direction_vec(&PieMenu::eff(&b.direction, mirror), 0.0)).collect()
+            b.iter().map(|b| PieMenu::direction_vec(PieMenu::eff(b.direction, mirror), 0.0)).collect()
         }
 
         fn pick(b: &[PieButton], v: Vec2) -> Option<usize> {
@@ -297,7 +297,7 @@ mod tests {
         /// Inner corner of the NE button (centre minus the half-size push outward).
         fn ne_corner(m: &PieMenu) -> Vec2 {
             let r = m.settings.layout.radius;
-            m.button_offset(&PieDirection::NorthEast, SIZE, r, m.settings.layout.shape_factor) - Vec2::new(HALF.x, -HALF.y)
+            m.button_offset(PieDirection::NorthEast, SIZE, r, m.settings.layout.shape_factor) - Vec2::new(HALF.x, -HALF.y)
         }
 
         #[test]
@@ -312,13 +312,13 @@ mod tests {
         fn half_puts_diagonal_centres_halfway_and_on_the_curve() {
             let m = menu(Some(0.5), 0.0);
             let r = m.settings.layout.radius;
-            let n = m.button_offset(&PieDirection::North, SIZE, r, 0.0);
-            let e = m.button_offset(&PieDirection::East, SIZE, r, 0.0);
+            let n = m.button_offset(PieDirection::North, SIZE, r, 0.0);
+            let e = m.button_offset(PieDirection::East, SIZE, r, 0.0);
             for (dir, sign) in [
                 (PieDirection::NorthEast, 1.0), (PieDirection::NorthWest, 1.0),
                 (PieDirection::SouthEast, -1.0), (PieDirection::SouthWest, -1.0),
             ] {
-                let o = m.button_offset(&dir, SIZE, r, 0.0);
+                let o = m.button_offset(dir, SIZE, r, 0.0);
                 assert!((o.y - sign * (n.y + e.y) / 2.0).abs() < 1e-2, "{dir:?}: {o:?}");
             }
             // The inner corner stays on the circle: the button slid along it, outward.
@@ -344,7 +344,7 @@ mod tests {
         fn applies_at_every_shape_factor_including_the_full_diamond() {
             let ne_y = |height: Option<f32>, sf: f32| {
                 let m = menu(height, sf);
-                m.button_offset(&PieDirection::NorthEast, SIZE, m.settings.layout.radius, sf).y
+                m.button_offset(PieDirection::NorthEast, SIZE, m.settings.layout.radius, sf).y
             };
             for sf in [-1.0, -0.5, 0.0, 1.0] {
                 let (lowered, plain) = (ne_y(Some(0.3), sf), ne_y(None, sf));
@@ -359,7 +359,7 @@ mod tests {
             let b = vec![PieButton::new(PieDirection::East), PieButton::new(PieDirection::NorthEast)];
             let r = PieMenu::new().settings.layout.radius;
             let dirs = |m: &PieMenu| -> Vec<Vec2> {
-                b.iter().map(|b| m.layout_vec(&b.direction, SIZE, r, 0.0)).collect()
+                b.iter().map(|b| m.layout_vec(b.direction, SIZE, r, 0.0)).collect()
             };
             let a = 20f32.to_radians();
             let mouse = Vec2::new(a.cos(), -a.sin()); // 20° above East
@@ -369,7 +369,7 @@ mod tests {
             let low = menu(Some(0.5), 0.0);
             assert_eq!(PieMenu::pick_button(&b, mouse, &dirs(&low)), Some(1));
             // Pointing at the drawn button's centre picks it.
-            let centre = low.button_offset(&PieDirection::NorthEast, SIZE, r, 0.0);
+            let centre = low.button_offset(PieDirection::NorthEast, SIZE, r, 0.0);
             assert_eq!(PieMenu::pick_button(&b, centre, &dirs(&low)), Some(1));
         }
     }

@@ -1909,7 +1909,7 @@ impl eframe::App for Demo {
                 }
                 PieMenuResponse::QuickTap => self.last_action = "Quick tap — default action.".to_string(),
                 PieMenuResponse::DoubleTap => self.last_action = "Double tap — alternate action.".to_string(),
-                PieMenuResponse::None => {}
+                PieMenuResponse::Idle => {}
             }
         });
     }

@@ -3,7 +3,7 @@
 //!
 //! Keep a [`PieMenu`] in your app state, [`PieMenu::open`] it on a trigger, and call
 //! [`PieMenu::show`] every frame. The menu owns its open state: `show` does nothing while
-//! it is closed and closes it again on any response other than [`PieMenuResponse::None`].
+//! it is closed and closes it again on any response other than [`PieMenuResponse::Idle`].
 //!
 //! ```no_run
 //! use egui_pie_menu::{PieButton, PieDirection, PieMenu, PieMenuResponse};
@@ -72,7 +72,15 @@ pub enum PieMenuResponse {
     /// The caller decides what alternate action to perform.
     DoubleTap,
     /// No action this frame.
-    None,
+    Idle,
+}
+
+impl PieMenuResponse {
+    /// The old name of [`PieMenuResponse::Idle`]. It collided with `Option::None` when
+    /// the variants were glob-imported.
+    #[deprecated(note = "renamed to `PieMenuResponse::Idle`")]
+    #[allow(non_upper_case_globals)]
+    pub const None: Self = Self::Idle;
 }
 
 /// What one frame of a level produced, before sub-pies, fans and back buttons are resolved.
@@ -199,7 +207,7 @@ pub struct PieMenu {
     /// This press follows a QuickTap within the double-tap window.
     /// While set, the menu never becomes visible; releasing yields `DoubleTap`.
     double_tap_pending: bool,
-    /// Debug-only: the duplicate direction/mnemonic check already ran for this open.
+    /// The button check ([`PieMenuSettings::button_checks`]) already ran for this level.
     checked_buttons: bool,
     /// egui time when the buttons became visible; drives the reveal animation.
     /// `None` while visible means "stamp it on the next `show`".
@@ -348,8 +356,8 @@ impl PieMenu {
     /// items of a cluster with the same number; and, for each button that opens a fan-out, the same
     /// among its children plus children in a blocked direction or with sub-pies of their
     /// own ([`ButtonProblem::InFanOut`]); and an explicit mnemonic that is the held
-    /// [`PieMenuInput::trigger_key`]. Debug builds assert on these when the level
-    /// opens; call this to check (or show the problems) yourself, e.g. in an editor, in
+    /// [`PieMenuInput::trigger_key`]. By default debug builds assert on these when the level
+    /// opens ([`PieMenuSettings::button_checks`]); call this to check (or show the problems) yourself, e.g. in an editor, in
     /// any build. Pass the buttons of a single level.
     pub fn check_buttons(&self, buttons: &[PieButton]) -> Vec<ButtonProblem> {
         let trigger = self.trigger_char();
@@ -408,25 +416,26 @@ impl PieMenu {
     /// Returns `None` when number keys are off, and for the direction whose digit is the
     /// held [`PieMenuInput::trigger_key`]. Inside the render closure, prefer
     /// [`ButtonView::number_hint`], which also knows whether the button is hovered
-    /// (this one gives the colour for a non-hovered button in a dark theme).
-    pub fn number_hint(&self, button: &PieButton) -> Option<NumberHint> {
-        self.number_hint_styled(button, false, &egui::Visuals::dark())
+    /// (this one gives the colour for a non-hovered button in `visuals`, e.g.
+    /// `&ctx.global_style().visuals` or `ui.visuals()`).
+    pub fn number_hint(&self, button: &PieButton, visuals: &egui::Visuals) -> Option<NumberHint> {
+        self.number_hint_styled(button, false, visuals)
     }
 
     /// [`Self::number_hint`] with the colour resolved for `hovered` against `visuals`.
     fn number_hint_styled(&self, button: &PieButton, hovered: bool, visuals: &egui::Visuals) -> Option<NumberHint> {
-        let dir = Self::eff(&button.direction, self.settings.mirror_horizontal);
+        let dir = Self::eff(button.direction, self.settings.mirror_horizontal);
         let hints = &self.settings.number_hints;
-        let usable = self.settings.input.trigger_key != Some(Self::direction_number_key(&dir));
+        let usable = self.settings.input.trigger_key != Some(Self::direction_number_key(dir));
         (self.settings.input.use_number_keys && usable && !button.is_cluster()).then(|| NumberHint {
-            text: self.hint_digit(&dir).to_string(),
+            text: self.hint_digit(dir).to_string(),
             color: button_text_color(hints.color, visuals, hovered, button.enabled),
-            on_right: self.hint_on_right(&dir),
+            on_right: self.hint_on_right(dir),
         })
     }
 
     /// The hint digit for a direction, in the [`PieMenuNumberHints::digits`] style.
-    fn hint_digit(&self, dir: &PieDirection) -> char {
+    fn hint_digit(&self, dir: PieDirection) -> char {
         let digit = Self::direction_digit(dir);
         let zero = match self.settings.number_hints.digits {
             HintDigits::Western => return digit,
@@ -437,7 +446,7 @@ impl PieMenu {
     }
 
     /// Whether the hint goes on the right of the button, from [`PieMenuNumberHints::side`].
-    fn hint_on_right(&self, dir: &PieDirection) -> bool {
+    fn hint_on_right(&self, dir: PieDirection) -> bool {
         match self.settings.number_hints.side {
             // After the label in reading order: right for left-to-right, left when mirrored.
             HintSide::Trailing => !self.settings.mirror_horizontal,
@@ -453,7 +462,7 @@ impl PieMenu {
 
     /// Opens the menu centred at `pos` and resets its interaction state. It stays open
     /// until [`PieMenu::show`] returns a closing response (anything but
-    /// [`PieMenuResponse::None`]) or [`PieMenu::close`] is called.
+    /// [`PieMenuResponse::Idle`]) or [`PieMenu::close`] is called.
     pub fn open(&mut self, pos: Pos2) {
         self.position = pos;
         self.is_open = true;
@@ -613,7 +622,7 @@ impl PieMenu {
     }
 
     /// Shows the pie menu for this frame. Call it every frame; it does nothing (and
-    /// returns [`PieMenuResponse::None`]) unless the menu is open (see [`PieMenu::open`]).
+    /// returns [`PieMenuResponse::Idle`]) unless the menu is open (see [`PieMenu::open`]).
     /// Any other response closes the menu, except a selection in a pinned menu.
     ///
     /// `render_button(ui, &button_view)` is called once per button inside a floating
@@ -656,7 +665,7 @@ impl PieMenu {
         render_button: impl FnMut(&mut Ui, &ButtonView),
     ) -> PieMenuResponse {
         if !self.is_open {
-            return PieMenuResponse::None;
+            return PieMenuResponse::Idle;
         }
         // A level change always changes the depth (one level per frame, or back to the root).
         let before = (self.path.len(), self.fan);
@@ -698,11 +707,11 @@ impl PieMenu {
                 && current_mouse_pos.is_some_and(|p| (p - self.display_center).length() <= thr);
             if backspace && self.fan.is_some() {
                 self.dismiss_fan();
-                return PieMenuResponse::None;
+                return PieMenuResponse::Idle;
             }
             if (backspace || centre_click) && !self.path.is_empty() {
                 self.go_back(current_mouse_pos, key_down);
-                return PieMenuResponse::None;
+                return PieMenuResponse::Idle;
             }
         }
 
@@ -712,7 +721,7 @@ impl PieMenu {
             None => &[],
         };
         let response = match self.show_level(ctx, level, parent, current_mouse_pos, key_down, &mut render_button) {
-            LevelEvent::None => PieMenuResponse::None,
+            LevelEvent::None => PieMenuResponse::Idle,
             LevelEvent::Dismissed => PieMenuResponse::Dismissed,
             LevelEvent::QuickTap => PieMenuResponse::QuickTap,
             LevelEvent::DoubleTap => PieMenuResponse::DoubleTap,
@@ -720,16 +729,16 @@ impl PieMenu {
                 let button = level.get(idx);
                 if button.is_some_and(|b| b.is_back()) && !self.path.is_empty() {
                     self.go_back(current_mouse_pos, key_down);
-                    PieMenuResponse::None
+                    PieMenuResponse::Idle
                 } else if button.is_some_and(|b| self.opens_fan(b)) {
                     self.open_fan(idx);
                     // As for a sub-pie: if the key is already up, the fan is click/keyboard
                     // driven; otherwise a later release selects in it.
                     self.release_handled = !key_down;
-                    PieMenuResponse::None
+                    PieMenuResponse::Idle
                 } else if button.is_some_and(|b| !b.children().is_empty()) {
                     self.descend(idx, current_mouse_pos, key_down);
-                    PieMenuResponse::None
+                    PieMenuResponse::Idle
                 } else {
                     self.selected_id = button.and_then(|b| b.id);
                     self.selected_path = self.path.clone();
@@ -745,17 +754,17 @@ impl PieMenu {
             }
             LevelEvent::CloseFan => {
                 self.dismiss_fan();
-                PieMenuResponse::None
+                PieMenuResponse::Idle
             }
             LevelEvent::BreakOut(trigger) => {
                 self.break_out(ctx, trigger, current_mouse_pos, key_down);
-                PieMenuResponse::None
+                PieMenuResponse::Idle
             }
             LevelEvent::FanPick(trigger, child) => {
                 let picked = level.get(trigger).and_then(|b| b.children().get(child));
                 if picked.is_some_and(|b| b.is_back()) {
                     self.dismiss_fan();
-                    PieMenuResponse::None
+                    PieMenuResponse::Idle
                 } else {
                     self.selected_id = picked.and_then(|b| b.id);
                     self.selected_path = self.path.clone();
@@ -765,7 +774,7 @@ impl PieMenu {
             }
         };
         match response {
-            PieMenuResponse::None => {}
+            PieMenuResponse::Idle => {}
             // A pinned menu stays open after a selection, back at its root level.
             PieMenuResponse::Selected(_) if self.pinned => {
                 if !self.path.is_empty() {
@@ -945,7 +954,7 @@ impl PieMenu {
         let mut bb_min = Vec2::ZERO;
         let mut bb_max = Vec2::ZERO;
         for ((button, &size), &layout) in buttons.iter().zip(sizes).zip(dirs) {
-            let offset = Self::offset_on(&Self::eff(&button.direction, mirror), layout, size, radius);
+            let offset = Self::offset_on(Self::eff(button.direction, mirror), layout, size, radius);
             bb_min = bb_min.min(offset - size / 2.0);
             bb_max = bb_max.max(offset + size / 2.0);
         }
@@ -973,7 +982,7 @@ impl PieMenu {
         buttons
             .iter()
             .zip(sizes)
-            .map(|(b, &size)| self.layout_vec(&Self::eff(&b.direction, mirror), size, radius, self.settings.layout.shape_factor))
+            .map(|(b, &size)| self.layout_vec(Self::eff(b.direction, mirror), size, radius, self.settings.layout.shape_factor))
             .collect()
     }
 
@@ -988,13 +997,13 @@ impl PieMenu {
         let mirror = self.settings.mirror_horizontal;
         if self.settings.input.use_number_keys {
             for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
-                let dir = Self::eff(&button.direction, mirror);
-                let key = Self::direction_number_key(&dir);
+                let dir = Self::eff(button.direction, mirror);
+                let key = Self::direction_number_key(dir);
                 // The held trigger key repeats: it never selects.
                 if self.settings.input.trigger_key == Some(key) {
                     continue;
                 }
-                let digit = Self::direction_digit(&dir).to_string();
+                let digit = Self::direction_digit(dir).to_string();
                 let hit = ctx.input_mut(|i| {
                     let hit = i.consume_key(egui::Modifiers::NONE, key);
                     if hit
@@ -1106,9 +1115,9 @@ impl PieMenu {
         for (idx, button) in level.buttons.iter().enumerate() {
             // Each axis is offset independently (see `button_offset`), which keeps NE/NW at
             // the same Y and SE/SW at the same Y even when button widths differ.
-            let eff_dir = Self::eff(&button.direction, mirror);
+            let eff_dir = Self::eff(button.direction, mirror);
             let cached_size = sizes[idx];
-            let final_center = level.center + Self::offset_on(&eff_dir, level.dirs[idx], cached_size, level.radius);
+            let final_center = level.center + Self::offset_on(eff_dir, level.dirs[idx], cached_size, level.radius);
             if let Some(centers) = centers.as_deref_mut() {
                 if centers.len() <= idx {
                     centers.resize(idx + 1, final_center);
@@ -1128,7 +1137,7 @@ impl PieMenu {
                 let start_sf = anim.slide_start_shape_factor.unwrap_or(shape_factor);
                 let sf = start_sf + (shape_factor - start_sf) * eased;
                 let scale = if end_radius > 0.0 { radius / end_radius } else { 1.0 };
-                level.center + self.button_offset(&eff_dir, cached_size, end_radius, sf) * scale
+                level.center + self.button_offset(eff_dir, cached_size, end_radius, sf) * scale
             } else {
                 final_center
             };
@@ -1326,17 +1335,23 @@ impl PieMenu {
                 });
         }
 
-        // Debug builds: assert once per open (and per sub-pie level) that this level's
-        // buttons are well-formed. Only buttons shown together are compared.
-        #[cfg(debug_assertions)]
-        if !self.checked_buttons {
-            self.checked_buttons = true;
-            let problems = self.check_buttons(buttons);
-            debug_assert!(
-                problems.is_empty(),
-                "egui_pie_menu: {}",
-                problems.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("; ")
-            );
+        // Once per open (and per sub-pie level): check that this level's buttons are
+        // well-formed, as `settings.button_checks` says. Only buttons shown together are
+        // compared.
+        if !std::mem::replace(&mut self.checked_buttons, true) {
+            let check = match self.settings.button_checks {
+                ButtonChecks::DebugPanic => cfg!(debug_assertions),
+                ButtonChecks::Warn => true,
+                ButtonChecks::Off => false,
+            };
+            let problems = if check { self.check_buttons(buttons) } else { Vec::new() };
+            if !problems.is_empty() {
+                let list = problems.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("; ");
+                match self.settings.button_checks {
+                    ButtonChecks::Warn => log::warn!("egui_pie_menu: {list}"),
+                    _ => panic!("egui_pie_menu: {list}"),
+                }
+            }
         }
 
         // The button the pointer points at in this level, by angle against each button's
@@ -1371,7 +1386,7 @@ impl PieMenu {
             fan_ring = self.fan_ring_id(&self.path, trigger);
             self.ensure_ring_sizes(fan_ring, children.len());
             let size = self.ring_sizes[&ring][trigger];
-            let button_center = center + Self::offset_on(&Self::eff(&button.direction, mirror), dirs[trigger], size, radius);
+            let button_center = center + Self::offset_on(Self::eff(button.direction, mirror), dirs[trigger], size, radius);
             let fan_radius = self.settings.sub_pies.fan_out.radius.unwrap_or(radius);
             self.fan_display_radius = fan_radius;
             let fan_dirs = self.layout_dirs(children, &self.ring_sizes[&fan_ring], fan_radius);

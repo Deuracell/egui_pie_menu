@@ -26,14 +26,14 @@ mod pin_tests {
         m.settings.block_background = false;
         m.open(Pos2::new(100.0, 100.0));
         m.reveal();
-        let mut resp = PieMenuResponse::None;
+        let mut resp = PieMenuResponse::Idle;
         let mut out = ctx.run_ui(Default::default(), |ui| {
             resp = m.show_with_pointer(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), true, |ui, _| {
                 ui.label("x");
             });
         });
         out.textures_delta.clear();
-        assert!(matches!(resp, PieMenuResponse::None));
+        assert!(matches!(resp, PieMenuResponse::Idle));
         assert!(m.visible);
     }
 }
@@ -59,7 +59,7 @@ mod open_state_tests {
     /// render closure ran (i.e. the menu was drawn).
     fn frame(ctx: &egui::Context, m: &mut PieMenu, events: Vec<egui::Event>) -> (PieMenuResponse, bool) {
         let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy")];
-        let (mut resp, mut drawn) = (PieMenuResponse::None, false);
+        let (mut resp, mut drawn) = (PieMenuResponse::Idle, false);
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
             events,
@@ -83,15 +83,15 @@ mod open_state_tests {
         let ctx = egui::Context::default();
         let mut m = PieMenu::new();
         assert!(!m.is_open());
-        assert_eq!(frame(&ctx, &mut m, key(Key::Num8)), (PieMenuResponse::None, false));
+        assert_eq!(frame(&ctx, &mut m, key(Key::Num8)), (PieMenuResponse::Idle, false));
 
         m.open(CENTER);
         m.reveal();
         assert!(m.is_open());
-        assert_eq!(frame(&ctx, &mut m, vec![]), (PieMenuResponse::None, true));
+        assert_eq!(frame(&ctx, &mut m, vec![]), (PieMenuResponse::Idle, true));
         assert_eq!(frame(&ctx, &mut m, key(Key::Num8)).0, PieMenuResponse::Selected(0));
         assert!(!m.is_open(), "a selection closes the menu");
-        assert_eq!(frame(&ctx, &mut m, key(Key::Num8)), (PieMenuResponse::None, false));
+        assert_eq!(frame(&ctx, &mut m, key(Key::Num8)), (PieMenuResponse::Idle, false));
 
         m.open(CENTER);
         m.reveal();
@@ -100,7 +100,7 @@ mod open_state_tests {
 
         m.open(CENTER);
         m.close();
-        assert_eq!(frame(&ctx, &mut m, vec![]), (PieMenuResponse::None, false));
+        assert_eq!(frame(&ctx, &mut m, vec![]), (PieMenuResponse::Idle, false));
     }
 
     #[test]
@@ -119,11 +119,11 @@ mod open_state_tests {
         let mut m = PieMenu::new();
         m.pin(CENTER);
         assert!(m.is_pinned());
-        assert_eq!(frame(&ctx, &mut m, vec![]), (PieMenuResponse::None, true)); // visible at once
+        assert_eq!(frame(&ctx, &mut m, vec![]), (PieMenuResponse::Idle, true)); // visible at once
         assert_eq!(frame(&ctx, &mut m, key(Key::Num8)).0, PieMenuResponse::Selected(0));
         assert!(m.is_pinned(), "a selection leaves a pinned menu open");
         // The default dismiss inputs (5, secondary click) don't apply while pinned.
-        assert_eq!(frame(&ctx, &mut m, key(Key::Num5)).0, PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, key(Key::Num5)).0, PieMenuResponse::Idle);
         assert_eq!(frame(&ctx, &mut m, key(Key::Escape)).0, PieMenuResponse::Dismissed);
         assert!(!m.is_open() && !m.is_pinned());
     }
@@ -136,7 +136,7 @@ mod open_state_tests {
         m.pointer_area = Some(Rect::from_min_max(Pos2::new(0.0, 250.0), Pos2::new(800.0, 600.0)));
         frame(&ctx, &mut m, vec![]);
         // Outside the area: not hovered, and a click there neither selects nor dismisses.
-        assert_eq!(frame(&ctx, &mut m, click(ABOVE)).0, PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, click(ABOVE)).0, PieMenuResponse::Idle);
         assert_eq!(m.hovered(), None);
         assert!(m.is_pinned());
         // Inside the area the same click selects.
@@ -198,7 +198,7 @@ mod subpie_tests {
             events,
             ..Default::default()
         };
-        let mut resp = PieMenuResponse::None;
+        let mut resp = PieMenuResponse::Idle;
         let mut out = ctx.run_ui(input, |ui| {
             resp = m.show_with_pointer(ui.ctx(), &buttons, pointer, true, |ui, b| {
                 ui.label(b.label_text());
@@ -225,7 +225,7 @@ mod subpie_tests {
         let pointer = Some(at);
         for (mode, expect) in [(SubPieCenter::Pointer, at), (SubPieCenter::Parent, CENTER)] {
             let (ctx, mut m) = opened(mode);
-            assert_eq!(frame(&ctx, &mut m, 0.0, pointer, &[Key::Num8]), PieMenuResponse::None);
+            assert_eq!(frame(&ctx, &mut m, 0.0, pointer, &[Key::Num8]), PieMenuResponse::Idle);
             assert_eq!((m.path(), m.position), (&[0][..], expect), "{mode:?}");
         }
 
@@ -246,7 +246,7 @@ mod subpie_tests {
         frame(&ctx, &mut m, 0.0, None, &[Key::Num8]); // into the sub-pie
         frame(&ctx, &mut m, 0.0, None, &[]);
         // South (2) is the back button: no `Selected`, the menu stays open at the parent.
-        assert_eq!(frame(&ctx, &mut m, 0.0, None, &[Key::Num2]), PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, 0.0, None, &[Key::Num2]), PieMenuResponse::Idle);
         assert!(m.is_open() && m.path().is_empty());
         assert_eq!(m.position, CENTER);
     }
@@ -269,7 +269,7 @@ mod subpie_tests {
             }],
             ..Default::default()
         };
-        let mut resp = PieMenuResponse::None;
+        let mut resp = PieMenuResponse::Idle;
         let mut out = ctx.run_ui(input, |ui| {
             resp = m.show(ui.ctx(), &root, true, |_, _| {});
         });
@@ -300,7 +300,7 @@ mod subpie_tests {
         frame(&ctx, &mut m, 3.1, above, &[]);
         frame(&ctx, &mut m, 3.5, above, &[]);
         assert!(m.path().is_empty(), "the timer restarted");
-        assert_eq!(frame(&ctx, &mut m, 3.7, above, &[]), PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, 3.7, above, &[]), PieMenuResponse::Idle);
         assert_eq!(m.path(), &[0], "opened after resting 0.5 s");
         // A leaf ("Leaf", also North) never auto-selects, however long it is hovered.
         frame(&ctx, &mut m, 9.0, above, &[]);
@@ -326,7 +326,7 @@ mod subpie_tests {
         frame(&ctx, &mut m, 9.2, below, &[]);
         frame(&ctx, &mut m, 9.5, below, &[]);
         assert_eq!(m.path(), &[0], "not yet");
-        assert_eq!(frame(&ctx, &mut m, 9.8, below, &[]), PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, 9.8, below, &[]), PieMenuResponse::Idle);
         assert!(m.is_open() && m.path().is_empty(), "back at the parent");
         // At the root nothing is hovered-through: South has no button, and the pointer now
         // rests on "More" (nearest), which it arrived on, so it does not reopen.
@@ -448,11 +448,11 @@ mod finding_tests {
     fn hint_digit_styles() {
         let mut m = PieMenu::new();
         let n = PieDirection::North; // number key 8
-        assert_eq!(m.hint_digit(&n), '8');
+        assert_eq!(m.hint_digit(n), '8');
         m.settings.number_hints.digits = HintDigits::ArabicIndic;
-        assert_eq!(m.hint_digit(&n), '٨');
+        assert_eq!(m.hint_digit(n), '٨');
         m.settings.number_hints.digits = HintDigits::Persian;
-        assert_eq!(m.hint_digit(&n), '۸');
+        assert_eq!(m.hint_digit(n), '۸');
     }
 
     #[test]
@@ -504,7 +504,7 @@ mod finding_tests {
         events: Vec<egui::Event>,
     ) -> PieMenuResponse {
         let buttons = vec![north()];
-        let mut resp = PieMenuResponse::None;
+        let mut resp = PieMenuResponse::Idle;
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
             events,
@@ -560,7 +560,7 @@ mod finding_tests {
         m.reveal();
         frame(&ctx, &mut m, &mut text, true, vec![]);
         let resp = frame(&ctx, &mut m, &mut text, true, digit8());
-        assert_eq!(resp, PieMenuResponse::None, "typing selected a pie button");
+        assert_eq!(resp, PieMenuResponse::Idle, "typing selected a pie button");
         assert_eq!(text, "8");
         // A dismiss key typed into the field doesn't dismiss the menu either.
         let five = vec![
@@ -574,7 +574,7 @@ mod finding_tests {
             egui::Event::Text("5".into()),
         ];
         let resp = frame(&ctx, &mut m, &mut text, true, five);
-        assert_eq!(resp, PieMenuResponse::None, "typing 5 dismissed the menu");
+        assert_eq!(resp, PieMenuResponse::Idle, "typing 5 dismissed the menu");
         assert_eq!(text, "85");
         // Without a focused field the key selects as before.
         ctx.memory_mut(|mem| mem.stop_text_input());
@@ -593,7 +593,7 @@ mod input_tests {
     /// One frame of a revealed menu with a single "Copy" button (mnemonic `c`).
     fn frame(ctx: &egui::Context, m: &mut PieMenu, events: Vec<egui::Event>, title: Option<&str>) -> PieMenuResponse {
         let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c')];
-        let mut resp = PieMenuResponse::None;
+        let mut resp = PieMenuResponse::Idle;
         m.title = title.map(String::from);
         let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
             resp = m.show_with_pointer(ui.ctx(), &buttons, None, true, |ui, b| {
@@ -615,7 +615,7 @@ mod input_tests {
     fn mnemonic_matches_by_key_code_but_not_in_a_ctrl_chord() {
         let ctx = egui::Context::default();
         let mut m = revealed();
-        assert_eq!(frame(&ctx, &mut m, key(Key::C, egui::Modifiers::CTRL), None), PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, key(Key::C, egui::Modifiers::CTRL), None), PieMenuResponse::Idle);
         assert_eq!(frame(&ctx, &mut m, key(Key::C, egui::Modifiers::NONE), None), PieMenuResponse::Selected(0));
     }
 
@@ -623,7 +623,7 @@ mod input_tests {
     fn dismiss_key_is_consumed_and_ignores_ctrl_chords() {
         let ctx = egui::Context::default();
         let mut m = revealed();
-        assert_eq!(frame(&ctx, &mut m, key(Key::Escape, egui::Modifiers::CTRL), None), PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, key(Key::Escape, egui::Modifiers::CTRL), None), PieMenuResponse::Idle);
         assert_eq!(frame(&ctx, &mut m, key(Key::Escape, egui::Modifiers::NONE), None), PieMenuResponse::Dismissed);
     }
 
@@ -671,7 +671,7 @@ mod input_tests {
         let mut m = PieMenu::new();
         let tap = |m: &mut PieMenu, time: f64| {
             m.open(Pos2::new(100.0, 100.0));
-            let mut resp = PieMenuResponse::None;
+            let mut resp = PieMenuResponse::Idle;
             let input = egui::RawInput { time: Some(time), ..Default::default() };
             let mut out = ctx.run_ui(input, |ui| {
                 resp = m.show_with_pointer(ui.ctx(), &buttons, Some(Pos2::new(100.0, 100.0)), false, |_, _| {});
@@ -797,7 +797,7 @@ mod fan_out_tests {
                 events,
                 ..Default::default()
             };
-            let (mut resp, mut drawn) = (PieMenuResponse::None, Drawn::new());
+            let (mut resp, mut drawn) = (PieMenuResponse::Idle, Drawn::new());
             let mut opacities = Vec::new();
             let mut scales = Vec::new();
             let font_override = self.font_override.clone();
@@ -1117,7 +1117,7 @@ mod fan_out_tests {
     fn open_fan_has_the_keys_to_itself() {
         let mut rig = Rig::new(buttons());
         // 6 (East) opens the fan rather than selecting anything.
-        assert_eq!(rig.frame(None, true, &[Key::Num6]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::Num6]).0, PieMenuResponse::Idle);
         assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
         rig.frame(None, true, &[]);
         // 8 is North: the fan's "Above", not the parent's "Plain".
@@ -1128,7 +1128,7 @@ mod fan_out_tests {
         let mut rig = Rig::new(buttons());
         rig.menu.settings.input.auto_mnemonics = true;
         rig.frame(None, true, &[Key::Num6]);
-        assert_eq!(rig.frame(None, true, &[Key::P]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::P]).0, PieMenuResponse::Idle);
         assert_eq!(rig.frame(None, true, &[Key::U]).0, PieMenuResponse::Selected(2), "Under");
         assert_eq!(rig.menu.selected_path(), &[0, 2]);
     }
@@ -1141,7 +1141,7 @@ mod fan_out_tests {
             .with_children(vec![PieButton::new(PieDirection::South).with_label("Leaf")])];
         let mut rig = Rig::new(nested);
         let (resp, drawn) = rig.frame(None, true, &[Key::Num8]);
-        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(resp, PieMenuResponse::Idle);
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(paths(&drawn), [vec![0]], "the root's button is drawn in the frame that leaves it");
         let (_, drawn) = rig.frame(None, true, &[]);
@@ -1190,7 +1190,7 @@ mod fan_out_tests {
 
         rig.frame(None, true, &[Key::Num6]);
         assert!(rig.menu.open_fan_out().is_some());
-        assert_eq!(rig.frame(None, true, &[Key::Backspace]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::Backspace]).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
     }
 
@@ -1236,7 +1236,7 @@ mod fan_out_tests {
         ])]);
         rig.frame(None, true, &[Key::Num6]);
         assert!(rig.menu.open_fan_out().is_some());
-        assert_eq!(rig.frame(None, true, &[Key::Num8]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::Num8]).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
     }
 
@@ -1485,7 +1485,7 @@ mod fan_out_tests {
         assert_eq!(rig.menu.path(), &[0]);
         rig.frame(None, true, &[]);
         rig.frame(None, true, &[]);
-        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::None);
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::Idle);
         assert!(rig.menu.path().is_empty() && rig.menu.is_open());
         rig.frame(Some(CENTER), true, &[]);
         assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::Dismissed);
@@ -1495,13 +1495,13 @@ mod fan_out_tests {
         let mut rig = Rig::new(buttons());
         rig.menu.pin(CENTER);
         rig.frame(None, true, &[]);
-        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::None);
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
 
         // Clicks off: nothing happens.
         let mut rig = Rig::new(buttons());
         rig.menu.settings.input.select_on_primary_click = false;
-        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::None);
+        assert_eq!(rig.frame_with(Some(CENTER), true, click_at(CENTER)).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
     }
 
@@ -1514,7 +1514,7 @@ mod fan_out_tests {
         rig.point(trigger);
         assert!(rig.menu.open_fan_out().is_some());
         // Key released on the opening button: the fan breaks out into a sub-pie.
-        assert_eq!(rig.frame(Some(trigger), false, &[]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(Some(trigger), false, &[]).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(rig.menu.open_fan_out(), None);
@@ -1537,7 +1537,7 @@ mod fan_out_tests {
         let trigger = rig.trigger();
         assert!(rig.menu.open_fan_out().is_some());
         // Click on the opening button (with the Dismiss setting): the fan closes, the menu stays.
-        assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::None);
+        assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
         assert_eq!(rig.menu.open_fan_out(), None);
         for _ in 0..3 {
@@ -1554,7 +1554,7 @@ mod fan_out_tests {
         let mut rig = Rig::new(buttons());
         rig.frame(None, true, &[Key::Num6]);
         rig.point(BLOCKED);
-        assert_eq!(rig.frame_with(Some(BLOCKED), true, click_at(BLOCKED)).0, PieMenuResponse::None);
+        assert_eq!(rig.frame_with(Some(BLOCKED), true, click_at(BLOCKED)).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open() && rig.menu.open_fan_out().is_none());
     }
 
@@ -1564,13 +1564,13 @@ mod fan_out_tests {
         let mut rig = Rig::new(buttons());
         rig.point(at_ring);
         assert!(rig.menu.open_fan_out().is_some());
-        assert_eq!(rig.frame(Some(at_ring), false, &[]).0, PieMenuResponse::None);
+        assert_eq!(rig.frame(Some(at_ring), false, &[]).0, PieMenuResponse::Idle);
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(rig.menu.open_fan_out(), None);
         // Inside: the same children as a sub-pie (no reveal animation here, so the main
         // ring, the opener included, is already gone).
         let (resp, drawn) = rig.frame(Some(at_ring), false, &[]);
-        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(resp, PieMenuResponse::Idle);
         assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2]]);
         // Backspace goes back to the root; the pointer rests on the opener beyond the ring.
         rig.frame(Some(at_ring), false, &[Key::Backspace]);
@@ -1598,7 +1598,7 @@ mod fan_out_tests {
         rig.point(at_ring);
         let trigger = rig.trigger();
         assert!(rig.menu.open_fan_out().is_some());
-        assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::None);
+        assert_eq!(rig.frame_with(Some(trigger), true, click_at(trigger)).0, PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
         assert_eq!(rig.menu.path(), &[0]);
         assert_eq!(rig.menu.open_fan_out(), None);
@@ -1669,7 +1669,7 @@ mod fan_out_tests {
         } else {
             rig.frame(Some(AT_RING), false, &[]).0
         };
-        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(resp, PieMenuResponse::Idle);
         assert_eq!(rig.menu.path(), &[0]);
     }
 
@@ -2190,7 +2190,7 @@ mod cluster_tests {
             let (menu, buttons) = (&mut self.menu, &self.buttons);
             let (focus_text, text) = (self.focus_text, &mut self.text);
             let mut labels = BTreeMap::new();
-            let mut resp = PieMenuResponse::None;
+            let mut resp = PieMenuResponse::Idle;
             let mut out = self.ctx.run_ui(input, |ui| {
                 if focus_text {
                     ui.text_edit_singleline(text).request_focus();
@@ -2316,7 +2316,7 @@ mod cluster_tests {
         // The gap itself is not an item.
         let mid = Pos2::new((rig.rects[&3].min.x + rig.rects[&7].max.x) / 2.0, rig.rects[&7].center().y);
         let mut rig = rig;
-        assert_eq!(rig.click(mid), PieMenuResponse::None);
+        assert_eq!(rig.click(mid), PieMenuResponse::Idle);
     }
 
     #[test]
@@ -2349,7 +2349,7 @@ mod cluster_tests {
         rig.frame(Some(far), true, &[]);
         assert_eq!(rig.menu.hovered(), None);
         // A click there selects nothing either.
-        assert_eq!(rig.click(spot), PieMenuResponse::None);
+        assert_eq!(rig.click(spot), PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
 
         // The neighbours still highlight, and the cluster is never skipped over to them:
@@ -2365,14 +2365,14 @@ mod cluster_tests {
     fn no_number_key_or_mnemonic_selects_a_cluster() {
         let mut rig = Rig::new(mixed(), Layout::Row);
         rig.menu.settings.input.auto_mnemonics = true;
-        assert_eq!(rig.frame(None, true, &[Key::Num8]), PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::Num8]), PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
         // The cluster has no hint, the others do; and it never gets a mnemonic.
         rig.frame(None, true, &[]);
         assert_eq!(rig.hints[&0], None);
         assert_eq!(rig.hints[&1].as_deref(), Some("6"));
-        assert_eq!(rig.menu.number_hint(&rig.buttons[0]), None);
-        assert!(rig.menu.number_hint(&rig.buttons[1]).is_some());
+        assert_eq!(rig.menu.number_hint(&rig.buttons[0], &egui::Visuals::dark()), None);
+        assert!(rig.menu.number_hint(&rig.buttons[1], &egui::Visuals::dark()).is_some());
         // "Zeta" would have claimed Z, which stays with "Zoom"; "Alpha" keeps A.
         let m = rig.menu.mnemonics(&rig.buttons);
         assert_eq!(m, [None, Some('z'), Some('a')]);
@@ -2391,7 +2391,7 @@ mod cluster_tests {
         let mut rig = Rig::new(mixed(), Layout::Column);
         rig.menu.settings.input.select_on_primary_click = false;
         let pos = rig.centre_of(9);
-        assert_eq!(rig.click(pos), PieMenuResponse::None);
+        assert_eq!(rig.click(pos), PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
         assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Selected(9));
         assert_eq!(rig.menu.selected_path(), &[0, 9]);
@@ -2403,7 +2403,7 @@ mod cluster_tests {
         rig.disabled_item = Some(3);
         rig.settle();
         let pos = rig.centre_of(3);
-        assert_eq!(rig.click(pos), PieMenuResponse::None);
+        assert_eq!(rig.click(pos), PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
         rig.frame(Some(pos), true, &[]);
         assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Dismissed);
@@ -2577,11 +2577,11 @@ mod cluster_tests {
         // Without auto mnemonics there are no keys, and typing does nothing.
         let mut rig = Rig::new(declared(), Layout::Row);
         assert_eq!(rig.menu.cluster_mnemonics(&rig.buttons), vec![vec![None; 3], vec![], vec![]]);
-        assert_eq!(rig.frame_with(None, true, typed('p')), PieMenuResponse::None);
+        assert_eq!(rig.frame_with(None, true, typed('p')), PieMenuResponse::Idle);
         // The use_mnemonic_keys switch gates items like buttons.
         let mut rig = with_auto(declared());
         rig.menu.settings.input.use_mnemonic_keys = false;
-        assert_eq!(rig.frame_with(None, true, typed('p')), PieMenuResponse::None);
+        assert_eq!(rig.frame_with(None, true, typed('p')), PieMenuResponse::Idle);
     }
 
     #[test]
@@ -2641,7 +2641,7 @@ mod cluster_tests {
         // A disabled item is not selectable by click or release either, though drawn enabled.
         let mut rig = with_auto(buttons.clone());
         let pos = rig.centre_of(3);
-        assert_eq!(rig.click(pos), PieMenuResponse::None);
+        assert_eq!(rig.click(pos), PieMenuResponse::Idle);
         rig.frame(Some(pos), true, &[]);
         assert_eq!(rig.frame(Some(pos), false, &[]), PieMenuResponse::Dismissed);
         // A disabled cluster button: none of its items has a key.
@@ -2666,9 +2666,9 @@ mod cluster_tests {
     #[test]
     fn the_clusters_number_key_does_nothing_but_the_others_work() {
         let mut rig = with_auto(declared());
-        assert_eq!(rig.frame(None, true, &[Key::Num8]), PieMenuResponse::None);
+        assert_eq!(rig.frame(None, true, &[Key::Num8]), PieMenuResponse::Idle);
         assert!(rig.menu.is_open());
-        assert_eq!(rig.menu.number_hint(&rig.buttons[0]), None);
+        assert_eq!(rig.menu.number_hint(&rig.buttons[0], &egui::Visuals::dark()), None);
         assert_eq!(rig.frame(None, true, &[Key::Num6]), PieMenuResponse::Selected(1));
         let mut rig = with_auto(declared());
         assert_eq!(rig.frame(None, true, &[Key::Num4]), PieMenuResponse::Selected(2));
@@ -2758,7 +2758,7 @@ mod cluster_tests {
         rig.focus_text = true;
         rig.frame(None, true, &[]);
         rig.frame(None, true, &[]);
-        assert_eq!(rig.frame_with(None, true, typed(c)), PieMenuResponse::None, "the text field has the key");
+        assert_eq!(rig.frame_with(None, true, typed(c)), PieMenuResponse::Idle, "the text field has the key");
         assert!(rig.menu.is_open());
         rig.focus_text = false;
         rig.ctx.memory_mut(|mem| mem.stop_text_input());
@@ -3051,7 +3051,7 @@ mod trigger_key_tests {
 
     /// One frame of an app that opens the menu when C goes down and keeps it open while held.
     fn frame(ctx: &egui::Context, m: &mut PieMenu, buttons: &[PieButton], events: Vec<egui::Event>) -> (PieMenuResponse, Vec<Option<char>>) {
-        let (mut resp, mut seen) = (PieMenuResponse::None, Vec::new());
+        let (mut resp, mut seen) = (PieMenuResponse::Idle, Vec::new());
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
             events,
@@ -3084,9 +3084,9 @@ mod trigger_key_tests {
         let ctx = egui::Context::default();
         let mut m = menu();
         // The opening press, then key repeats while held: nothing is selected.
-        assert_eq!(frame(&ctx, &mut m, &buttons, c_held(false)).0, PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, &buttons, c_held(false)).0, PieMenuResponse::Idle);
         let (resp, seen) = frame(&ctx, &mut m, &buttons, c_held(true));
-        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(resp, PieMenuResponse::Idle);
         assert_eq!(seen, [Some('o')], "Copy moved to its next letter");
         assert_eq!(m.mnemonics(&buttons), [Some('o')]);
         assert!(m.check_buttons(&buttons).is_empty());
@@ -3133,12 +3133,12 @@ mod trigger_key_tests {
         let mut m = PieMenu::new();
         m.settings.show_behavior = ShowBehavior::Instant;
         m.settings.input.trigger_key = Some(Key::Num8);
-        assert_eq!(m.number_hint(&buttons[0]), None);
-        assert_eq!(m.number_hint(&buttons[1]).unwrap().text, "2");
+        assert_eq!(m.number_hint(&buttons[0], &egui::Visuals::dark()), None);
+        assert_eq!(m.number_hint(&buttons[1], &egui::Visuals::dark()).unwrap().text, "2");
         m.open(Pos2::new(400.0, 300.0));
         let ctx = egui::Context::default();
         let press = |key| vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::NONE }];
-        assert_eq!(frame(&ctx, &mut m, &buttons, press(Key::Num8)).0, PieMenuResponse::None);
+        assert_eq!(frame(&ctx, &mut m, &buttons, press(Key::Num8)).0, PieMenuResponse::Idle);
         assert_eq!(frame(&ctx, &mut m, &buttons, press(Key::Num2)).0, PieMenuResponse::Selected(1));
     }
 }
@@ -3183,7 +3183,7 @@ mod open_modes_and_identity_tests {
                 events,
                 ..Default::default()
             };
-            let mut resp = PieMenuResponse::None;
+            let mut resp = PieMenuResponse::Idle;
             let mut scales = Vec::new();
             let (menu, buttons) = (&mut self.menu, buttons());
             let mut out = self.ctx.run_ui(input, |ui| {
@@ -3220,10 +3220,10 @@ mod open_modes_and_identity_tests {
         assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::QuickTap);
         // Pressed again within the double-tap window and held still: nothing is shown …
         rig.menu.open(CENTER);
-        assert_eq!(rig.frame(CENTER, true, vec![]), PieMenuResponse::None);
+        assert_eq!(rig.frame(CENTER, true, vec![]), PieMenuResponse::Idle);
         assert!(rig.scales.is_empty());
         // … but moving past the threshold is a drag: the menu opens and selects as usual.
-        assert_eq!(rig.frame(NORTH, true, vec![]), PieMenuResponse::None);
+        assert_eq!(rig.frame(NORTH, true, vec![]), PieMenuResponse::Idle);
         assert!(!rig.scales.is_empty(), "the menu is shown");
         rig.frame(NORTH, true, vec![]);
         assert_eq!(rig.frame(NORTH, false, vec![]), PieMenuResponse::Selected(0));
@@ -3239,7 +3239,7 @@ mod open_modes_and_identity_tests {
         let mut rig = Rig::new();
         rig.menu.open_sticky(CENTER);
         for pointer in [CENTER, CENTER, NORTH, CENTER] {
-            assert_eq!(rig.frame(pointer, false, vec![]), PieMenuResponse::None);
+            assert_eq!(rig.frame(pointer, false, vec![]), PieMenuResponse::Idle);
             assert!(!rig.scales.is_empty(), "shown at once and kept open");
         }
         assert!(rig.menu.is_open() && !rig.menu.is_pinned());
@@ -3254,7 +3254,7 @@ mod open_modes_and_identity_tests {
         rig.menu.open(CENTER);
         assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::QuickTap);
         rig.menu.open_sticky(CENTER);
-        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::None);
+        assert_eq!(rig.frame(CENTER, false, vec![]), PieMenuResponse::Idle);
         assert!(!rig.scales.is_empty());
     }
 
@@ -3273,7 +3273,7 @@ mod open_modes_and_identity_tests {
         assert_eq!(rig.menu.selected_id(), id("copy"));
         // A fan child: its own id, not the opener's.
         open(&mut rig);
-        assert_eq!(rig.key(Key::Num6), PieMenuResponse::None);
+        assert_eq!(rig.key(Key::Num6), PieMenuResponse::Idle);
         assert_eq!(rig.key(Key::Num6), PieMenuResponse::Selected(0));
         assert_eq!(rig.menu.selected_id(), id("beyond"));
         // A cluster item: the cluster button's id; the item is the number in the response.
@@ -3341,5 +3341,55 @@ mod open_modes_and_identity_tests {
         serde::<PieMenuSettings>();
         serde::<PieDirection>();
         serde::<HighlightShape>();
+    }
+}
+
+mod breaking_batch_tests {
+    use super::*;
+
+    /// One frame of a revealed menu whose two buttons share a direction.
+    fn show_badly_formed(checks: ButtonChecks) -> PieMenuResponse {
+        let buttons = [PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
+        let mut m = PieMenu::new();
+        m.settings.button_checks = checks;
+        m.open(Pos2::new(100.0, 100.0));
+        m.reveal();
+        let mut resp = PieMenuResponse::Dismissed;
+        let mut out = egui::Context::default().run_ui(Default::default(), |ui| {
+            resp = m.show_with_pointer(ui.ctx(), &buttons, None, true, |_, _| {});
+        });
+        out.textures_delta.clear();
+        resp
+    }
+
+    #[test]
+    fn button_checks_can_warn_or_be_switched_off() {
+        assert_eq!(ButtonChecks::default(), ButtonChecks::DebugPanic);
+        assert_eq!(show_badly_formed(ButtonChecks::Warn), PieMenuResponse::Idle);
+        assert_eq!(show_badly_formed(ButtonChecks::Off), PieMenuResponse::Idle);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "are both in direction")]
+    fn button_checks_panic_in_debug_builds_by_default() {
+        show_badly_formed(ButtonChecks::DebugPanic);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn the_old_name_of_idle_still_works_in_expressions_and_patterns() {
+        assert_eq!(PieMenuResponse::None, PieMenuResponse::Idle);
+        assert!(matches!(PieMenuResponse::Idle, PieMenuResponse::None));
+    }
+
+    #[test]
+    fn number_hint_takes_its_colour_from_the_visuals_given() {
+        let m = PieMenu::new();
+        let north = PieButton::new(PieDirection::North);
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let hint = m.number_hint(&north, &visuals).unwrap();
+            assert_eq!(hint.color, visuals.widgets.inactive.fg_stroke.color);
+        }
     }
 }

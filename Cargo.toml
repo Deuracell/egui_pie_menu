@@ -16,6 +16,7 @@ serde = ["dep:serde", "egui/serde"]
 
 [dependencies]
 egui = "0.36.2"
+log = "0.4"
 serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]

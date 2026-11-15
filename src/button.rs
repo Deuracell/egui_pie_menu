@@ -273,6 +273,7 @@ impl std::fmt::Display for MnemonicOwner {
 /// Indices refer to the slice that was checked; inside [`ButtonProblem::InFanOut`] they
 /// refer to that fan-out's children.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ButtonProblem {
     /// Two buttons occupy the same direction.
     SharedDirection { first: usize, second: usize, direction: PieDirection },
