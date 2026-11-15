@@ -171,8 +171,9 @@ fn resolve_slots(buttons: &[Slot], auto: bool, reserved: Option<char>) -> Vec<Op
     resolved
 }
 
-/// Build a [`LayoutJob`] that renders `text` with the first case-insensitive
-/// occurrence of `mnemonic` underlined — suitable for use as a pie menu button
+/// Build a [`LayoutJob`] that renders `text` with a case-insensitive occurrence of
+/// `mnemonic` underlined (the first one that starts a word, else the first one
+/// anywhere, matching how generated mnemonics prefer word initials) — suitable for use as a pie menu button
 /// label when you want to surface keyboard shortcuts visually.
 ///
 /// The rest of the text uses `format` unchanged. The underline color is
@@ -196,7 +197,22 @@ pub fn mnemonic_text(text: &str, mnemonic: char, format: TextFormat) -> LayoutJo
 
 pub(crate) fn append_mnemonic_text(job: &mut LayoutJob, text: &str, mnemonic: char, format: TextFormat) {
     let mnemonic_folded = fold_char(mnemonic);
-    let Some((idx, c)) = text.char_indices().find(|(_, c)| fold_char(*c) == mnemonic_folded) else {
+    // Word initials win, as in `resolve_slots`: the first char of a piece when splitting on
+    // non-alphanumerics.
+    let mut prev_alnum = false;
+    let mut first = None;
+    let mut initial = None;
+    for (i, ch) in text.char_indices() {
+        if fold_char(ch) == mnemonic_folded {
+            first.get_or_insert((i, ch));
+            if !prev_alnum && ch.is_alphanumeric() {
+                initial = Some((i, ch));
+                break;
+            }
+        }
+        prev_alnum = ch.is_alphanumeric();
+    }
+    let Some((idx, c)) = initial.or(first) else {
         job.append(text, 0.0, format);
         return;
     };
@@ -423,6 +439,22 @@ mod tests {
         }
 
         #[test]
+        fn mnemonic_underlines_a_word_initial_before_earlier_occurrences() {
+            let at = |job: &LayoutJob| {
+                let s = job.sections.iter().find(|s| s.format.underline != Stroke::NONE).unwrap();
+                (usize::from(s.byte_range.start), job.text[usize::from(s.byte_range.start)..usize::from(s.byte_range.end)].to_string())
+            };
+            let job = mnemonic_text("Paste Special", 's', TextFormat::default());
+            assert_eq!(job.text, "Paste Special");
+            assert_eq!(at(&job), (6, "S".to_string()));
+            let job = mnemonic_text("Select All Items", 'a', TextFormat::default());
+            assert_eq!(at(&job), (7, "A".to_string()));
+            // Not any word's initial: first occurrence anywhere.
+            let job = mnemonic_text("Select All", 'e', TextFormat::default());
+            assert_eq!(at(&job), (1, "e".to_string()));
+        }
+
+        #[test]
         fn mnemonic_text_unicode_underline() {
             let job = mnemonic_text("Файл", 'Ф', TextFormat::default());
             // Mnemonic is the first char: underlined "Ф" + remainder (no "before" section).
@@ -468,7 +500,7 @@ mod tests {
             // Latin text is unchanged.
             let job = mnemonic_text("Paste Special", 's', fmt());
             assert_eq!(job.text, "Paste Special");
-            assert_eq!(underlined(&job), "s");
+            assert_eq!(underlined(&job), "S");
         }
 
         #[test]
