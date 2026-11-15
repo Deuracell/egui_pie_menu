@@ -3090,6 +3090,14 @@ mod serde_tests {
         assert_serde::<ShowBehavior>();
         assert_serde::<HighlightShape>();
         assert_serde::<HoverEmphasis>();
+        assert_serde::<PieMenuToothSettings>();
+    }
+
+    #[test]
+    fn a_partial_tooth_map_keeps_the_default_for_the_rest() {
+        let map = MapDeserializer::<_, Error>::new([("outline_base", true)].into_iter().map(|(k, v)| (k, v.into_deserializer())));
+        let tooth = <PieMenuToothSettings as serde::Deserialize>::deserialize(map).unwrap();
+        assert_eq!(tooth, PieMenuToothSettings { outline_base: true, ..Default::default() });
     }
 
     #[test]

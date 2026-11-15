@@ -142,6 +142,81 @@ pub struct PieMenuCenterIndicatorSettings {
     pub highlight_circle_radius: f32,
     /// Snap the highlight to the hovered button's direction instead of following the mouse.
     pub highlight_snapping: bool,
+
+    /// A tooth that grows out of the background circle toward the pointer. `None` (the
+    /// default) draws none. It is filled with [`highlight_fill_color`](Self::highlight_fill_color)
+    /// and outlined with [`highlight_stroke`](Self::highlight_stroke), and follows the same
+    /// direction, snapping and progress as the highlight. See [`PieMenuToothSettings`].
+    pub tooth: Option<PieMenuToothSettings>,
+}
+
+/// A tooth that grows out of the rim of the center indicator toward the pointer.
+///
+/// It starts as a short, wide, round bump and, as the pointer travels from the dead zone
+/// to the layout radius, grows longer and narrower and sharpens into a point. Its base is
+/// the circle's own arc, so nothing is drawn inside the circle (unless [`dig`](Self::dig)
+/// is set). The outline can never cross itself, whatever the values.
+///
+/// The shape is a profile from the base to the tip: at a fraction `s` of the length the
+/// half-width is `(1 - s^q)^(1/q)` of the base half-width. `q` is 2 for a round dome, 1 for
+/// a straight-sided triangle and below 1 for concave sides (a thorn). It moves from
+/// [`start_roundness`](Self::start_roundness) to [`end_sharpness`](Self::end_sharpness) as
+/// the pointer travels. The default is the "thorn" look.
+///
+/// ```
+/// use egui_pie_menu::{PieMenu, PieMenuToothSettings};
+/// let mut menu = PieMenu::new();
+/// menu.settings.center_indicator.tooth = Some(PieMenuToothSettings::default());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
+pub struct PieMenuToothSettings {
+    /// How far the tip reaches beyond the circle at full travel, in points.
+    pub length: f32,
+    /// Length at the first sign of growth, in points.
+    pub start_length: f32,
+    /// Base width at the first sign of growth, as an angle in radians around the circle.
+    pub start_width: f32,
+    /// Base width at full travel, in radians.
+    pub end_width: f32,
+    /// Shape exponent at the first sign of growth. 2 is a round dome, 1 a triangle.
+    pub start_roundness: f32,
+    /// Shape exponent at full travel. Below 1 is a concave, sharp point; 2 is round.
+    pub end_sharpness: f32,
+    /// Moves the base outward (positive) or inward (negative), in points. The base sits on
+    /// the outer edge of the background circle's stroke at 0.
+    pub inset: f32,
+    /// Curves the base inward into the circle, making a crescent, in points. 0 follows
+    /// the circle exactly. Limited to half the base radius.
+    pub dig: f32,
+    /// Response curve of the length. Above 1 grows quickly at first.
+    pub length_easing: f32,
+    /// Response curve of the width change.
+    pub width_easing: f32,
+    /// Response curve of the change from round to sharp.
+    pub sharpness_easing: f32,
+    /// Also stroke the base, where the tooth meets the circle. Otherwise the outline
+    /// follows only the sides and the tip.
+    pub outline_base: bool,
+}
+
+impl Default for PieMenuToothSettings {
+    fn default() -> Self {
+        Self {
+            length: 54.0,
+            start_length: 5.0,
+            start_width: 80.0_f32.to_radians(),
+            end_width: 24.0_f32.to_radians(),
+            start_roundness: 2.0,
+            end_sharpness: 0.4,
+            inset: 0.0,
+            dig: 0.0,
+            length_easing: 1.2,
+            width_easing: 1.0,
+            sharpness_easing: 1.3,
+            outline_base: false,
+        }
+    }
 }
 
 impl Default for PieMenuCenterIndicatorSettings {
@@ -158,6 +233,7 @@ impl Default for PieMenuCenterIndicatorSettings {
             highlight_angle: TAU / 8.0,
             highlight_circle_radius: 5.0,
             highlight_snapping: false,
+            tooth: None,
         }
     }
 }

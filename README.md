@@ -123,7 +123,7 @@ Off by default. Enable it to (de)serialise the settings, for example to keep the
 egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", tag = "v0.36.1", features = ["serde"] }
 ```
 
-All settings types implement `Serialize` and `Deserialize`: `PieMenuSettings` and the groups inside it, `HoverEmphasis`, `HighlightShape` and the enums they use (`ShowBehavior`, `RevealAnimation`, `HintSide`, `HintDigits`, `SubPieStyle`, `SubPieCenter`, `FanOpenerAction`, `PieMenuDismissInput`). `PieButton` and `PieMenu` do not: buttons are built in code, and the menu holds runtime state. The feature also turns on egui's own `serde` feature, which makes the egui types in the settings (`Color32`, `Stroke`, `Margin`, `FontId`, `Key`, `PointerButton`) serialisable.
+All settings types implement `Serialize` and `Deserialize`: `PieMenuSettings` and the groups inside it, `HoverEmphasis`, `HighlightShape`, `PieMenuToothSettings` and the enums they use (`ShowBehavior`, `RevealAnimation`, `HintSide`, `HintDigits`, `SubPieStyle`, `SubPieCenter`, `FanOpenerAction`, `PieMenuDismissInput`). `PieButton` and `PieMenu` do not: buttons are built in code, and the menu holds runtime state. The feature also turns on egui's own `serde` feature, which makes the egui types in the settings (`Color32`, `Stroke`, `Margin`, `FontId`, `Key`, `PointerButton`) serialisable.
 
 The settings structs use `#[serde(default)]`: a field missing from the saved data takes its default value. Settings saved by an older version therefore keep loading when a later version adds settings.
 
@@ -635,6 +635,33 @@ use egui_pie_menu::HighlightShape;
 menu.settings.center_indicator.highlight_shape = HighlightShape::SLICE; // default; also NONE, ARC, CIRCLE
 menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, circle: true, slice: false };
 ```
+
+### Tooth
+
+An optional tooth grows out of the center circle toward the pointer: round at first, then longer, narrower and sharper the farther the pointer travels from the dead zone to the layout radius. Its base is the circle's own arc, so nothing is drawn inside the circle. It is off by default (`None`) and needs no `HighlightShape`; it takes its fill from `highlight_fill_color` and its outline from `highlight_stroke`, and follows `highlight_snapping`, the fade and the dimming like the rest of the highlight.
+
+```rust
+use egui_pie_menu::PieMenuToothSettings;
+
+menu.settings.center_indicator.tooth = Some(PieMenuToothSettings::default()); // the "thorn" look
+menu.settings.center_indicator.tooth = Some(PieMenuToothSettings {
+    length: 40.0,
+    end_sharpness: 1.0, // a straight-sided cone instead of a concave thorn
+    outline_base: true, // also stroke where the tooth meets the circle
+    ..Default::default()
+});
+```
+
+| Field | Meaning |
+|---|---|
+| `length`, `start_length` | how far the tip reaches beyond the circle at full travel and at first growth (points) |
+| `start_width`, `end_width` | base width as an angle in radians, at first growth and at full travel |
+| `start_roundness`, `end_sharpness` | shape exponent: 2 round dome, 1 straight triangle, below 1 concave (a thorn, down to 0.4) |
+| `inset`, `dig` | move the base outward or inward; `dig` curves it into the circle (a crescent) |
+| `length_easing`, `width_easing`, `sharpness_easing` | response curves; above 1 reacts quickly at first |
+| `outline_base` | also stroke the base, not just the sides and the tip |
+
+The outline cannot cross itself for any values (the tests check thousands of random settings). The tip is kept within three quarters of the layout radius from the circle. The demo has a "Tooth" section to try all of this.
 
 ## Right-to-left and non-Latin scripts
 

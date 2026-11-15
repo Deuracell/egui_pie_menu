@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use std::time::Duration;
-use egui_pie_menu::{ButtonProblem, ClusterItem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
+use egui_pie_menu::{ButtonProblem, ClusterItem, FanOpenerAction, HintDigits, HoverEmphasis, HintSide, PieButton, PieDirection, PieMenu, PieMenuResponse, PieMenuSettings, PieMenuToothSettings, RevealAnimation, ShowBehavior, SubPieCenter, SubPieStyle};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -115,6 +115,8 @@ struct Demo {
     sub_hover_ms: u64,
     // Drag value for the fan-out radius (kept while "Own radius" is off)
     fan_radius: f32,
+    /// The tooth's settings while it is switched off, so unticking keeps the edits.
+    tooth: PieMenuToothSettings,
     /// Marker for sub-pie and back buttons that have no icon of their own.
     icons: MarkerIcons,
     /// The embedded image icons, uploaded once as textures (see `IMAGE_ICONS`).
@@ -175,6 +177,7 @@ impl Demo {
             show_hints: false,
             sub_hover_ms: DEFAULT_SUB_HOVER_MS,
             fan_radius: 100.0,
+            tooth: PieMenuToothSettings::default(),
             icons: MarkerIcons::default(),
             images: load_icon_images(ctx),
             sub_pie_look: SubPieLook::default(),
@@ -1475,6 +1478,63 @@ impl eframe::App for Demo {
                     color_bar(ui, &mut self.menu.settings.center_indicator.highlight_stroke.color);
 
                     ui.checkbox(&mut self.menu.settings.center_indicator.highlight_snapping, "Snap to button");
+                });
+
+                section(ui, &query, &mut shown, "Tooth",
+                    "tooth shark thorn fang point grow length width round sharp base outline circle rim crescent dig inset easing highlight", |ui| {
+                    // Coloured like the highlight: fill from "Fill color", outline from "Stroke".
+                    let mut on = self.menu.settings.center_indicator.tooth.is_some();
+                    if ui.checkbox(&mut on, "Tooth")
+                        .on_hover_text("A tooth grows out of the circle toward the pointer: round at first, then longer, narrower and sharper the farther the pointer travels. Filled with the highlight's fill colour and outlined with its stroke.")
+                        .changed()
+                    {
+                        self.menu.settings.center_indicator.tooth = on.then_some(self.tooth);
+                    }
+                    ui.add_enabled_ui(on, |ui| {
+                        let def = PieMenuToothSettings::default();
+                        let t = &mut self.tooth;
+                        let mut changed = false;
+                        ui.label(RichText::new("Shape").strong());
+                        ui.label("Length at full travel");
+                        changed |= px_drag(ui, &mut t.length, def.length, 5.0..=100.0);
+                        ui.label("Length at first growth");
+                        changed |= px_drag(ui, &mut t.start_length, def.start_length, 0.0..=30.0);
+                        let deg = |ui: &mut egui::Ui, label: &str, v: &mut f32, d: f32| {
+                            ui.label(label);
+                            let mut x = v.to_degrees();
+                            let c = drag_reset_with(ui, &mut x, d.to_degrees(), 10.0..=150.0, |dv| dv.speed(0.5).fixed_decimals(0).suffix("°"));
+                            if c { *v = x.to_radians(); }
+                            c
+                        };
+                        changed |= deg(ui, "Base width at first growth", &mut t.start_width, def.start_width);
+                        changed |= deg(ui, "Base width at full travel", &mut t.end_width, def.end_width);
+                        ui.label("Roundness at first growth  (2 round · 1 triangle)");
+                        changed |= drag_reset(ui, &mut t.start_roundness, def.start_roundness, 1.0..=3.0, 0.05);
+                        ui.label("Tip at full travel  (0.4 sharp · 2 round)");
+                        changed |= drag_reset(ui, &mut t.end_sharpness, def.end_sharpness, 0.4..=2.0, 0.05);
+                        ui.label("Base inset")
+                            .on_hover_text("Moves the base outward or inward. 0 sits on the outer edge of the background circle.");
+                        changed |= px_drag(ui, &mut t.inset, def.inset, -6.0..=6.0);
+                        ui.label("Base dig into the circle")
+                            .on_hover_text("Curves the base into the circle, making a crescent. 0 follows the circle exactly.");
+                        changed |= px_drag(ui, &mut t.dig, def.dig, 0.0..=12.0);
+
+                        ui.label(RichText::new("Growth").strong());
+                        ui.label("Length easing");
+                        changed |= drag_reset(ui, &mut t.length_easing, def.length_easing, 0.5..=3.0, 0.05);
+                        ui.label("Width easing");
+                        changed |= drag_reset(ui, &mut t.width_easing, def.width_easing, 0.5..=3.0, 0.05);
+                        ui.label("Sharpening easing");
+                        changed |= drag_reset(ui, &mut t.sharpness_easing, def.sharpness_easing, 0.5..=3.0, 0.05);
+
+                        ui.label(RichText::new("Outline").strong());
+                        changed |= ui.checkbox(&mut t.outline_base, "Outline the circle side too")
+                            .on_hover_text("Also stroke the base where the tooth meets the circle. The stroke width and colour are the highlight's \"Stroke\" settings.")
+                            .changed();
+                        if changed {
+                            self.menu.settings.center_indicator.tooth = Some(*t);
+                        }
+                    });
                 });
 
                 section(ui, &query, &mut shown, "Center label",

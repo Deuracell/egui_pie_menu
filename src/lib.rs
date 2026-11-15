@@ -1486,7 +1486,7 @@ impl PieMenu {
         // Center highlight — progress driven by mouse distance from center.
         let indicator = &self.settings.center_indicator;
         if let Some(highlight_radius) = indicator.highlight_radius
-            && !indicator.highlight_shape.is_none()
+            && (!indicator.highlight_shape.is_none() || indicator.tooth.is_some())
         {
             let progress = current_mouse_pos
                 .filter(|_| self.hovered_index.is_some())
@@ -1526,6 +1526,31 @@ impl PieMenu {
                 ),
                 fill: indicator.highlight_fill_color.gamma_multiply(progress),
             });
+
+            // The tooth: grows out of the background circle's rim (or the highlight circle
+            // when there is none), coloured like the rest of the highlight, and never
+            // reaching past three quarters of the layout radius.
+            if let Some(tooth) = &indicator.tooth {
+                let base_radius = indicator
+                    .background_radius
+                    .map_or(highlight_radius, |r| r + indicator.background_stroke.width / 2.0);
+                if let Some(outline) = highlight_shapes::tooth_outline(
+                    center,
+                    base_radius,
+                    base_angle,
+                    progress,
+                    tooth,
+                    (radius * 0.75 - base_radius - tooth.inset).max(0.0),
+                ) {
+                    highlight_shapes::paint_tooth(
+                        &painter,
+                        &outline,
+                        indicator.highlight_fill_color,
+                        indicator.highlight_stroke,
+                        tooth.outline_base,
+                    );
+                }
+            }
         }
 
         // Draw the title above the center indicator
