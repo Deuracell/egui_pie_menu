@@ -58,7 +58,7 @@ pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char
         starts.push(slots.len());
         if b.is_cluster() {
             for item in b.cluster_items() {
-                let live = b.enabled && item.enabled;
+                let live = b.live() && item.enabled;
                 slots.push(Slot {
                     mnemonic: if live { item.mnemonic } else { Mnemonic::None },
                     label: &item.label,
@@ -66,7 +66,7 @@ pub(crate) fn resolve_all(buttons: &[PieButton], auto: bool) -> (Vec<Option<char
                 });
             }
         } else {
-            slots.push(Slot { mnemonic: b.mnemonic, label: &b.label, enabled: b.enabled });
+            slots.push(Slot { mnemonic: b.mnemonic, label: &b.label, enabled: b.live() });
         }
     }
     let resolved = resolve_slots(&slots, auto);
@@ -253,7 +253,7 @@ pub(crate) fn is_joining_letter(c: char) -> bool {
 
 /// Case-folds `c` and normalises letter variants that share a key:
 /// Hebrew final forms (ך→כ …) and Arabic alef variants (أ إ آ ٱ → ا).
-pub(crate) fn fold_char(c: char) -> char {
+pub fn fold_char(c: char) -> char {
     let c = c.to_lowercase().next().unwrap_or(c);
     match c {
         'ך' => 'כ',
@@ -277,7 +277,8 @@ pub(crate) fn is_combining_mark(c: char) -> bool {
         | 0x06E7..=0x06E8 | 0x06EA..=0x06ED)
 }
 
-pub(crate) fn is_mnemonic_letter(c: char) -> bool {
+/// Whether `c` can be a mnemonic key: a letter (of any script), not a combining mark.
+pub fn is_mnemonic_letter(c: char) -> bool {
     c.is_alphabetic() && !is_combining_mark(c)
 }
 

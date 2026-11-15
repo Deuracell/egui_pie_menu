@@ -1978,6 +1978,122 @@ mod fan_out_tests {
             assert_eq!(PieDirection::ALL.iter().filter(|d| parent.blocks_fan_out(**d)).count(), 3);
         }
     }
+
+    // ── set_open_fan_out ──────────────────────────────────────────────────────
+
+    fn pinned_rig() -> Rig {
+        let mut rig = Rig::new(buttons());
+        rig.menu.pin(CENTER);
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[]);
+        rig
+    }
+
+    #[test]
+    fn set_open_fan_out_opens_and_stays_open_without_a_pointer() {
+        let mut rig = pinned_rig();
+        assert_eq!(rig.menu.open_fan_out(), None);
+        rig.menu.set_open_fan_out(Some(0));
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        for _ in 0..10 {
+            rig.time += 0.05;
+            rig.frame(None, true, &[]);
+        }
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        assert_eq!(rig.menu.fan_centers_for_test().len(), 3);
+        assert!(rig.menu.path().is_empty() && rig.menu.is_pinned());
+    }
+
+    #[test]
+    fn set_open_fan_out_is_closed_by_a_real_pointer_on_another_button() {
+        let mut rig = pinned_rig();
+        rig.menu.set_open_fan_out(Some(0));
+        rig.frame(None, true, &[]);
+        assert!(rig.menu.open_fan_out().is_some());
+        // North (index 1) of the parent ring.
+        rig.frame(Some(CENTER + Vec2::new(0.0, -90.0)), true, &[]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+    }
+
+    #[test]
+    fn set_open_fan_out_on_a_button_without_a_fan_closes_on_the_next_show() {
+        for bad in [1usize, 7, usize::MAX] {
+            let mut rig = pinned_rig();
+            rig.menu.set_open_fan_out(Some(bad));
+            assert_eq!(rig.menu.open_fan_out(), Some((bad, None)));
+            rig.frame(None, true, &[]);
+            assert_eq!(rig.menu.open_fan_out(), None, "trigger {bad}");
+            rig.frame(None, true, &[]);
+            assert_eq!(rig.menu.open_fan_out(), None);
+        }
+    }
+
+    #[test]
+    fn set_open_fan_out_none_closes_and_a_closed_menu_is_untouched() {
+        let mut rig = pinned_rig();
+        rig.menu.set_open_fan_out(Some(0));
+        rig.frame(None, true, &[]);
+        rig.menu.set_open_fan_out(None);
+        assert_eq!(rig.menu.open_fan_out(), None);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.open_fan_out(), None);
+
+        let mut closed = PieMenu::new();
+        closed.set_open_fan_out(Some(0));
+        assert_eq!(closed.open_fan_out(), None);
+        assert!(!closed.is_open());
+    }
+
+    #[test]
+    fn set_open_fan_out_again_does_not_restart_the_fan() {
+        let mut rig = pinned_rig();
+        rig.menu.set_open_fan_out(Some(0));
+        rig.time = 1.0;
+        rig.frame(None, true, &[]);
+        let shown = rig.menu.fan_shown_at;
+        assert!(shown.is_some());
+        rig.menu.set_open_fan_out(Some(0));
+        rig.time = 2.0;
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.fan_shown_at, shown);
+        // Another trigger does restart it.
+        rig.menu.set_open_fan_out(Some(1));
+        assert_eq!(rig.menu.fan_shown_at, None);
+    }
+
+    #[test]
+    fn set_open_fan_out_works_in_a_replace_level_and_a_broken_out_level() {
+        let root = vec![PieButton::new(PieDirection::East).with_label("Sub").with_children(vec![
+            PieButton::new(PieDirection::NorthEast).with_label("More").with_fan_out(vec![
+                PieButton::new(PieDirection::North).with_label("A"),
+                PieButton::new(PieDirection::East).with_label("B"),
+            ]),
+            PieButton::new(PieDirection::West).with_label("Plain"),
+        ])];
+        let mut rig = Rig::new(root);
+        rig.menu.pin(CENTER);
+        rig.frame(None, true, &[]);
+        rig.frame(None, true, &[Key::Num6]);
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.path(), &[0]);
+        rig.menu.set_open_fan_out(Some(0));
+        for _ in 0..5 {
+            rig.frame(None, true, &[]);
+        }
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        assert_eq!(rig.menu.fan_centers_for_test().len(), 2);
+        assert_eq!(rig.menu.path(), &[0]);
+
+        // A broken-out level: the fan of the default rig, broken out, then a plain trigger.
+        let mut rig = fan_rig(true);
+        break_out(&mut rig, true);
+        rig.frame(Some(AT_RING), true, &[]);
+        assert!(rig.menu.breakout.is_some());
+        rig.menu.set_open_fan_out(Some(2));
+        rig.frame(None, true, &[]);
+        assert_eq!(rig.menu.open_fan_out(), None, "a plain button of the broken-out level opens no fan");
+        assert_eq!(rig.menu.path(), &[0]);
+    }
 }
 
 mod view_color_tests {
@@ -3114,5 +3230,79 @@ mod serde_tests {
         assert!(settings.mirror_horizontal);
         let expected = PieMenuSettings { mirror_horizontal: true, ..Default::default() };
         assert_eq!(format!("{settings:?}"), format!("{expected:?}"));
+    }
+}
+
+mod hidden_button_tests {
+    use super::*;
+
+    fn key(key: Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]
+    }
+
+    /// One frame of an open menu with the pointer at `pointer`; returns the response and the
+    /// labels the render closure drew.
+    fn frame(m: &mut PieMenu, buttons: &[PieButton], pointer: Pos2, events: Vec<egui::Event>) -> (PieMenuResponse, Vec<String>) {
+        let ctx = egui::Context::default();
+        let (mut resp, mut drawn) = (PieMenuResponse::None, Vec::new());
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            resp = m.show_with_pointer(ui.ctx(), buttons, Some(pointer), true, |ui, b| {
+                drawn.push(b.button.label.clone());
+                ui.label(&b.button.label);
+            });
+        });
+        out.textures_delta.clear();
+        (resp, drawn)
+    }
+
+    fn menu() -> PieMenu {
+        let mut m = PieMenu::new();
+        m.settings.input.auto_mnemonics = true;
+        m.open(Pos2::new(400.0, 300.0));
+        m.reveal();
+        m
+    }
+
+    #[test]
+    fn a_hidden_button_is_not_drawn_and_cannot_be_picked() {
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Paste"),
+        ];
+        let mut m = menu();
+        let (_, drawn) = frame(&mut m, &buttons, Pos2::new(400.0, 300.0), vec![]);
+        assert_eq!(drawn, ["Paste"]);
+        // The pointer above the centre snaps to the only button that can be picked.
+        assert_eq!(PieMenu::pick_button(&buttons, Vec2::new(0.0, -50.0), &[Vec2::new(0.0, -1.0), Vec2::new(0.0, 1.0)]), Some(1));
+        // Its number key (8 for North) does nothing; South's (2) selects Paste.
+        let (resp, _) = frame(&mut m, &buttons, Pos2::new(400.0, 300.0), key(Key::Num8));
+        assert!(matches!(resp, PieMenuResponse::None), "{resp:?}");
+        let (resp, _) = frame(&mut m, &buttons, Pos2::new(400.0, 300.0), key(Key::Num2));
+        assert!(matches!(resp, PieMenuResponse::Selected(1)), "{resp:?}");
+    }
+
+    #[test]
+    fn a_hidden_button_gives_up_its_mnemonic_but_keeps_its_direction() {
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Cut"),
+        ];
+        let m = menu();
+        let keys = m.mnemonics(&buttons);
+        assert_eq!(keys[0], None, "a hidden button gets no key");
+        assert_eq!(keys[1], Some('c'), "so Cut can have its initial");
+        // An explicit key shared with a hidden button is no problem.
+        let shared = vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('x').with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Cut").with_mnemonic('x'),
+        ];
+        assert!(m.check_buttons(&shared).is_empty(), "{:?}", m.check_buttons(&shared));
+        // A direction is still taken by a hidden button.
+        let clash = vec![
+            PieButton::new(PieDirection::North).with_label("A").with_visible(false),
+            PieButton::new(PieDirection::North).with_label("B"),
+        ];
+        assert!(matches!(m.check_buttons(&clash)[..], [ButtonProblem::SharedDirection { .. }]));
     }
 }

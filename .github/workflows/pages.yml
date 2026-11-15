@@ -1,0 +1,51 @@
+# Builds Pie Designer for the web and publishes it on GitHub Pages.
+# The repository's Pages source must be "GitHub Actions" (Settings → Pages).
+name: Pie Designer on GitHub Pages
+
+# Published from the 0.36.2 branch while the designer is kept out of main. To publish from
+# main later, change the branch below. The `github-pages` environment (Settings →
+# Environments) must allow deployments from the branch that runs this.
+on:
+  push:
+    branches: ["0.36.2"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+      - name: Build
+        working-directory: designer
+        run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: designer/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

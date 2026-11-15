@@ -42,13 +42,20 @@ pub mod settings;
 pub use settings::*;
 
 mod button;
+mod button_ids;
+pub mod settings_fields;
+pub mod values;
+#[cfg(feature = "toml")]
+pub mod catalog;
 mod highlight_shapes;
 mod layout;
-mod mnemonic;
+pub mod mnemonic;
 #[cfg(test)]
 mod tests;
 
-pub use button::{ButtonProblem, ButtonView, ClusterItem, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
+pub use button::{ButtonProblem, ButtonView, ClusterItem, button_at, button_at_mut, LabelText, MnemonicOwner, NumberHint, PieButton, PieButtonKind};
+pub use button_ids::{ActionState, Actions, ButtonIds, IdKey, TreeEdit, unhandled_color};
+pub use settings_fields::{SettingsField, SettingsGroup, field_label};
 pub use mnemonic::{Mnemonic, mnemonic_text};
 
 use button::{ItemHit, button_problems, button_text_color, fan_out_problems, item_problems};
@@ -342,6 +349,33 @@ impl PieMenu {
         self
     }
 
+    /// The problems `children` would have as the fan-out of a button at `direction`
+    /// (children in the directions facing the parent, sub-pies or clusters among them, two
+    /// in one direction, a mnemonic used twice): empty if the sub-pie can open as a fan-out.
+    pub fn fan_out_problems(&self, direction: PieDirection, children: &[PieButton]) -> Vec<ButtonProblem> {
+        fan_out_problems(direction, children, &self.mnemonics(children))
+    }
+
+    /// [`PieMenu::check_buttons`] for every level of a tree: the root and each sub-pie,
+    /// with the path of the sub-pie button whose level has the problem (empty: the root). A
+    /// fan-out's children are checked with its parent's level. Empty when the whole tree is
+    /// fine: then no level asserts when it opens.
+    pub fn check_tree(&self, buttons: &[PieButton]) -> Vec<(Vec<usize>, ButtonProblem)> {
+        fn walk(menu: &PieMenu, level: &[PieButton], path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, ButtonProblem)>) {
+            out.extend(menu.check_buttons(level).into_iter().map(|p| (path.clone(), p)));
+            for (i, b) in level.iter().enumerate() {
+                if let PieButtonKind::SubPie { children, .. } = &b.kind {
+                    path.push(i);
+                    walk(menu, children, path, out);
+                    path.pop();
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, buttons, &mut Vec::new(), &mut out);
+        out
+    }
+
     /// Problems in one level's buttons: several in one direction, or the same mnemonic
     /// on several enabled buttons (or cluster items, which share the level's keys); two
     /// items of a cluster with the same number; and, for each button that opens a fan-out, the same
@@ -514,6 +548,26 @@ impl PieMenu {
     /// being shown) and the index of the fan child the pointer highlights.
     pub fn open_fan_out(&self) -> Option<(usize, Option<usize>)> {
         self.fan.map(|trigger| (trigger, self.fan_hover))
+    }
+
+    /// Opens the fan-out of button `trigger` of the level being shown as if the pointer had
+    /// reached it (no `fan_out.delay`), or closes the open fan (`None`). No effect unless the
+    /// menu is open; re-opening the fan already open does nothing (its animation is not restarted).
+    /// If `trigger` does not open a fan, the next `show` closes it (the existing "gone" rule).
+    /// Afterwards the usual rules apply: a real pointer elsewhere in the parent closes it at once;
+    /// with `show_with_pointer(.., None, ..)` it stays open. Meant for previews and editors.
+    pub fn set_open_fan_out(&mut self, trigger: Option<usize>) {
+        if !self.is_open {
+            return;
+        }
+        match trigger {
+            Some(t) => {
+                if self.fan != Some(t) {
+                    self.open_fan(t);
+                }
+            }
+            None => self.close_fan(),
+        }
     }
 
     /// Test helper: where each button of the open fan was drawn last frame.
@@ -933,7 +987,7 @@ impl PieMenu {
     fn key_pick(&self, ctx: &egui::Context, buttons: &[PieButton], items: bool) -> Option<(usize, Option<usize>)> {
         let mirror = self.settings.mirror_horizontal;
         if self.settings.input.use_number_keys {
-            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled && !b.is_cluster()) {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.live() && !b.is_cluster()) {
                 let dir = Self::eff(&button.direction, mirror);
                 let key = Self::direction_number_key(&dir);
                 let digit = Self::direction_digit(&dir).to_string();
@@ -959,7 +1013,7 @@ impl PieMenu {
             let (mnemonics, item_mnemonics) = resolve_all(buttons, self.settings.input.auto_mnemonics);
             // Every key that can be pressed, in button order, items after their cluster's turn.
             let mut owners: Vec<(char, usize, Option<usize>)> = Vec::new();
-            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.enabled) {
+            for (idx, button) in buttons.iter().enumerate().filter(|(_, b)| b.live()) {
                 if button.is_cluster() {
                     if !items {
                         continue;
@@ -1056,6 +1110,9 @@ impl PieMenu {
                     centers.resize(idx + 1, final_center);
                 }
                 centers[idx] = final_center;
+            }
+            if !button.visible {
+                continue;
             }
             let dimmed = level.dim_except.is_some_and(|keep| keep != idx);
             let is_hovered = level.hovered == Some(idx) && !dimmed;
@@ -1400,7 +1457,7 @@ impl PieMenu {
                     let nearest_child = fan_dirs
                         .iter()
                         .zip(fan.children)
-                        .filter(|(_, child)| child.enabled)
+                        .filter(|(_, child)| child.live())
                         .map(|(d, _)| Self::angle_diff(angle, d.y.atan2(d.x)))
                         .fold(f32::MAX, f32::min);
                     let blocked = Self::angle_diff(angle, back.y.atan2(back.x)) < 67.5f32.to_radians()
@@ -1694,7 +1751,7 @@ impl PieMenu {
                         && it.rect.contains(p)
                         && buttons.get(it.button).is_some_and(|b| {
                             // A declared item can also be disabled by its declaration.
-                            b.enabled
+                            b.live()
                                 && b.is_cluster()
                                 && b.cluster_items().iter().all(|d| d.number != it.n || d.enabled)
                         })

@@ -1,0 +1,1418 @@
+//! Embeddable dev tool pieces: editors for [`PieMenuSettings`] and for a [`PieButton`] tree,
+//! and generators for ready-to-paste Rust code (in the `configure` closure style).
+//!
+//! There is no window of its own: put [`settings_editor`] (or [`field_editor`] /
+//! [`group_editor`] for a layout of your own) and [`buttons_editor`] (or [`button_tree`] and
+//! [`button_inspector`], with [`preview_target`] for a live preview) in a side panel, show
+//! [`menu_to_code`] (or [`settings_to_code`] / [`buttons_to_code`]) with [`code_view`], and
+//! paste the result into your project.
+use egui_pie_menu::settings::*;
+use egui_pie_menu::{ClusterItem, Mnemonic, PieButton, PieButtonKind};
+use egui::{Color32, FontFamily, FontId, Margin, Stroke, Ui};
+use std::time::Duration;
+
+// ---------------------------------------------------------------------------------------
+// Code generation: settings
+// ---------------------------------------------------------------------------------------
+
+fn color_code(c: Color32) -> String {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    format!("egui::Color32::from_rgba_unmultiplied({r}, {g}, {b}, {a})")
+}
+
+fn opt_f32_code(v: Option<f32>) -> String {
+    match v {
+        Some(x) => format!("Some({x:?})"),
+        None => "None".to_string(),
+    }
+}
+
+fn opt_color_code(v: Option<Color32>) -> String {
+    match v {
+        Some(c) => format!("Some({})", color_code(c)),
+        None => "None".to_string(),
+    }
+}
+
+fn duration_code(d: Duration) -> String {
+    if d.subsec_nanos().is_multiple_of(1_000_000) {
+        format!("Duration::from_millis({})", d.as_millis())
+    } else {
+        format!("Duration::from_secs_f32({:?})", d.as_secs_f32())
+    }
+}
+
+fn opt_duration_code(d: Option<Duration>) -> String {
+    match d {
+        Some(d) => format!("Some({})", duration_code(d)),
+        None => "None".to_string(),
+    }
+}
+
+fn stroke_code(s: Stroke) -> String {
+    format!("egui::Stroke::new({:?}, {})", s.width, color_code(s.color))
+}
+
+fn margin_code(m: Margin) -> String {
+    format!("egui::Margin {{ left: {}, right: {}, top: {}, bottom: {} }}", m.left, m.right, m.top, m.bottom)
+}
+
+fn font_code(f: &FontId) -> String {
+    let family = match &f.family {
+        FontFamily::Proportional => "egui::FontFamily::Proportional".to_string(),
+        FontFamily::Monospace => "egui::FontFamily::Monospace".to_string(),
+        FontFamily::Name(name) => format!("egui::FontFamily::Name({:?}.into())", &**name),
+    };
+    format!("egui::FontId::new({:?}, {family})", f.size)
+}
+
+fn emphasis_code(e: HoverEmphasis) -> String {
+    format!("HoverEmphasis {{ shift: {:?}, scale: {:?} }}", e.shift, e.scale)
+}
+
+fn dismiss_code(list: &[PieMenuDismissInput]) -> String {
+    let items: Vec<String> = list
+        .iter()
+        .map(|d| match d {
+            PieMenuDismissInput::Key(k) => format!("PieMenuDismissInput::Key(egui::Key::{k:?})"),
+            PieMenuDismissInput::PointerButton(b) => {
+                format!("PieMenuDismissInput::PointerButton(egui::PointerButton::{b:?})")
+            }
+        })
+        .collect();
+    format!("vec![{}]", items.join(", "))
+}
+
+/// Every settings field as `(path, value source)`, paths relative to the settings (`layout.radius`).
+fn settings_entries(s: &PieMenuSettings) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = Vec::new();
+    macro_rules! e {
+        ($path:expr, $value:expr) => {
+            v.push(($path.to_string(), $value))
+        };
+    }
+    let l = &s.layout;
+    e!("layout.radius", format!("{:?}", l.radius));
+    e!("layout.shape_factor", format!("{:?}", l.shape_factor));
+    e!("layout.intercardinal_height", opt_f32_code(l.intercardinal_height));
+    e!("layout.screen_margin", format!("{:?}", l.screen_margin));
+    e!("layout.dead_zone_radius", format!("{:?}", l.dead_zone_radius));
+
+    e!(
+        "show_behavior",
+        match &s.show_behavior {
+            ShowBehavior::Instant => "ShowBehavior::Instant".to_string(),
+            ShowBehavior::OnMovement { threshold } => format!("ShowBehavior::OnMovement {{ threshold: {threshold:?} }}"),
+        }
+    );
+
+    let i = &s.input;
+    e!("input.use_number_keys", i.use_number_keys.to_string());
+    e!("input.use_mnemonic_keys", i.use_mnemonic_keys.to_string());
+    e!("input.auto_mnemonics", i.auto_mnemonics.to_string());
+    e!("input.double_tap_window", duration_code(i.double_tap_window));
+    e!("input.select_on_primary_click", i.select_on_primary_click.to_string());
+    e!("input.dismiss_inputs", dismiss_code(&i.dismiss_inputs));
+    e!("input.pinned_dismiss_inputs", dismiss_code(&i.pinned_dismiss_inputs));
+
+    let c = &s.center_indicator;
+    e!("center_indicator.background_radius", opt_f32_code(c.background_radius));
+    e!("center_indicator.background_stroke", stroke_code(c.background_stroke));
+    e!("center_indicator.background_fill_color", color_code(c.background_fill_color));
+    e!("center_indicator.highlight_radius", opt_f32_code(c.highlight_radius));
+    e!(
+        "center_indicator.highlight_shape",
+        format!(
+            "HighlightShape {{ arc: {}, slice: {}, circle: {}, tooth: {} }}",
+            c.highlight_shape.arc, c.highlight_shape.slice, c.highlight_shape.circle, c.highlight_shape.tooth
+        )
+    );
+    e!("center_indicator.highlight_stroke", stroke_code(c.highlight_stroke));
+    e!("center_indicator.highlight_fill_color", color_code(c.highlight_fill_color));
+    e!("center_indicator.highlight_angle", format!("{:?}", c.highlight_angle));
+    e!("center_indicator.highlight_circle_radius", format!("{:?}", c.highlight_circle_radius));
+    e!("center_indicator.highlight_snapping", c.highlight_snapping.to_string());
+    e!("center_indicator.tooth.length", format!("{:?}", c.tooth.length));
+    e!("center_indicator.tooth.start_length", format!("{:?}", c.tooth.start_length));
+    e!("center_indicator.tooth.start_width", format!("{:?}", c.tooth.start_width));
+    e!("center_indicator.tooth.end_width", format!("{:?}", c.tooth.end_width));
+    e!("center_indicator.tooth.start_roundness", format!("{:?}", c.tooth.start_roundness));
+    e!("center_indicator.tooth.end_sharpness", format!("{:?}", c.tooth.end_sharpness));
+    e!("center_indicator.tooth.inset", format!("{:?}", c.tooth.inset));
+    e!("center_indicator.tooth.dig", format!("{:?}", c.tooth.dig));
+    e!("center_indicator.tooth.length_easing", format!("{:?}", c.tooth.length_easing));
+    e!("center_indicator.tooth.width_easing", format!("{:?}", c.tooth.width_easing));
+    e!("center_indicator.tooth.sharpness_easing", format!("{:?}", c.tooth.sharpness_easing));
+    e!("center_indicator.tooth.outline_base", c.tooth.outline_base.to_string());
+
+    let t = &s.title;
+    e!("title.show", t.show.to_string());
+    e!("title.background_color", color_code(t.background_color));
+    e!("title.background_stroke", stroke_code(t.background_stroke));
+    e!("title.padding", margin_code(t.padding));
+    e!("title.text_color", color_code(t.text_color));
+    e!("title.text_font", font_code(&t.text_font));
+
+    let a = &s.animations;
+    e!("animations.reveal", format!("RevealAnimation::{:?}", a.reveal));
+    e!("animations.reveal_duration", duration_code(a.reveal_duration));
+    e!("animations.slide_start_radius", format!("{:?}", a.slide_start_radius));
+    e!("animations.slide_start_shape_factor", opt_f32_code(a.slide_start_shape_factor));
+    e!("animations.slide_fade", opt_duration_code(a.slide_fade));
+    e!("animations.hover_emphasis", emphasis_code(a.hover_emphasis));
+    e!("animations.sub_pie_hover_emphasis", emphasis_code(a.sub_pie_hover_emphasis));
+    e!("animations.hover_duration", duration_code(a.hover_duration));
+
+    e!("block_background", s.block_background.to_string());
+
+    let p = &s.sub_pies;
+    e!("sub_pies.style", format!("SubPieStyle::{:?}", p.style));
+    e!("sub_pies.center", format!("SubPieCenter::{:?}", p.center));
+    e!("sub_pies.hover_delay", opt_duration_code(p.hover_delay));
+    e!("sub_pies.fan_out.delay", duration_code(p.fan_out.delay));
+    e!("sub_pies.fan_out.radius", opt_f32_code(p.fan_out.radius));
+    e!("sub_pies.fan_out.opener_action", format!("FanOpenerAction::{:?}", p.fan_out.opener_action));
+
+    e!("mirror_horizontal", s.mirror_horizontal.to_string());
+
+    let n = &s.number_hints;
+    e!("number_hints.color", opt_color_code(n.color));
+    e!("number_hints.spacing", format!("{:?}", n.spacing));
+    e!("number_hints.side", format!("HintSide::{:?}", n.side));
+    e!("number_hints.digits", format!("HintDigits::{:?}", n.digits));
+
+    e!("text_color", opt_color_code(s.text_color));
+    v
+}
+
+/// The statements (`s.layout.radius = 120.0;`, without the closure wrapper) for every setting
+/// whose generated value differs from [`PieMenuSettings::default`].
+pub fn settings_changes(s: &PieMenuSettings) -> Vec<String> {
+    settings_changes_bound(s, &Bindings::default())
+}
+
+/// [`settings_changes`] with the [`Bindings`] of fields: a field bound in [`BindingMode::Build`]
+/// is always listed, with its expression (`s.title.text_color = theme.accent;`); one bound in
+/// [`BindingMode::Live`] is left out (the live block sets it before the first `show`).
+pub fn settings_changes_bound(s: &PieMenuSettings, bindings: &Bindings) -> Vec<String> {
+    let default = settings_entries(&PieMenuSettings::default());
+    settings_entries(s)
+        .into_iter()
+        .zip(default)
+        .filter_map(|((path, value), (_, was))| {
+            let field = SettingsField::ALL.into_iter().find(|f| f.path() == path);
+            if field.is_some_and(|f| bindings.code_expr(&BindTarget::Field(f), BindingMode::Live).is_some()) {
+                return None;
+            }
+            match field.and_then(|f| bindings.code_expr(&BindTarget::Field(f), BindingMode::Build).map(|e| (f, e))) {
+                Some((f, expr)) => Some(format!("s.{path} = {};", field_value_code(f, expr))),
+                None => (value != was).then(|| format!("s.{path} = {value};")),
+            }
+        })
+        .collect()
+}
+
+/// A bound field's value: the expression (milliseconds made a `Duration` for a duration), in
+/// `Some(..)` for an optional field.
+fn field_value_code(field: SettingsField, expr: &str) -> String {
+    let value = if field.is_duration() { format!("Duration::from_secs_f32(({expr}) / 1000.0)") } else { expr.to_string() };
+    if field.is_optional_value() { format!("Some({value})") } else { value }
+}
+
+/// The `.configure(|s| { ... })` closure that turns the default settings into `s`, listing only
+/// what differs from [`PieMenuSettings::default`]. Empty when nothing differs.
+///
+/// ```
+/// use egui_pie_menu::PieMenuSettings;
+/// use egui_pie_menu_designer::settings_to_code;
+/// let mut s = PieMenuSettings::default();
+/// assert_eq!(settings_to_code(&s), "");
+/// s.layout.radius = 120.0;
+/// assert_eq!(settings_to_code(&s), ".configure(|s| {\n    s.layout.radius = 120.0;\n})");
+/// ```
+pub fn settings_to_code(s: &PieMenuSettings) -> String {
+    settings_to_code_bound(s, &Bindings::default())
+}
+
+/// [`settings_to_code`] with the build-time [`Bindings`] of fields (see [`settings_changes_bound`]).
+pub fn settings_to_code_bound(s: &PieMenuSettings, bindings: &Bindings) -> String {
+    let lines = settings_changes_bound(s, bindings);
+    if lines.is_empty() {
+        return String::new();
+    }
+    let body: Vec<String> = lines.iter().map(|l| format!("    {l}")).collect();
+    format!(".configure(|s| {{\n{}\n}})", body.join("\n"))
+}
+
+// ---------------------------------------------------------------------------------------
+// Code generation: buttons and the whole menu
+// ---------------------------------------------------------------------------------------
+
+fn pad(n: usize) -> String {
+    " ".repeat(n)
+}
+
+/// `vec![` + one item per line (indented `ind + 4`, trailing commas) + `]` at `ind`.
+fn vec_block(items: &[String], ind: usize) -> String {
+    if items.is_empty() {
+        return "vec![]".to_string();
+    }
+    let lines: Vec<String> = items.iter().map(|i| format!("{}{i},", pad(ind + 4))).collect();
+    format!("vec![\n{}\n{}]", lines.join("\n"), pad(ind))
+}
+
+fn mnemonic_code(m: Mnemonic) -> String {
+    match m {
+        Mnemonic::Auto => String::new(),
+        Mnemonic::Key(c) => format!(".with_mnemonic({c:?})"),
+        Mnemonic::None => ".without_mnemonic()".to_string(),
+    }
+}
+
+fn item_code(item: &ClusterItem, path: &[usize], bindings: &Bindings) -> String {
+    let label = match bindings.code_expr(&BindTarget::ItemLabel(path.to_vec(), item.number), BindingMode::Build) {
+        Some(expr) => expr.to_string(),
+        None => format!("{:?}", item.label),
+    };
+    let mut s = format!("ClusterItem::new({}, {label})", item.number);
+    s += &mnemonic_code(item.mnemonic);
+    if let Some(expr) = bindings.code_expr(&BindTarget::ItemEnabled(path.to_vec(), item.number), BindingMode::Build) {
+        s += &format!(".with_enabled({expr})");
+    } else if !item.enabled {
+        s += ".with_enabled(false)";
+    }
+    s
+}
+
+/// The expression for one button at `path`; `ind` is the indentation of the line it starts on.
+fn button_expr(b: &PieButton, ind: usize, path: &mut Vec<usize>, bindings: &Bindings) -> String {
+    let dir = format!("PieDirection::{:?}", b.direction);
+    let mut s = match &b.kind {
+        PieButtonKind::Back => format!("PieButton::back({dir})"),
+        PieButtonKind::Cluster(_) => format!("PieButton::cluster({dir})"),
+        _ => format!("PieButton::new({dir})"),
+    };
+    let default_label = if b.is_back() { "Back" } else { "" };
+    if let Some(expr) = bindings.code_expr(&BindTarget::Label(path.clone()), BindingMode::Build) {
+        s += &format!(".with_label({expr})");
+    } else if b.label != default_label {
+        s += &format!(".with_label({:?})", b.label);
+    }
+    // A cluster has no mnemonic of its own (`with_items` resets it).
+    if !b.is_cluster() {
+        s += &mnemonic_code(b.mnemonic);
+    }
+    if let Some(expr) = bindings.code_expr(&BindTarget::Enabled(path.clone()), BindingMode::Build) {
+        s += &format!(".with_enabled({expr})");
+    } else if !b.enabled {
+        s += ".with_enabled(false)";
+    }
+    if let Some(expr) = bindings.code_expr(&BindTarget::Visible(path.clone()), BindingMode::Build) {
+        s += &format!(".with_visible({expr})");
+    } else if !b.visible {
+        s += ".with_visible(false)";
+    }
+    match &b.kind {
+        PieButtonKind::SubPie { children, style } => {
+            let kids: Vec<String> = children
+                .iter()
+                .enumerate()
+                .map(|(n, c)| {
+                    path.push(n);
+                    let code = button_expr(c, ind + 4, path, bindings);
+                    path.pop();
+                    code
+                })
+                .collect();
+            let block = vec_block(&kids, ind);
+            match style {
+                None => s += &format!(".with_children({block})"),
+                Some(SubPieStyle::FanOut) => s += &format!(".with_fan_out({block})"),
+                Some(SubPieStyle::Replace) => {
+                    s += &format!(".with_children({block}).with_sub_pie_style(Some(SubPieStyle::Replace))")
+                }
+            }
+        }
+        PieButtonKind::Cluster(items) => {
+            let lines: Vec<String> = items.iter().map(|i| item_code(i, path, bindings)).collect();
+            s += &format!(".with_items({})", vec_block(&lines, ind));
+        }
+        PieButtonKind::Action | PieButtonKind::Back => {}
+    }
+    s
+}
+
+/// `vec![ .. ]` source that rebuilds `buttons` with the [`PieButton`] builders.
+///
+/// ```
+/// use egui_pie_menu::{PieButton, PieDirection};
+/// use egui_pie_menu_designer::buttons_to_code;
+/// let b = vec![PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c')];
+/// assert_eq!(
+///     buttons_to_code(&b),
+///     "vec![\n    PieButton::new(PieDirection::North).with_label(\"Copy\").with_mnemonic('c'),\n]"
+/// );
+/// ```
+pub fn buttons_to_code(buttons: &[PieButton]) -> String {
+    buttons_to_code_bound(buttons, &Bindings::default())
+}
+
+/// [`buttons_to_code`] with the build-time [`Bindings`] of labels: `.with_label(tr("edit.copy"))`.
+pub fn buttons_to_code_bound(buttons: &[PieButton], bindings: &Bindings) -> String {
+    let items: Vec<String> = buttons.iter().enumerate().map(|(n, b)| button_expr(b, 4, &mut vec![n], bindings)).collect();
+    vec_block(&items, 0)
+}
+
+/// The statements that assign the [`BindingMode::Live`] bindings, to run every frame before
+/// `show` (`menu` and `buttons` are the names of the snippet from [`menu_to_code_bound`]): the
+/// title, then the settings fields in [`SettingsField::ALL`] order, then the labels in tree order.
+///
+/// ```
+/// use egui_pie_menu::*;
+/// use egui_pie_menu_designer::*;
+/// let buttons = vec![PieButton::new(PieDirection::North).with_label("Undo")];
+/// let mut bindings = Bindings::new();
+/// bindings.set(BindTarget::Label(vec![0]), Binding::new("format!(\"Undo ({n})\")", BindingMode::Live));
+/// assert_eq!(live_bindings_code(&buttons, &bindings), ["buttons[0].label = format!(\"Undo ({n})\");"]);
+/// ```
+pub fn live_bindings_code(buttons: &[PieButton], bindings: &Bindings) -> Vec<String> {
+    let mut out = Vec::new();
+    let live = |t: &BindTarget| bindings.code_expr(t, BindingMode::Live).map(str::to_string);
+    if let Some(expr) = live(&BindTarget::Title) {
+        out.push(format!("menu.title = Some({expr});"));
+    }
+    for field in SettingsField::ALL {
+        if let Some(expr) = live(&BindTarget::Field(field)) {
+            out.push(format!("menu.settings.{} = {};", field.path(), field_value_code(field, &expr)));
+        }
+    }
+    fn walk(level: &[PieButton], path: &mut Vec<usize>, live: &dyn Fn(&BindTarget) -> Option<String>, out: &mut Vec<String>) {
+        for (n, b) in level.iter().enumerate() {
+            path.push(n);
+            let at = if path.len() == 1 {
+                format!("buttons[{n}]")
+            } else {
+                let route: Vec<String> = path.iter().map(|p| p.to_string()).collect();
+                format!("button_at_mut(&mut buttons, &[{}])", route.join(", "))
+            };
+            for (target, field) in [
+                (BindTarget::Label(path.clone()), "label"),
+                (BindTarget::Enabled(path.clone()), "enabled"),
+                (BindTarget::Visible(path.clone()), "visible"),
+            ] {
+                if let Some(expr) = live(&target) {
+                    out.push(if path.len() == 1 {
+                        format!("{at}.{field} = {expr};")
+                    } else {
+                        format!("if let Some(b) = {at} {{ b.{field} = {expr}; }}")
+                    });
+                }
+            }
+            for item in b.cluster_items() {
+                let item_at = if path.len() == 1 {
+                    format!("{at}.cluster_item_mut({})", item.number)
+                } else {
+                    format!("{at}.and_then(|b| b.cluster_item_mut({}))", item.number)
+                };
+                for (target, field) in
+                    [(BindTarget::ItemLabel(path.clone(), item.number), "label"), (BindTarget::ItemEnabled(path.clone(), item.number), "enabled")]
+                {
+                    if let Some(expr) = live(&target) {
+                        out.push(format!("if let Some(item) = {item_at} {{ item.{field} = {expr}; }}"));
+                    }
+                }
+            }
+            walk(b.children(), path, live, out);
+            path.pop();
+        }
+    }
+    walk(buttons, &mut Vec::new(), &live, &mut out);
+    out
+}
+
+/// A complete snippet: the `use` lines, `let buttons = ..;`, `let menu = PieMenu::new()` with
+/// the title and the [`settings_to_code`] closure, and a commented `show` skeleton.
+pub fn menu_to_code(title: Option<&str>, settings: &PieMenuSettings, buttons: &[PieButton]) -> String {
+    menu_to_code_bound(title, settings, buttons, &Bindings::default())
+}
+
+/// [`menu_to_code`] with [`Bindings`]: build-time expressions take the place of the literals,
+/// live ones get an "each frame, before `show`" block ([`live_bindings_code`]), and a
+/// `// needs in scope:` line lists the names the expressions use ([`free_identifiers`]).
+pub fn menu_to_code_bound(title: Option<&str>, settings: &PieMenuSettings, buttons: &[PieButton], bindings: &Bindings) -> String {
+    let config = settings_to_code_bound(settings, bindings);
+    let live = live_bindings_code(buttons, bindings);
+    let mut out = String::from("use egui_pie_menu::*;\n");
+    if config.contains("Duration::") || live.iter().any(|l| l.contains("Duration::")) {
+        out += "use std::time::Duration;\n";
+    }
+    let mut names: Vec<String> = Vec::new();
+    for (target, binding) in bindings.iter() {
+        let used = target.path().is_none_or(|p| egui_pie_menu::button_at(buttons, p).is_some());
+        if let Some(expr) = binding.active_expr().filter(|_| used).map(|e| bindings.variables().code_for(e)) {
+            for name in free_identifiers(expr) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    if !names.is_empty() {
+        out += &format!("// needs in scope: {}\n", names.join(", "));
+    }
+    out += "\n";
+    let mut_buttons = if live.iter().any(|l| l.contains("buttons")) { "mut " } else { "" };
+    if buttons.is_empty() {
+        out += &format!("let {mut_buttons}buttons: Vec<PieButton> = vec![];\n\n");
+    } else {
+        out += &format!("let {mut_buttons}buttons = {};\n\n", buttons_to_code_bound(buttons, bindings));
+    }
+    let mut_menu = if live.iter().any(|l| l.starts_with("menu.")) { "mut " } else { "" };
+    out += &format!("let {mut_menu}menu = PieMenu::new()");
+    if let Some(expr) = bindings.code_expr(&BindTarget::Title, BindingMode::Build) {
+        out += &format!("\n    .with_title({expr})");
+    } else if let Some(t) = title {
+        out += &format!("\n    .with_title({t:?})");
+    }
+    if !config.is_empty() {
+        out += &format!("\n    {}", config.replace('\n', "\n    "));
+    }
+    out += ";\n\n";
+    if !live.is_empty() {
+        out += "// each frame, before show (live bindings):\n";
+        for line in &live {
+            out += line;
+            out += "\n";
+        }
+        out += "\n";
+    }
+    out += "// each frame (key_down: whether your trigger key is held):\n";
+    out += "// match menu.show(ctx, &buttons, key_down, |ui, b| {\n";
+    out += "//     ui.label(b.label_text());\n";
+    out += "// }) {\n";
+    out += "//     PieMenuResponse::Selected(idx) => { /* idx, b.path / menu.selected_path() */ }\n";
+    out += "//     _ => {}\n";
+    out += "// }\n";
+    out
+}
+
+// ---------------------------------------------------------------------------------------
+// Code view
+// ---------------------------------------------------------------------------------------
+
+/// A read-only monospace text area filling the available width inside a vertical scroll area,
+/// with a "Copy" button above it.
+pub fn code_view(ui: &mut Ui, code: &str) {
+    if ui.button("Copy").clicked() {
+        ui.ctx().copy_text(code.to_owned());
+    }
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let mut text = code;
+        ui.add(egui::TextEdit::multiline(&mut text).code_editor().desired_width(f32::INFINITY));
+    });
+}
+
+// ---------------------------------------------------------------------------------------
+// Settings editor
+// ---------------------------------------------------------------------------------------
+
+mod fields;
+pub use fields::*;
+
+// ---------------------------------------------------------------------------------------
+// Bindings
+// ---------------------------------------------------------------------------------------
+
+mod bindings;
+pub use bindings::*;
+
+// ---------------------------------------------------------------------------------------
+// Buttons: tree, inspector, legality
+// ---------------------------------------------------------------------------------------
+
+mod inspector;
+mod legality;
+pub use inspector::*;
+pub use legality::set_menu_sub_pie_style;
+
+/// What the kind combo offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KindChoice {
+    Action,
+    Back,
+    SubPie,
+    Cluster,
+}
+
+impl KindChoice {
+    const ALL: [KindChoice; 4] = [KindChoice::Action, KindChoice::Back, KindChoice::SubPie, KindChoice::Cluster];
+
+    fn name(self) -> &'static str {
+        match self {
+            KindChoice::Action => "Action",
+            KindChoice::Back => "Back",
+            KindChoice::SubPie => "Sub-pie",
+            KindChoice::Cluster => "Cluster",
+        }
+    }
+}
+
+fn kind_choice(b: &PieButton) -> KindChoice {
+    match b.kind {
+        PieButtonKind::Action => KindChoice::Action,
+        PieButtonKind::Back => KindChoice::Back,
+        PieButtonKind::SubPie { .. } => KindChoice::SubPie,
+        PieButtonKind::Cluster(_) => KindChoice::Cluster,
+    }
+}
+
+/// The first of the eight directions (clockwise from North) that no button occupies.
+pub fn first_free_direction(buttons: &[PieButton]) -> Option<PieDirection> {
+    PieDirection::ALL.iter().copied().find(|d| buttons.iter().all(|b| b.direction != *d))
+}
+
+/// A ready-made sub-pie at `dir`: five children "Item 1".."Item 5" in the five fan-out slots
+/// (valid for both styles) and, for a replace-style sub-pie, a back button opposite `dir`.
+fn new_sub_pie(dir: PieDirection, fan: bool) -> PieButton {
+    let mut children: Vec<PieButton> = dir
+        .fan_out_slots()
+        .iter()
+        .enumerate()
+        .map(|(n, slot)| PieButton::new(*slot).with_label(format!("Item {}", n + 1)))
+        .collect();
+    if fan {
+        PieButton::new(dir).with_label("Fan-out").with_fan_out(children)
+    } else {
+        children.push(PieButton::back(dir.opposite()));
+        PieButton::new(dir).with_label("Sub-pie").with_children(children)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+    use super::*;
+    use egui_pie_menu::*;
+    use egui::Context;
+
+    /// Compiles the tokens as a `Vec<PieButton>` expression, checks it equals `$value` (Debug)
+    /// and that `buttons_to_code($value)` is exactly the tokens (whitespace aside).
+    macro_rules! assert_code_builds {
+        ($value:expr, $($code:tt)+) => {{
+            let built: Vec<PieButton> = $($code)+;
+            assert_eq!(format!("{built:?}"), format!("{:?}", $value), "rebuilt buttons differ");
+            let generated = buttons_to_code(&$value);
+            let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            assert_eq!(strip(&generated), strip(stringify!($($code)+)), "generated text differs:\n{generated}");
+        }};
+    }
+
+    /// Compiles `.configure(|s| { body })` on a new menu, checks the settings equal `$value`
+    /// (Debug) and that `settings_to_code($value)` is exactly the tokens (whitespace aside).
+    macro_rules! assert_configure_builds {
+        ($value:expr, |$s:ident| { $($body:tt)* }) => {{
+            let built = PieMenu::new().configure(|$s| { $($body)* }).settings;
+            assert_eq!(format!("{built:?}"), format!("{:?}", $value), "rebuilt settings differ");
+            let generated = settings_to_code(&$value);
+            let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            let tokens = stringify!(.configure(|$s| { $($body)* }));
+            assert_eq!(strip(&generated), strip(tokens), "generated text differs:\n{generated}");
+        }};
+    }
+
+    fn lines(s: &PieMenuSettings) -> Vec<String> {
+        settings_changes(s)
+    }
+
+    #[test]
+    fn default_settings_give_no_code() {
+        let d = PieMenuSettings::default();
+        assert_eq!(settings_to_code(&d), "");
+        assert!(settings_changes(&d).is_empty());
+    }
+
+    #[test]
+    fn layout_group() {
+        let mut s = PieMenuSettings::default();
+        s.layout.radius = 120.0;
+        s.layout.intercardinal_height = Some(0.25);
+        assert_eq!(lines(&s), ["s.layout.radius = 120.0;", "s.layout.intercardinal_height = Some(0.25);"]);
+        assert_eq!(settings_to_code(&s), ".configure(|s| {\n    s.layout.radius = 120.0;\n    s.layout.intercardinal_height = Some(0.25);\n})");
+    }
+
+    #[test]
+    fn show_behavior_and_other_group() {
+        let mut s = PieMenuSettings::default();
+        s.show_behavior = ShowBehavior::Instant;
+        s.block_background = false;
+        s.mirror_horizontal = true;
+        s.text_color = Some(Color32::WHITE);
+        assert_eq!(
+            lines(&s),
+            [
+                "s.show_behavior = ShowBehavior::Instant;",
+                "s.block_background = false;",
+                "s.mirror_horizontal = true;",
+                "s.text_color = Some(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 255));",
+            ]
+        );
+        s.show_behavior = ShowBehavior::OnMovement { threshold: 25.0 };
+        s.block_background = true;
+        s.mirror_horizontal = false;
+        s.text_color = None;
+        assert_eq!(lines(&s), ["s.show_behavior = ShowBehavior::OnMovement { threshold: 25.0 };"]);
+    }
+
+    #[test]
+    fn input_group() {
+        let mut s = PieMenuSettings::default();
+        s.input.auto_mnemonics = true;
+        s.input.double_tap_window = Duration::from_millis(250);
+        s.input.pinned_dismiss_inputs = vec![PieMenuDismissInput::Key(egui::Key::Escape), PieMenuDismissInput::PointerButton(egui::PointerButton::Secondary)];
+        assert_eq!(
+            lines(&s),
+            [
+                "s.input.auto_mnemonics = true;",
+                "s.input.double_tap_window = Duration::from_millis(250);",
+                "s.input.pinned_dismiss_inputs = vec![PieMenuDismissInput::Key(egui::Key::Escape), PieMenuDismissInput::PointerButton(egui::PointerButton::Secondary)];",
+            ]
+        );
+    }
+
+    #[test]
+    fn sub_pies_group() {
+        let mut s = PieMenuSettings::default();
+        s.sub_pies.style = SubPieStyle::FanOut;
+        s.sub_pies.hover_delay = Some(Duration::from_millis(300));
+        s.sub_pies.fan_out.radius = Some(140.0);
+        s.sub_pies.fan_out.opener_action = FanOpenerAction::Dismiss;
+        assert_eq!(
+            lines(&s),
+            [
+                "s.sub_pies.style = SubPieStyle::FanOut;",
+                "s.sub_pies.hover_delay = Some(Duration::from_millis(300));",
+                "s.sub_pies.fan_out.radius = Some(140.0);",
+                "s.sub_pies.fan_out.opener_action = FanOpenerAction::Dismiss;",
+            ]
+        );
+    }
+
+    #[test]
+    fn center_indicator_group() {
+        let mut s = PieMenuSettings::default();
+        s.center_indicator.background_radius = None;
+        s.center_indicator.highlight_shape = HighlightShape { arc: true, circle: true, ..HighlightShape::NONE };
+        s.center_indicator.highlight_stroke = Stroke::new(2.5, Color32::from_rgb(1, 2, 3));
+        assert_eq!(
+            lines(&s),
+            [
+                "s.center_indicator.background_radius = None;",
+                "s.center_indicator.highlight_shape = HighlightShape { arc: true, slice: false, circle: true, tooth: false };",
+                "s.center_indicator.highlight_stroke = egui::Stroke::new(2.5, egui::Color32::from_rgba_unmultiplied(1, 2, 3, 255));",
+            ]
+        );
+    }
+
+    #[test]
+    fn title_group() {
+        let mut s = PieMenuSettings::default();
+        s.title.show = false;
+        s.title.padding = Margin { left: 1, right: 2, top: 3, bottom: 4 };
+        s.title.text_font = FontId::new(18.0, FontFamily::Monospace);
+        assert_eq!(
+            lines(&s),
+            [
+                "s.title.show = false;",
+                "s.title.padding = egui::Margin { left: 1, right: 2, top: 3, bottom: 4 };",
+                "s.title.text_font = egui::FontId::new(18.0, egui::FontFamily::Monospace);",
+            ]
+        );
+        s.title = PieMenuTitleSettings::default();
+        s.title.text_font = FontId::new(14.0, FontFamily::Name("Fancy".into()));
+        assert_eq!(lines(&s), ["s.title.text_font = egui::FontId::new(14.0, egui::FontFamily::Name(\"Fancy\".into()));"]);
+    }
+
+    #[test]
+    fn animations_group() {
+        let mut s = PieMenuSettings::default();
+        s.animations.reveal = RevealAnimation::SlideOut;
+        s.animations.slide_fade = None;
+        s.animations.sub_pie_hover_emphasis = HoverEmphasis::NONE;
+        s.animations.hover_duration = Duration::from_millis(50);
+        assert_eq!(
+            lines(&s),
+            [
+                "s.animations.reveal = RevealAnimation::SlideOut;",
+                "s.animations.slide_fade = None;",
+                "s.animations.sub_pie_hover_emphasis = HoverEmphasis { shift: 0.0, scale: 1.0 };",
+                "s.animations.hover_duration = Duration::from_millis(50);",
+            ]
+        );
+    }
+
+    #[test]
+    fn number_hints_group() {
+        let mut s = PieMenuSettings::default();
+        s.number_hints.side = HintSide::Outside;
+        s.number_hints.digits = HintDigits::Persian;
+        s.number_hints.spacing = 8.0;
+        assert_eq!(
+            lines(&s),
+            ["s.number_hints.spacing = 8.0;", "s.number_hints.side = HintSide::Outside;", "s.number_hints.digits = HintDigits::Persian;"]
+        );
+    }
+
+    #[test]
+    fn settings_compile_and_compare_every_group() {
+        let mut s = PieMenuSettings::default();
+        s.layout.radius = 120.0;
+        s.layout.shape_factor = 0.5;
+        s.layout.intercardinal_height = Some(0.75);
+        s.layout.screen_margin = 12.0;
+        s.layout.dead_zone_radius = 20.0;
+        s.show_behavior = ShowBehavior::OnMovement { threshold: 25.0 };
+        s.input.use_number_keys = false;
+        s.input.use_mnemonic_keys = false;
+        s.input.auto_mnemonics = true;
+        s.input.double_tap_window = Duration::from_millis(250);
+        s.input.select_on_primary_click = false;
+        s.input.dismiss_inputs = vec![PieMenuDismissInput::Key(egui::Key::Escape), PieMenuDismissInput::PointerButton(egui::PointerButton::Middle)];
+        s.input.pinned_dismiss_inputs = vec![PieMenuDismissInput::Key(egui::Key::Backspace)];
+        s.center_indicator.background_radius = None;
+        s.center_indicator.background_stroke = Stroke::new(2.0, Color32::from_rgb(10, 20, 30));
+        s.center_indicator.background_fill_color = Color32::from_rgb(40, 50, 60);
+        s.center_indicator.highlight_radius = Some(22.5);
+        s.center_indicator.highlight_shape = HighlightShape { arc: true, circle: true, ..HighlightShape::NONE };
+        s.center_indicator.highlight_stroke = Stroke::new(3.5, Color32::from_rgb(70, 80, 90));
+        s.center_indicator.highlight_fill_color = Color32::from_rgb(100, 110, 120);
+        s.center_indicator.highlight_angle = 0.5;
+        s.center_indicator.highlight_circle_radius = 7.0;
+        s.center_indicator.highlight_snapping = true;
+        s.title.show = false;
+        s.title.background_color = Color32::from_rgb(1, 2, 3);
+        s.title.background_stroke = Stroke::new(1.0, Color32::from_rgb(4, 5, 6));
+        s.title.padding = Margin { left: 1, right: 2, top: 3, bottom: 4 };
+        s.title.text_color = Color32::from_rgb(7, 8, 9);
+        s.title.text_font = FontId::new(18.0, FontFamily::Monospace);
+        s.animations.reveal = RevealAnimation::SlideOut;
+        s.animations.reveal_duration = Duration::from_millis(350);
+        s.animations.slide_start_radius = 10.0;
+        s.animations.slide_start_shape_factor = Some(-1.0);
+        s.animations.slide_fade = None;
+        s.animations.hover_emphasis = HoverEmphasis { shift: 2.0, scale: 1.25 };
+        s.animations.sub_pie_hover_emphasis = HoverEmphasis::NONE;
+        s.animations.hover_duration = Duration::from_millis(50);
+        s.block_background = false;
+        s.sub_pies.style = SubPieStyle::FanOut;
+        s.sub_pies.center = SubPieCenter::Button;
+        s.sub_pies.hover_delay = Some(Duration::from_millis(300));
+        s.sub_pies.fan_out.delay = Duration::from_millis(150);
+        s.sub_pies.fan_out.radius = Some(140.0);
+        s.sub_pies.fan_out.opener_action = FanOpenerAction::Dismiss;
+        s.mirror_horizontal = true;
+        s.number_hints.color = Some(Color32::from_rgb(255, 255, 255));
+        s.number_hints.spacing = 8.0;
+        s.number_hints.side = HintSide::Outside;
+        s.number_hints.digits = HintDigits::Persian;
+        s.text_color = Some(Color32::from_rgb(200, 201, 202));
+
+        assert_configure_builds!(s, |s| {
+            s.layout.radius = 120.0;
+            s.layout.shape_factor = 0.5;
+            s.layout.intercardinal_height = Some(0.75);
+            s.layout.screen_margin = 12.0;
+            s.layout.dead_zone_radius = 20.0;
+            s.show_behavior = ShowBehavior::OnMovement { threshold: 25.0 };
+            s.input.use_number_keys = false;
+            s.input.use_mnemonic_keys = false;
+            s.input.auto_mnemonics = true;
+            s.input.double_tap_window = Duration::from_millis(250);
+            s.input.select_on_primary_click = false;
+            s.input.dismiss_inputs = vec![PieMenuDismissInput::Key(egui::Key::Escape), PieMenuDismissInput::PointerButton(egui::PointerButton::Middle)];
+            s.input.pinned_dismiss_inputs = vec![PieMenuDismissInput::Key(egui::Key::Backspace)];
+            s.center_indicator.background_radius = None;
+            s.center_indicator.background_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(10, 20, 30, 255));
+            s.center_indicator.background_fill_color = egui::Color32::from_rgba_unmultiplied(40, 50, 60, 255);
+            s.center_indicator.highlight_radius = Some(22.5);
+            s.center_indicator.highlight_shape = HighlightShape { arc: true, slice: false, circle: true, tooth: false };
+            s.center_indicator.highlight_stroke = egui::Stroke::new(3.5, egui::Color32::from_rgba_unmultiplied(70, 80, 90, 255));
+            s.center_indicator.highlight_fill_color = egui::Color32::from_rgba_unmultiplied(100, 110, 120, 255);
+            s.center_indicator.highlight_angle = 0.5;
+            s.center_indicator.highlight_circle_radius = 7.0;
+            s.center_indicator.highlight_snapping = true;
+            s.title.show = false;
+            s.title.background_color = egui::Color32::from_rgba_unmultiplied(1, 2, 3, 255);
+            s.title.background_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(4, 5, 6, 255));
+            s.title.padding = egui::Margin { left: 1, right: 2, top: 3, bottom: 4 };
+            s.title.text_color = egui::Color32::from_rgba_unmultiplied(7, 8, 9, 255);
+            s.title.text_font = egui::FontId::new(18.0, egui::FontFamily::Monospace);
+            s.animations.reveal = RevealAnimation::SlideOut;
+            s.animations.reveal_duration = Duration::from_millis(350);
+            s.animations.slide_start_radius = 10.0;
+            s.animations.slide_start_shape_factor = Some(-1.0);
+            s.animations.slide_fade = None;
+            s.animations.hover_emphasis = HoverEmphasis { shift: 2.0, scale: 1.25 };
+            s.animations.sub_pie_hover_emphasis = HoverEmphasis { shift: 0.0, scale: 1.0 };
+            s.animations.hover_duration = Duration::from_millis(50);
+            s.block_background = false;
+            s.sub_pies.style = SubPieStyle::FanOut;
+            s.sub_pies.center = SubPieCenter::Button;
+            s.sub_pies.hover_delay = Some(Duration::from_millis(300));
+            s.sub_pies.fan_out.delay = Duration::from_millis(150);
+            s.sub_pies.fan_out.radius = Some(140.0);
+            s.sub_pies.fan_out.opener_action = FanOpenerAction::Dismiss;
+            s.mirror_horizontal = true;
+            s.number_hints.color = Some(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 255));
+            s.number_hints.spacing = 8.0;
+            s.number_hints.side = HintSide::Outside;
+            s.number_hints.digits = HintDigits::Persian;
+            s.text_color = Some(egui::Color32::from_rgba_unmultiplied(200, 201, 202, 255));
+        });
+    }
+
+    fn rich_tree() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c').with_enabled(false),
+            PieButton::new(PieDirection::East).with_label("Fan").with_fan_out(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::NorthEast).with_label("A").without_mnemonic(),
+                PieButton::new(PieDirection::East),
+            ]),
+            PieButton::new(PieDirection::South).with_label("More \"quoted\"").with_children(vec![
+                PieButton::back(PieDirection::North).with_label("Up").with_mnemonic('u'),
+                PieButton::new(PieDirection::South).with_label("Deep").with_children(vec![PieButton::new(PieDirection::West).with_label("Leaf")]),
+            ]),
+            PieButton::new(PieDirection::SouthEast).with_label("Rep").with_children(vec![PieButton::new(PieDirection::North).with_label("R1")]).with_sub_pie_style(Some(SubPieStyle::Replace)),
+            PieButton::cluster(PieDirection::West).with_label("Format").with_items(vec![
+                ClusterItem::new(7, "Bold").with_mnemonic('b'),
+                ClusterItem::new(8, "Italic").without_mnemonic(),
+                ClusterItem::new(9, "Strike").with_enabled(false),
+                ClusterItem::new(10, "Under").with_mnemonic('u').with_enabled(false),
+            ]),
+            PieButton::back(PieDirection::NorthWest).without_mnemonic().with_enabled(false),
+        ]
+    }
+
+    #[test]
+    fn buttons_compile_and_compare() {
+        let tree = rich_tree();
+        assert_code_builds!(
+            tree,
+            vec![
+                PieButton::new(PieDirection::North).with_label("Copy").with_mnemonic('c').with_enabled(false),
+                PieButton::new(PieDirection::East).with_label("Fan").with_fan_out(vec![
+                    PieButton::back(PieDirection::West),
+                    PieButton::new(PieDirection::NorthEast).with_label("A").without_mnemonic(),
+                    PieButton::new(PieDirection::East),
+                ]),
+                PieButton::new(PieDirection::South).with_label("More \"quoted\"").with_children(vec![
+                    PieButton::back(PieDirection::North).with_label("Up").with_mnemonic('u'),
+                    PieButton::new(PieDirection::South).with_label("Deep").with_children(vec![
+                        PieButton::new(PieDirection::West).with_label("Leaf"),
+                    ]),
+                ]),
+                PieButton::new(PieDirection::SouthEast).with_label("Rep").with_children(vec![
+                    PieButton::new(PieDirection::North).with_label("R1"),
+                ]).with_sub_pie_style(Some(SubPieStyle::Replace)),
+                PieButton::cluster(PieDirection::West).with_label("Format").with_items(vec![
+                    ClusterItem::new(7, "Bold").with_mnemonic('b'),
+                    ClusterItem::new(8, "Italic").without_mnemonic(),
+                    ClusterItem::new(9, "Strike").with_enabled(false),
+                    ClusterItem::new(10, "Under").with_mnemonic('u').with_enabled(false),
+                ]),
+                PieButton::back(PieDirection::NorthWest).without_mnemonic().with_enabled(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn buttons_code_layout_and_empty() {
+        assert_eq!(buttons_to_code(&[]), "vec![]");
+        let b = vec![PieButton::new(PieDirection::East).with_label("Go").with_children(vec![PieButton::new(PieDirection::North)])];
+        assert_eq!(
+            buttons_to_code(&b),
+            "vec![\n    PieButton::new(PieDirection::East).with_label(\"Go\").with_children(vec![\n        PieButton::new(PieDirection::North),\n    ]),\n]"
+        );
+    }
+
+    /// What bound expressions in the tests below refer to.
+    struct Theme {
+        accent: Color32,
+        font: FontId,
+    }
+
+    fn theme() -> Theme {
+        Theme { accent: Color32::from_rgb(10, 20, 30), font: FontId::monospace(20.0) }
+    }
+
+    fn tr(key: &str) -> String {
+        format!("<{key}>")
+    }
+
+    fn strip(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    fn bind(b: &mut Bindings, target: BindTarget, expr: &str, mode: BindingMode) {
+        b.set(target, Binding::new(expr, mode));
+    }
+
+    /// A tree with a label at the root, in a sub-pie and on a cluster item.
+    fn bound_tree() -> Vec<PieButton> {
+        vec![
+            PieButton::new(PieDirection::North).with_label("Copy"),
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::North).with_label("Deep"),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "Bold"), ClusterItem::new(2, "Italic")]),
+        ]
+    }
+
+    fn tree_bindings(mode: BindingMode) -> Bindings {
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Label(vec![0]), "tr(\"copy\")", mode);
+        bind(&mut b, BindTarget::Label(vec![1, 1]), "tr(\"deep\")", mode);
+        bind(&mut b, BindTarget::ItemLabel(vec![2], 1), "tr(\"bold\")", mode);
+        b
+    }
+
+    #[test]
+    fn build_bound_labels_compile() {
+        let buttons = bound_tree();
+        let bindings = tree_bindings(BindingMode::Build);
+        let built: Vec<PieButton> = vec![
+            PieButton::new(PieDirection::North).with_label(tr("copy")),
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::North).with_label(tr("deep")),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, tr("bold")), ClusterItem::new(2, "Italic")]),
+        ];
+        let tokens = stringify!(vec![
+            PieButton::new(PieDirection::North).with_label(tr("copy")),
+            PieButton::new(PieDirection::East).with_label("More").with_children(vec![
+                PieButton::back(PieDirection::West),
+                PieButton::new(PieDirection::North).with_label(tr("deep")),
+            ]),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, tr("bold")), ClusterItem::new(2, "Italic"),]),
+        ]);
+        let generated = buttons_to_code_bound(&buttons, &bindings);
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(built[0].label, "<copy>");
+        assert_eq!(built[2].cluster_items()[0].label, "<bold>");
+        // Unbound, the same tree gives the literals.
+        assert_eq!(buttons_to_code_bound(&buttons, &Bindings::new()), buttons_to_code(&buttons));
+        // Live bindings leave the literals in the tree.
+        assert_eq!(buttons_to_code_bound(&buttons, &tree_bindings(BindingMode::Live)), buttons_to_code(&buttons));
+    }
+
+    #[test]
+    fn build_bound_fields_compile_even_at_their_default() {
+        let theme = theme();
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Field(SettingsField::CenterHighlightFillColor), "theme.accent", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextFont), "theme.font.clone()", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::TextColor), "theme.accent", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextColor), " ", BindingMode::Build); // empty: unused
+        bind(&mut b, BindTarget::Field(SettingsField::HintColor), "theme.accent", BindingMode::Live); // not in configure
+        let built = PieMenu::new()
+            .configure(|s| {
+                s.center_indicator.highlight_fill_color = theme.accent;
+                s.title.text_font = theme.font.clone();
+                s.text_color = Some(theme.accent);
+            })
+            .settings;
+        let tokens = stringify!(.configure(|s| {
+            s.center_indicator.highlight_fill_color = theme.accent;
+            s.title.text_font = theme.font.clone();
+            s.text_color = Some(theme.accent);
+        }));
+        // A live field is left out even when its value differs from the default.
+        let mut changed = PieMenuSettings::default();
+        changed.number_hints.color = Some(Color32::RED);
+        let generated = settings_to_code_bound(&changed, &b);
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(built.text_color, Some(theme.accent));
+    }
+
+    #[test]
+    fn live_bindings_compile() {
+        let theme = theme();
+        let n = 3;
+        let mut bindings = tree_bindings(BindingMode::Live);
+        bind(&mut bindings, BindTarget::Label(vec![0]), "format!(\"Undo ({n})\")", BindingMode::Live);
+        bind(&mut bindings, BindTarget::Title, "tr(\"menu\")", BindingMode::Live);
+        bind(&mut bindings, BindTarget::Field(SettingsField::TitleTextColor), "theme.accent", BindingMode::Live);
+        bind(&mut bindings, BindTarget::Field(SettingsField::HintColor), "theme.accent", BindingMode::Live);
+        let mut buttons = bound_tree();
+        let mut menu = PieMenu::new();
+        // The same statements as the tokens below (fields in SettingsField::ALL order).
+        menu.title = Some(tr("menu"));
+        menu.settings.number_hints.color = Some(theme.accent);
+        menu.settings.title.text_color = theme.accent;
+        buttons[0].label = format!("Undo ({n})");
+        if let Some(b) = button_at_mut(&mut buttons, &[1, 1]) {
+            b.label = tr("deep");
+        }
+        if let Some(item) = buttons[2].cluster_item_mut(1) {
+            item.label = tr("bold");
+        }
+        let tokens = stringify!(
+            menu.title = Some(tr("menu"));
+            menu.settings.number_hints.color = Some(theme.accent);
+            menu.settings.title.text_color = theme.accent;
+            buttons[0].label = format!("Undo ({n})");
+            if let Some(b) = button_at_mut(&mut buttons, &[1, 1]) { b.label = tr("deep"); }
+            if let Some(item) = buttons[2].cluster_item_mut(1) { item.label = tr("bold"); }
+        );
+        let generated = live_bindings_code(&bound_tree(), &bindings).join("\n");
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(buttons[1].children()[1].label, "<deep>");
+        assert_eq!(buttons[2].cluster_items()[0].label, "<bold>");
+        assert_eq!(menu.title.as_deref(), Some("<menu>"));
+        // A nested cluster item goes through button_at_mut.
+        let nested = vec![PieButton::new(PieDirection::North).with_label("M").with_children(vec![
+            PieButton::back(PieDirection::South),
+            PieButton::cluster(PieDirection::North).with_items(vec![ClusterItem::new(1, "a")]),
+        ])];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::ItemLabel(vec![0, 1], 1), "tr(\"a\")", BindingMode::Live);
+        assert_eq!(
+            live_bindings_code(&nested, &b),
+            ["if let Some(item) = button_at_mut(&mut buttons, &[0, 1]).and_then(|b| b.cluster_item_mut(1)) { item.label = tr(\"a\"); }"]
+        );
+    }
+
+    #[test]
+    fn bound_menu_snippet() {
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy"), PieButton::new(PieDirection::South).with_label("Undo")];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Title, "tr(\"edit\")", BindingMode::Build);
+        bind(&mut b, BindTarget::Label(vec![0]), "tr(\"copy\")", BindingMode::Build);
+        bind(&mut b, BindTarget::Label(vec![1]), "format!(\"Undo ({})\", history.len())", BindingMode::Live);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextColor), "theme.accent", BindingMode::Live);
+        bind(&mut b, BindTarget::Label(vec![7]), "stale", BindingMode::Build); // no such button
+        let code = menu_to_code_bound(Some("Edit"), &PieMenuSettings::default(), &buttons, &b);
+        let expected = "use egui_pie_menu::*;\n\
+// needs in scope: tr, history, theme\n\
+\n\
+let mut buttons = vec![\n    PieButton::new(PieDirection::North).with_label(tr(\"copy\")),\n    PieButton::new(PieDirection::South).with_label(\"Undo\"),\n];\n\
+\n\
+let mut menu = PieMenu::new()\n    .with_title(tr(\"edit\"));\n\
+\n\
+// each frame, before show (live bindings):\n\
+menu.settings.title.text_color = theme.accent;\n\
+buttons[1].label = format!(\"Undo ({})\", history.len());\n\
+\n";
+        assert!(code.starts_with(expected), "got:\n{code}");
+        // Without bindings it is the plain snippet.
+        let plain = menu_to_code(Some("Edit"), &PieMenuSettings::default(), &buttons);
+        assert_eq!(menu_to_code_bound(Some("Edit"), &PieMenuSettings::default(), &buttons, &Bindings::new()), plain);
+    }
+
+    #[test]
+    fn variable_names_become_their_code() {
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy"), PieButton::new(PieDirection::South).with_label("Undo")];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Label(vec![0]), "i18n.copy", BindingMode::Build);
+        bind(&mut b, BindTarget::Label(vec![1]), "i18n.undo", BindingMode::Live);
+        bind(&mut b, BindTarget::Field(SettingsField::TitleTextColor), "theme.accent", BindingMode::Build);
+        let mut vars = Variables::new();
+        vars.text("i18n.copy", "Kopieren").code("tr(\"copy\")").text("i18n.undo", "Rückgängig").code("tr(\"undo\")");
+        vars.color("theme.accent", Color32::RED);
+        b.set_variables(vars);
+        let code = menu_to_code_bound(None, &PieMenuSettings::default(), &buttons, &b);
+        assert!(code.contains("// needs in scope: tr, theme\n"), "{code}");
+        assert!(code.contains(".with_label(tr(\"copy\"))"), "{code}");
+        assert!(code.contains("s.title.text_color = theme.accent;"), "the name itself when it has no code: {code}");
+        assert!(code.contains("buttons[1].label = tr(\"undo\");"), "{code}");
+        assert!(!code.contains("i18n"), "{code}");
+        // An unregistered name is written as it is.
+        b.set_variables(Variables::new());
+        assert!(menu_to_code_bound(None, &PieMenuSettings::default(), &buttons, &b).contains(".with_label(i18n.copy)"));
+    }
+
+    #[test]
+    fn enabled_bindings_compile() {
+        let can_undo = false;
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Undo"),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B")]),
+        ];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Enabled(vec![0]), "can_undo", BindingMode::Build);
+        bind(&mut b, BindTarget::ItemEnabled(vec![1], 1), "can_undo", BindingMode::Build);
+        let built: Vec<PieButton> = vec![
+            PieButton::new(PieDirection::North).with_label("Undo").with_enabled(can_undo),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B").with_enabled(can_undo),]),
+        ];
+        let tokens = stringify!(vec![
+            PieButton::new(PieDirection::North).with_label("Undo").with_enabled(can_undo),
+            PieButton::cluster(PieDirection::South).with_items(vec![ClusterItem::new(1, "B").with_enabled(can_undo),]),
+        ]);
+        assert_eq!(strip(&buttons_to_code_bound(&buttons, &b)), strip(tokens));
+        assert!(!built[0].enabled);
+        // Live: assigned every frame.
+        let mut live = Bindings::new();
+        bind(&mut live, BindTarget::Enabled(vec![0]), "can_undo", BindingMode::Live);
+        bind(&mut live, BindTarget::ItemEnabled(vec![1], 1), "can_undo", BindingMode::Live);
+        let mut buttons = buttons;
+        buttons[0].enabled = can_undo;
+        if let Some(item) = buttons[1].cluster_item_mut(1) {
+            item.enabled = can_undo;
+        }
+        let tokens = stringify!(
+            buttons[0].enabled = can_undo;
+            if let Some(item) = buttons[1].cluster_item_mut(1) { item.enabled = can_undo; }
+        );
+        assert_eq!(strip(&live_bindings_code(&buttons, &live).join("\n")), strip(tokens));
+    }
+
+    #[test]
+    fn visible_compiles() {
+        let share_on = true;
+        let buttons = vec![
+            PieButton::new(PieDirection::North).with_label("Hidden").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Share"),
+        ];
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Visible(vec![1]), "share_on", BindingMode::Build);
+        let built: Vec<PieButton> = vec![
+            PieButton::new(PieDirection::North).with_label("Hidden").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Share").with_visible(share_on),
+        ];
+        let tokens = stringify!(vec![
+            PieButton::new(PieDirection::North).with_label("Hidden").with_visible(false),
+            PieButton::new(PieDirection::South).with_label("Share").with_visible(share_on),
+        ]);
+        assert_eq!(strip(&buttons_to_code_bound(&buttons, &b)), strip(tokens));
+        assert!(!built[0].visible && built[1].visible);
+        let mut live = Bindings::new();
+        bind(&mut live, BindTarget::Visible(vec![1]), "share_on", BindingMode::Live);
+        let mut buttons = buttons;
+        buttons[1].visible = share_on;
+        assert_eq!(live_bindings_code(&buttons, &live), ["buttons[1].visible = share_on;"]);
+    }
+
+    #[test]
+    fn number_bindings_compile() {
+        struct Prefs {
+            radius: f32,
+            anim_ms: f32,
+        }
+        let prefs = Prefs { radius: 90.0, anim_ms: 250.0 };
+        let mut b = Bindings::new();
+        bind(&mut b, BindTarget::Field(SettingsField::LayoutRadius), "prefs.radius", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::FanOutRadius), "prefs.radius", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::RevealDuration), "prefs.anim_ms", BindingMode::Build);
+        bind(&mut b, BindTarget::Field(SettingsField::SlideFade), "prefs.anim_ms", BindingMode::Build);
+        let built = PieMenu::new()
+            .configure(|s| {
+                s.layout.radius = prefs.radius;
+                s.animations.reveal_duration = Duration::from_secs_f32((prefs.anim_ms) / 1000.0);
+                s.animations.slide_fade = Some(Duration::from_secs_f32((prefs.anim_ms) / 1000.0));
+                s.sub_pies.fan_out.radius = Some(prefs.radius);
+            })
+            .settings;
+        let tokens = stringify!(.configure(|s| {
+            s.layout.radius = prefs.radius;
+            s.animations.reveal_duration = Duration::from_secs_f32((prefs.anim_ms) / 1000.0);
+            s.animations.slide_fade = Some(Duration::from_secs_f32((prefs.anim_ms) / 1000.0));
+            s.sub_pies.fan_out.radius = Some(prefs.radius);
+        }));
+        let generated = settings_to_code_bound(&PieMenuSettings::default(), &b);
+        assert_eq!(strip(&generated), strip(tokens), "generated:\n{generated}");
+        assert_eq!(built.animations.reveal_duration, Duration::from_millis(250));
+        // A live duration also brings the import.
+        let mut live = Bindings::new();
+        bind(&mut live, BindTarget::Field(SettingsField::HoverDuration), "prefs.anim_ms", BindingMode::Live);
+        let code = menu_to_code_bound(None, &PieMenuSettings::default(), &[], &live);
+        assert!(code.contains("use std::time::Duration;\n"), "{code}");
+        assert!(code.contains("menu.settings.animations.hover_duration = Duration::from_secs_f32((prefs.anim_ms) / 1000.0);"), "{code}");
+    }
+
+    #[test]
+    fn menu_to_code_exact() {
+        let buttons = vec![PieButton::new(PieDirection::North).with_label("Copy")];
+        let mut s = PieMenuSettings::default();
+        s.layout.radius = 120.0;
+        let expected = "use egui_pie_menu::*;\n\
+\n\
+let buttons = vec![\n    PieButton::new(PieDirection::North).with_label(\"Copy\"),\n];\n\
+\n\
+let menu = PieMenu::new()\n    .with_title(\"Edit\")\n    .configure(|s| {\n        s.layout.radius = 120.0;\n    });\n\
+\n\
+// each frame (key_down: whether your trigger key is held):\n\
+// match menu.show(ctx, &buttons, key_down, |ui, b| {\n\
+//     ui.label(b.label_text());\n\
+// }) {\n\
+//     PieMenuResponse::Selected(idx) => { /* idx, b.path / menu.selected_path() */ }\n\
+//     _ => {}\n\
+// }\n";
+        assert_eq!(menu_to_code(Some("Edit"), &s, &buttons), expected);
+        // No settings change and no title: no configure, no Duration import.
+        let plain = menu_to_code(None, &PieMenuSettings::default(), &buttons);
+        assert!(plain.contains("let menu = PieMenu::new();"));
+        assert!(!plain.contains("Duration"));
+        // A duration setting adds the import.
+        s.input.double_tap_window = Duration::from_millis(250);
+        assert!(menu_to_code(None, &s, &buttons).contains("use std::time::Duration;\n"));
+    }
+
+    fn run_editor(f: impl FnOnce(&mut Ui) -> bool) -> bool {
+        let ctx = Context::default();
+        let mut changed = true;
+        let mut f = Some(f);
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            if let Some(f) = f.take() {
+                changed = f(ui);
+            }
+        });
+        out.textures_delta.clear();
+        changed
+    }
+
+    /// The editor draws without panicking and reports no change when nothing is touched.
+    #[test]
+    fn settings_editor_untouched() {
+        let mut s = PieMenuSettings::default();
+        assert!(!run_editor(|ui| settings_editor(ui, &mut s)));
+        assert_eq!(settings_to_code(&s), "");
+        let mut rich = PieMenuSettings::blender_like();
+        rich.title.text_font = FontId::new(14.0, FontFamily::Name("Fancy".into()));
+        rich.sub_pies.hover_delay = Some(Duration::from_millis(300));
+        assert!(!run_editor(|ui| settings_editor(ui, &mut rich)));
+    }
+
+    #[test]
+    fn buttons_editor_untouched() {
+        let mut tree = rich_tree();
+        let before = format!("{tree:?}");
+        assert!(!run_editor(|ui| buttons_editor(ui, &mut tree, true)));
+        assert_eq!(before, format!("{tree:?}"));
+        let mut empty: Vec<PieButton> = Vec::new();
+        assert!(!run_editor(|ui| buttons_editor(ui, &mut empty, false)));
+        // Problems (two buttons in one direction) do not panic either.
+        let mut clash = vec![PieButton::new(PieDirection::North), PieButton::new(PieDirection::North)];
+        assert!(!run_editor(|ui| buttons_editor(ui, &mut clash, false)));
+    }
+
+    #[test]
+    fn new_sub_pie_is_valid_in_both_modes() {
+        let menu = PieMenu::new();
+        for dir in PieDirection::ALL {
+            for fan in [false, true] {
+                let b = new_sub_pie(dir, fan);
+                assert_eq!(b.direction, dir);
+                assert_eq!(b.label, if fan { "Fan-out" } else { "Sub-pie" });
+                let slots = dir.fan_out_slots();
+                let kids = b.children();
+                let dirs: Vec<_> = kids.iter().take(5).map(|c| c.direction).collect();
+                assert_eq!(dirs, slots);
+                for (n, c) in kids.iter().take(5).enumerate() {
+                    assert_eq!(c.label, format!("Item {}", n + 1));
+                }
+                match &b.kind {
+                    PieButtonKind::SubPie { style, .. } => {
+                        assert_eq!(*style, if fan { Some(SubPieStyle::FanOut) } else { None })
+                    }
+                    _ => panic!("not a sub-pie"),
+                }
+                if fan {
+                    assert_eq!(kids.len(), 5);
+                } else {
+                    assert_eq!(kids.len(), 6);
+                    assert!(kids[5].is_back());
+                    assert_eq!(kids[5].direction, dir.opposite());
+                }
+                assert_eq!(menu.check_buttons(&[b]), vec![], "{dir:?} fan={fan}");
+            }
+        }
+    }
+
+    #[test]
+    fn new_sub_pie_code_builds() {
+        let s = vec![new_sub_pie(PieDirection::East, false)];
+        assert_code_builds!(
+            s,
+            vec![PieButton::new(PieDirection::East).with_label("Sub-pie").with_children(vec![
+                PieButton::new(PieDirection::North).with_label("Item 1"),
+                PieButton::new(PieDirection::NorthEast).with_label("Item 2"),
+                PieButton::new(PieDirection::East).with_label("Item 3"),
+                PieButton::new(PieDirection::SouthEast).with_label("Item 4"),
+                PieButton::new(PieDirection::South).with_label("Item 5"),
+                PieButton::back(PieDirection::West),
+            ]),]
+        );
+        let f = vec![new_sub_pie(PieDirection::East, true)];
+        assert_code_builds!(
+            f,
+            vec![PieButton::new(PieDirection::East).with_label("Fan-out").with_fan_out(vec![
+                PieButton::new(PieDirection::North).with_label("Item 1"),
+                PieButton::new(PieDirection::NorthEast).with_label("Item 2"),
+                PieButton::new(PieDirection::East).with_label("Item 3"),
+                PieButton::new(PieDirection::SouthEast).with_label("Item 4"),
+                PieButton::new(PieDirection::South).with_label("Item 5"),
+            ]),]
+        );
+    }
+
+    #[test]
+    fn buttons_editor_runs_with_new_sub_pies() {
+        let mut tree = vec![new_sub_pie(PieDirection::North, false), new_sub_pie(PieDirection::East, true)];
+        // A bad child (blocked direction) must not panic either.
+        tree.push(PieButton::new(PieDirection::South).with_fan_out(vec![PieButton::new(PieDirection::North)]));
+        assert!(!run_editor(|ui| buttons_editor(ui, &mut tree, true)));
+    }
+
+    #[test]
+    fn code_view_runs() {
+        assert!(run_editor(|ui| {
+            code_view(ui, "let x = 1;");
+            true
+        }));
+    }
+
+    #[test]
+    fn structure_helpers() {
+        // first_free_direction
+        let mut buttons: Vec<PieButton> = Vec::new();
+        assert_eq!(first_free_direction(&buttons), Some(PieDirection::North));
+        buttons.push(PieButton::new(PieDirection::North));
+        buttons.push(PieButton::new(PieDirection::NorthEast));
+        assert_eq!(first_free_direction(&buttons), Some(PieDirection::East));
+        for d in PieDirection::ALL {
+            if first_free_direction(&buttons).is_some() {
+                buttons.push(PieButton::new(d));
+            }
+        }
+        assert_eq!(first_free_direction(&buttons), None);
+
+        // convert_kind_in
+        let settings = PieMenuSettings::default();
+        let mut stash = legality::Stash::default();
+        let mut b = PieButton::new(PieDirection::West).with_label("Thing").with_mnemonic('t').with_enabled(false);
+        legality::convert_kind_in(&mut b, KindChoice::SubPie, &settings, &mut stash);
+        assert_eq!(kind_choice(&b), KindChoice::SubPie);
+        assert_eq!(b.children().len(), 6, "five items and a back button");
+        assert_eq!((b.direction, b.label.as_str(), b.mnemonic, b.enabled), (PieDirection::West, "Thing", Mnemonic::Key('t'), false));
+        legality::convert_kind_in(&mut b, KindChoice::SubPie, &settings, &mut stash);
+        assert_eq!(b.children().len(), 6, "same kind: untouched");
+        legality::convert_kind_in(&mut b, KindChoice::Cluster, &settings, &mut stash);
+        assert_eq!(kind_choice(&b), KindChoice::Cluster);
+        assert_eq!(b.cluster_items().len(), 1);
+        assert_eq!(b.cluster_items()[0].number, 0);
+        assert_eq!(b.mnemonic, Mnemonic::None);
+        assert_eq!((b.label.as_str(), b.enabled), ("Thing", false));
+        legality::convert_kind_in(&mut b, KindChoice::Back, &settings, &mut stash);
+        assert!(b.is_back());
+        assert_eq!(b.label, "Thing");
+        legality::convert_kind_in(&mut b, KindChoice::Action, &settings, &mut stash);
+        assert!(matches!(b.kind, PieButtonKind::Action));
+    }
+}

@@ -206,10 +206,11 @@ pub(crate) fn paint_tooth(
     outline_base: bool,
 ) {
     if fill != Color32::TRANSPARENT {
-        let mut mesh = Mesh::default();
-        mesh.vertices = tooth.points.iter().map(|&pos| Vertex { pos, uv: WHITE_UV, color: fill }).collect();
-        mesh.indices = triangulate(&tooth.points);
-        painter.add(Shape::mesh(mesh));
+        painter.add(Shape::mesh(Mesh {
+            vertices: tooth.points.iter().map(|&pos| Vertex { pos, uv: WHITE_UV, color: fill }).collect(),
+            indices: triangulate(&tooth.points),
+            ..Default::default()
+        }));
     }
     if stroke.width > 0.0 && stroke.color != Color32::TRANSPARENT {
         if outline_base {
@@ -281,7 +282,8 @@ mod tests {
         fn tooth_is_a_highlight_shape_that_combines_with_the_others() {
             use crate::HighlightShape;
             assert!(!HighlightShape::TOOTH.is_none());
-            assert!(HighlightShape::TOOTH.tooth && !HighlightShape::TOOTH.slice);
+            let only_tooth = std::hint::black_box(HighlightShape::TOOTH);
+            assert!(only_tooth.tooth && !only_tooth.slice);
             let both = HighlightShape { tooth: true, ..HighlightShape::SLICE };
             assert!(both.tooth && both.slice);
             assert!(!HighlightShape::default().tooth);

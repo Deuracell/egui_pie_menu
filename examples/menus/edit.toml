@@ -1,0 +1,79 @@
+# The base Edit menu. examples/menus/plugin.toml adds to it: open both together
+# (the demo's "TOML" tab, or MenuCatalog::add_file once per file).
+
+# Most values are plain literals. Those your program supplies are references by
+# name, { var = "..", default = ".." }: the demo registers theme.* (from egui's
+# Dark / Light look) and i18n.* (the labels in the chosen language).
+# The ids are the actions the program handles; whether a button is enabled or
+# visible is the program's state, set by id (the demo's Undo and Redo follow
+# its pretend history).
+
+[menu.edit]
+title = { var = "i18n.edit", default = "Edit" }
+
+[menu.edit.settings]
+input = { auto_mnemonics = true }
+
+[menu.edit.settings.layout]
+radius = 110.0
+
+[menu.edit.settings.animations]
+reveal_duration = 150  # milliseconds
+
+[menu.edit.settings.center_indicator]
+highlight_fill_color = { var = "theme.accent", default = "#8000ff" }
+
+[[menu.edit.button]]
+dir = "N"
+label = { var = "i18n.copy", default = "Copy" }
+id = "edit.copy"
+mnemonic = "c"
+
+[[menu.edit.button]]
+dir = "NE"
+label = "Paste Special"
+id = "edit.paste_special"
+opens = "paste_special"
+
+[[menu.edit.button]]
+dir = "E"
+label = { var = "i18n.redo", default = "Redo" }
+id = "edit.redo"
+
+[[menu.edit.button]]
+dir = "SW"
+label = { var = "i18n.cut", default = "Cut" }
+id = "edit.cut"
+
+[[menu.edit.button]]
+dir = "W"
+label = { var = "i18n.undo", default = "Undo" }
+id = "edit.undo"
+
+[[menu.edit.button]]
+dir = "NW"
+label = "Format"
+items = [
+    { number = 1, label = "B", id = "format.bold", mnemonic = "b" },
+    { number = 2, label = "I", id = "format.italic", mnemonic = "i" },
+    { number = 3, label = "U", id = "format.underline", mnemonic = "u" },
+]
+
+# Opened by "Paste Special": a sub-pie of its own, which any file may extend.
+[menu.paste_special]
+style = "fan_out"
+
+[[menu.paste_special.button]]
+dir = "N"
+label = "Values Only"
+id = "paste.values"
+
+[[menu.paste_special.button]]
+dir = "NE"
+label = "Formatting"
+id = "paste.formatting"
+
+[[menu.paste_special.button]]
+dir = "E"
+label = "As Link"
+id = "paste.link"

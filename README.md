@@ -14,6 +14,7 @@ A radial (pie) menu widget for [egui](https://github.com/emilk/egui), inspired b
 - Keyboard support: number keys 1–9 (numpad or number row) and per-button mnemonic keys with underline rendering helper
 - Quick-tap and double-tap detection with no timer required from the caller
 - The menu tracks its own open state; pinned (persistent) menus are built in
+- Menus defined in TOML files at runtime, merged across files (`toml` feature)
 
 ## Installation
 
@@ -147,9 +148,10 @@ menu.settings = serde_json::from_str(&json)?;
 - [Sub-pies](#sub-pies): replace style, fan-out, back buttons, centre modes, hover navigation, break-out
 - [Clusters](#clusters): one direction holding several clickable items
 - [Pinned / persistent menus](#pinned--persistent-menus): menus that stay open
+- [Menus from TOML files](#menus-from-toml-files): define and extend menus after compile time, ids for the buttons
 - [Settings](#settings): every setting group, reveal animation, hover emphasis, highlight shapes
 - [Right-to-left and non-Latin scripts](#right-to-left-and-non-latin-scripts): mirroring, digits, mnemonics
-- [Running the demo](#running-the-demo)
+- [Examples and Pie Designer](#examples-and-pie-designer)
 - [Upgrading from v0.36.0](#upgrading-from-v0360): every breaking change with before and after
 
 ## Buttons
@@ -192,11 +194,13 @@ menu.hovered(); // Option<usize>: the currently highlighted button
 
 Pointing at a direction with no (enabled) button snaps to the closest available one.
 
+A hidden button (`.with_visible(false)`, or `button.visible = false`) is not drawn at all, and is skipped like a disabled one: no pointer pick, number key or mnemonic, and its mnemonic does not clash with another's. It keeps its place in the tree, so paths and ids stay the same, and its direction, which no other button of the level may take. Use it for buttons that come and go, such as a plugin's that is switched off.
+
 Number keys are consumed by the menu, so the digit does not also reach other handlers or text fields.
 
 In debug builds the menu asserts, once per open, that the buttons of the level being shown are well-formed: two buttons in the same direction, or the same mnemonic on two enabled buttons, panic with a message. Buttons in different sub-pie levels are never compared, so levels may reuse directions and keys.
 
-To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, `DuplicateItemNumber` / `DuplicateItemMnemonic` for cluster items (see "Clusters"; `MnemonicOwner` names a button or an item), plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). The demo uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed.
+To check in any build, or to show the problems in an editor, call `menu.check_buttons(&buttons)`: it returns a `Vec<ButtonProblem>` (`SharedDirection` / `DuplicateMnemonic` with the two button indices, `DuplicateItemNumber` / `DuplicateItemMnemonic` for cluster items (see "Clusters"; `MnemonicOwner` names a button or an item), plus the fan-out problems above, each with a readable `Display`; `p.buttons()` lists the indices involved). Pie Designer uses it to mark the offending buttons red, open a warning popup, and keep the menu closed until the config is fixed. `menu.check_tree(&buttons)` checks every level of a tree at once (the root and each sub-pie), with the path of each level that has a problem.
 
 ## Drawing your buttons
 
@@ -265,7 +269,7 @@ Disabled buttons are greyed out with egui's `Visuals::gray_out` either way. (The
 
 ### Icons and images
 
-The library draws no icons: the render closure does, so a button can show whatever egui can draw. Three ways (the `examples/demo.rs` "Icons" section shows all of them):
+The library draws no icons: the render closure does, so a button can show whatever egui can draw. Three ways (Pie Designer's "Icons" section shows all of them):
 
 ```rust
 // 1. Text or emoji prefix, un-underlined and in the label's colour.
@@ -475,7 +479,7 @@ With `settings.sub_pies.hover_delay`, resting the pointer on any button that lea
 
 If the buttons change while a sub-pie is open so that its level no longer exists or has no buttons, the menu falls back to the root level. A pinned menu returns to its root level after a leaf selection.
 
-The demo's "Paste Special" button opens a sub-pie that works in both styles; the "Sub-pies" section switches the menu's style, and the button editor can give any button a sub-pie (to any depth) and its own style.
+Pie Designer's "Paste Special" button opens a sub-pie that works in both styles; the "Sub-pies" section switches the menu's style, and the button editor can give any button a sub-pie (to any depth) and its own style.
 
 ## Clusters
 
@@ -518,7 +522,7 @@ menu.show(ctx, &buttons, key_down, |ui, b| {
 - A cluster is not allowed inside a fan-out (`NestedInFanOut`); it works at the root, inside a replace-style sub-pie and in pinned menus. It has no children.
 - A cluster is never highlighted by the pie, so the widgets inside use egui's native hover and press look; do not call `b.use_pie_hover` there.
 
-The demo's button editor has a "Cluster" checkbox on every button (layout, spacing, item labels and mnemonic keys); tick it and open the menu to try it.
+Pie Designer's button editor has a "Cluster" checkbox on every button (layout, spacing, item labels and mnemonic keys); tick it and open the menu to try it.
 
 ## Pinned / persistent menus
 
@@ -537,6 +541,229 @@ A pinned menu:
 Any direction highlights a button, so without a `pointer_area` a click anywhere in your UI would select the button the pointer points towards. Set it to the part of the window the menu owns. Move a pinned menu by updating `menu.position`.
 
 Keyboard: a blocking menu (`block_background = true`, not pinned) takes keyboard focus away from any focused widget, so digits and mnemonics never end up in a text field. A non-blocking or pinned menu leaves typing alone: while egui wants keyboard input (a text field is focused), number keys and mnemonics go to that widget instead of the menu.
+
+## Menus from TOML files
+
+With the `toml` feature, menus can be defined in TOML files and loaded at runtime, so they can change without a rebuild, and other files (plugins, user overrides) can add to them.
+
+```toml
+[dependencies]
+egui_pie_menu = { git = "https://github.com/Deuracell/egui_pie_menu", features = ["toml"] }
+```
+
+A file holds any number of menus, each under its name. A button opens another menu by naming it (`opens`), so a sub-pie can be defined in another file, and one menu can be the sub-pie of several buttons:
+
+```toml
+[menu.edit]
+title = "Edit"
+
+[menu.edit.settings.layout]
+radius = 120.0
+
+[[menu.edit.button]]
+dir = "N"
+label = "Copy"
+id = "edit.copy"
+mnemonic = "c"
+
+[[menu.edit.button]]
+dir = "E"
+label = "Paste Special"
+opens = "paste_special"   # another menu, in this file or any other
+style = "fan_out"         # optional: "replace" or "fan_out"
+
+[[menu.edit.button]]
+dir = "W"
+label = "Format"
+items = [
+    { number = 1, label = "B", id = "format.bold" },
+    { number = 2, label = "I", id = "format.italic" },
+]
+
+[[menu.paste_special.button]]
+dir = "N"
+label = "Values Only"
+id = "paste.values"
+```
+
+A second file can extend it. Here a plugin adds a button to `edit` that opens a menu of its own:
+
+```toml
+[[menu.edit.button]]
+dir = "S"
+label = "Share"
+opens = "share"
+
+[[menu.share.button]]
+dir = "N"
+back = true
+
+[[menu.share.button]]
+dir = "S"
+label = "Email"
+id = "plugin.share.email"
+```
+
+```rust
+use egui_pie_menu::catalog::MenuCatalog;
+
+let mut catalog = MenuCatalog::new();
+catalog.add_file("menus/edit.toml")?;
+catalog.add_file("plugins/share.toml")?;     // adds to `edit`
+let mut edit = catalog.build("edit")?;        // MenuDefinition
+let mut menu = edit.to_pie_menu();
+
+// each frame:
+edit.apply_actions(&actions(&app));           // enabled / visible, by id (below)
+if let PieMenuResponse::Selected(_) = menu.show(ctx, &edit.buttons, key_down, |ui, b| { ui.label(b.label_text()); }) {
+    match edit.ids.selected(&edit.buttons, menu.selected_path()) {
+        Some("edit.copy") => copy(),
+        Some("plugin.share.email") => share_by_email(),
+        _ => {}
+    }
+}
+```
+
+**Buttons.** `dir` is `N`, `NE`, `E`, `SE`, `S`, `SW`, `W` or `NW` (or `North`, `NorthEast`, ..). A button is a plain button, a sub-pie (`opens = "menu"`), a back button (`back = true`, labelled "Back" unless given a `label`) or a cluster (`items`, each with a `number`). Optional: `label`, `id`, `mnemonic` (one character, or `"none"`; left out: automatic), and on a sub-pie `style`. A menu's own `style` says how it opens as a sub-pie; the button's `style` wins.
+
+**Ids.** `id` names a button or cluster item for your code. `MenuDefinition::ids` (a `ButtonIds`) maps paths to ids: `selected(&buttons, menu.selected_path())` after a selection, `find(id)` for the path, `button(path)` / `item(path, number)`. Unlike a path, an id stays the same when another file adds or reorders buttons.
+
+**Merging.** `add_toml` / `add_file` in order. A menu defined more than once (in several files, or twice in one) gets the buttons of every definition, in the order the files define them. Its `title`, `style` and settings (key by key within a group) are replaced by later definitions. A file that fails to load (bad TOML, an unknown key or setting) adds nothing.
+
+**Removing and changing buttons.** A file can also take buttons out of a menu or change them, wherever they were defined, by their `id`. This is how a user's own file adjusts the base menu and the plugins':
+
+```toml
+# user/menus.toml
+[menu.edit]
+remove = ["edit.paste_special", "format.underline"]   # a button (with its sub-pie), a cluster item
+
+[[menu.edit.change]]
+id = "edit.cut"
+label = "Snip"                # only the fields given change
+mnemonic = "s"
+
+[[menu.edit.change]]
+id = "plugin.share"
+dir = "SE"                    # move the plugin's button, to free South
+
+[[menu.edit.button]]
+dir = "S"
+label = "Select All"
+id = "edit.select_all"        # an action the program has but its menus did not show
+```
+
+A `change` can set `dir`, `label`, `mnemonic`, `opens`, `style` and `items` of a button, and `label` and `mnemonic` of a cluster item. `remove` and `change` are per menu: a sub-pie's buttons are changed in that sub-pie's own menu (`[[menu.paste_special.change]]`).
+
+They apply when the menu is built, after every file is in: first every `change` (in file order, so a later file wins on the same field), then every `remove`. Only then are the buttons checked: two in one direction is an error naming both files. So the order of the files does not matter for removals and changes: the user's file can be loaded before or after the plugin it changes. A `remove` or `change` whose id is not in the menu (the plugin is not installed) is not an error; it is noted in `MenuDefinition::notes` and reported by `check_references`.
+
+**Settings** go under `[menu.<name>.settings]`, with the paths of `PieMenuSettings`, and only what differs from the default. Colours are `"#rrggbb"` or `"#rrggbbaa"`, durations are milliseconds, and `false` switches off an optional value (`background_radius = false`). Compound values are inline tables: `highlight_stroke = { width = 2.0, color = "#ffffff" }`, `text_font = { size = 18.0, family = "Monospace" }`. An unknown setting is an error.
+
+**Values from your program.** A file can't hold code, so a value your program supplies is a reference by name: a label, a cluster item's label, the title, or a colour, stroke, font, number or duration of the settings can be a literal or `{ var = "name", default = .. }`.
+
+```toml
+[menu.edit]
+title = { var = "i18n.edit", default = "Edit" }
+
+[menu.edit.settings.center_indicator]
+highlight_fill_color = { var = "theme.accent", default = "#8000ff" }
+highlight_stroke = { var = "theme.outline", default = { width = 2.0, color = "#ffffff" } }
+
+[[menu.edit.button]]
+dir = "N"
+label = { var = "i18n.copy", default = "Copy" }
+id = "edit.copy"
+
+```
+
+The names are plain keys of your app's [`Variables`](#variables-values-from-your-program), not Rust code. `edit.apply_variables(vars, &mut menu)` puts their current values in; call it when they change (or every frame). `default` is used until then and when your app has no such variable; without one, text shows the name itself (a missing translation stays visible) and a setting keeps the library default. A later file's literal replaces an earlier reference, like any other value.
+
+A number is the value as written in the file (pixels, factors, angles in radians) and a duration is in milliseconds:
+
+```toml
+[menu.edit.settings.layout]
+radius = { var = "prefs.pie_radius", default = 120.0 }
+
+[menu.edit.settings.animations]
+reveal_duration = { var = "prefs.animation_ms", default = 150 }
+```
+
+The rest (switches such as `title.show`, choices such as `reveal`) are literals only; a reference there is an error naming the setting.
+
+#### Variables: values from your program
+
+`egui_pie_menu::values::Variables` holds your program's values by name, each of a kind: `color`, `stroke`, `font`, `text`, `number` (a duration in milliseconds) and `flag` (true or false). Build it from your program's state and hand it to the menu; the parts of the menu that refer to a name take its value:
+
+```rust
+use egui_pie_menu::values::Variables;
+
+let mut vars = Variables::new();
+vars.color("theme.accent", theme.accent)
+    .font("theme.title_font", theme.title_font.clone())
+    .text("i18n.copy", tr("copy"))
+    .number("prefs.pie_radius", prefs.pie_radius);
+edit.apply_variables(vars, &mut menu);   // labels into edit.buttons; settings and title into menu
+```
+
+Calling it every frame is fine: it writes only what changed. The value a part had before your program's replaced it is kept as its fallback (`Bindings::fallback`), so a menu written back with `to_toml` keeps the file's own defaults. For menus built in code, `Bindings` (which part takes which variable) and `Bindings::apply` do the same without the `toml` feature.
+
+**Actions: what the program handles, and their state.** Whether a button is enabled or shown is not something a file can know: it is the state of the *action* behind it, which only the program has. So files never say `enabled` or `visible`; the program registers the actions it handles, by id, with their state, and every button and cluster item with that id follows:
+
+```rust
+use egui_pie_menu::Actions;
+
+/// The actions this program handles, and their state right now.
+fn actions(app: &App) -> Actions {
+    let mut a = Actions::new();
+    a.add("edit.copy").enabled(app.selection.is_some());
+    a.add("edit.undo").enabled(app.history.can_undo());
+    a.add("edit.redo").enabled(app.history.can_redo());
+    a.add("edit.select_all");
+    a.add("paste.values");
+    // A plugin's actions: shown only while it is switched on.
+    let share_on = app.plugins.share.enabled();
+    a.add("plugin.share").visible(share_on);
+    a.add("plugin.share.email").visible(share_on).enabled(app.document.is_saved());
+    a
+}
+
+// each frame (it only writes what changed):
+edit.apply_actions(&actions(&app));
+```
+
+An action is enabled and visible unless the program says otherwise. A disabled button is greyed and cannot be picked; a hidden one is not drawn and keeps its place ([hidden buttons](#disabled-buttons-and-hover-query)). A cluster item cannot hide: a hidden action disables it. Buttons without an `id` are left alone. The `match` on the selected id then never sees an action that is disabled or hidden.
+
+**Buttons without an action.** A button whose id the program does not register (a typo in a plugin's file, a plugin made for a newer version) is disabled, so it can never be picked and do nothing; it shows egui's disabled look. `apply_actions` returns those ids, each the first time it finds it, for you to log if you like. Whether such buttons look more alarming than that is up to your program, which knows who is looking (an end user cannot fix someone else's file): `edit.is_unhandled(path)` (`is_item_unhandled` for a cluster item) tells your render closure, and `unhandled_color(ui)` is the theme's error colour to draw it in:
+
+```rust
+menu.show(ctx, &edit.buttons, key_down, |ui, b| {
+    let mut text = b.label_text();
+    if edit.is_unhandled(b.path) {
+        text = text.color(unhandled_color(ui));   // wins over the label's own colour
+    }
+    ui.label(text).on_disabled_hover_text("no action in the program");
+});
+```
+
+`actions.keep_unregistered(true)` leaves such buttons as they are, for programs that pass ids they do not know on to someone else.
+
+**Checking references.** Names and ids are only text to the file, so a typo goes unnoticed until a value stays at its default or a button is disabled. `check_references(&vars, &actions)` lists what your program does not answer: what building noted (a `remove` or `change` that found nothing), names it registers no variable for (or one of another kind, such as a font where a colour goes) and ids that are not among its actions. Run it after loading, and log or show the result:
+
+```rust
+let mut vars = Variables::new();
+vars.text("i18n.copy", tr("copy"));
+for problem in edit.check_references(&vars, &actions(&app)) {
+    log::warn!("{problem}");
+    // the label of "Copy": `i18n.cpy` is not a variable of the program
+    // the id of "Share" › "Emial": `plugin.share.emial` is not an action of the program
+    // `remove` in menu `edit` (from user/menus.toml): `format.italik` is not in the menu (nothing removed)
+}
+```
+
+A menu's `title` and `settings` apply when it is built as a menu of its own. Where it opens as a sub-pie, only its buttons and `style` count.
+
+**Errors.** `build` fails, with the file and the button named, if two buttons of a menu share a direction (after changes and removals), a `change` gives a cluster item a direction or the like, a button opens a menu no file defines, menus open each other in a circle, or the tree has a problem `check_buttons` reports (a mnemonic used twice, a fan-out child facing the parent, ..). Debug builds therefore never assert on a menu that built.
+
+**Writing.** `MenuDefinition::to_toml()` writes a definition back as a file: the menu first, then one menu per sub-pie, named after its label (`paste_special`), with only the settings that differ from the default. Building it again gives the same definition. Whether buttons are enabled or visible is the program's state and is not written. A reference keeps the file's own default, not the value your program put in: a menu saved while the program runs in Russian keeps `default = "Copy"`. Pie Designer's "TOML" tab uses it to show, open and save menus.
 
 ## Settings
 
@@ -669,19 +896,26 @@ The outline cannot cross itself for any values (the tests check thousands of ran
 
 - `menu.settings.mirror_horizontal = true` flips the layout (East↔West, diagonals follow). Number keys and number hints follow the displayed positions, and `HintSide::Trailing` then means left of the label. Off by default.
 - The mnemonic underline works in right-to-left words: egui (no bidi) lays separately formatted text pieces out left to right, so the library feeds the split word in reverse and, for Arabic-script labels, adds zero-width joiners at the cuts so letters keep their joined forms.
-- In the render closure `b.rtl` is true while mirrored: lay out your own widgets in reverse (the demo puts a checkbox's box right of its text). `b.label_text().prefix(icon)` already puts the icon on the right.
+- In the render closure `b.rtl` is true while mirrored: lay out your own widgets in reverse (Pie Designer puts a checkbox's box right of its text). `b.label_text().prefix(icon)` already puts the icon on the right.
 - `number_hints.digits = HintDigits::ArabicIndic` shows ٠١٢…, `HintDigits::Persian` shows ۰۱۲… (Persian/Urdu), instead of 0123….
 - Mnemonics work for any alphabetic script: they match typed characters, so they work with the active keyboard layout, and mnemonic generation and `mnemonic_text` are Unicode-aware (case folded; Hebrew final forms, Arabic alef variants, and Persian/Arabic yeh and kaf count as the same key; combining marks are skipped).
-- **Text rendering is egui's job.** As of egui 0.36 text is shaped (Arabic letters join), but there is **no bidi** support, so mixed left-to-right/right-to-left labels display in the wrong order, and egui's default fonts do not include Arabic or Hebrew glyphs — add a font via `ctx.set_fonts` (the demo loads system fonts). Keep each label single-script until egui gains bidi.
+- **Text rendering is egui's job.** As of egui 0.36 text is shaped (Arabic letters join), but there is **no bidi** support, so mixed left-to-right/right-to-left labels display in the wrong order, and egui's default fonts do not include Arabic or Hebrew glyphs — add a font via `ctx.set_fonts` (the Pie Designer embeds them). Keep each label single-script until egui gains bidi.
 - **Status: basic RTL support, further work tabled.** Mirroring, digits, mnemonic matching and underlining, icon and checkbox side are handled. Multi-word right-to-left labels still show their words in left-to-right order (egui has no bidi). Contributions welcome: the [`unicode-bidi`](https://crates.io/crates/unicode-bidi) crate could compute the visual word order so the library feeds egui the words already reordered (the same trick `append_mnemonic_text` uses for the mnemonic's word). Once egui moves to a bidi-aware text stack (Parley / cosmic-text), the workarounds should be removed instead; the test `rtl_mnemonics_render_like_the_unsplit_label` compares against egui's own layout and should flag that change.
 
-## Running the demo
+## Examples and Pie Designer
+
+Two short examples show the library in code:
 
 ```sh
-cargo run --example demo
+cargo run --example basic        # a menu built in code: sub-pie, cluster, handling the selection
+cargo run --example toml_menus   # menus from TOML files: variables, actions, ids
 ```
 
-  Right-click anywhere in the window to open the menu. The left panel exposes all settings as live drag fields and colour pickers.
+**Pie Designer** (the `egui_pie_menu_designer` crate in this repository) is the place to try everything the menu can do and to design menus visually: every setting, the button tree with an inspector, a live preview, and the result as TOML or as Rust code. Its editors are also a library you can embed in your own program's tools. It runs on the desktop and in the browser (the repository's GitHub Pages site). See [designer/README.md](designer/README.md).
+
+```sh
+cargo run -p egui_pie_menu_designer
+```
 
 ## Upgrading from v0.36.0
 
@@ -769,13 +1003,28 @@ Nothing below needs changes in existing code:
 - `ButtonView` helpers: `path`, `text_color()`, `scale()`, `use_pie_hover()`, `opens_sub_pie()`.
 - The `layout` and `sub_pies` setting groups, and demo icons ([Icons and images](#icons-and-images)).
 
-### Added after v0.36.1
+### New in v0.36.2
 
-Additive; nothing to change in existing code:
+One change can need an edit in existing code:
+
+- `PieButton` has a new public field, `visible` (below). Code that builds buttons with the builders (`PieButton::new(..).with_label(..)`) is unaffected; a `PieButton { .. }` struct literal needs `visible: true` (or `..` from another button).
+
+Everything else is additive:
 
 - `PieMenu::configure`: change the settings in a closure.
 - `PieMenuSettings::blender_like()`: a Blender-style preset ([Configuring the menu](#configuring-the-menu)).
 - The optional `serde` feature: `Serialize` and `Deserialize` for the settings types, with `#[serde(default)]` on the structs.
+- The optional `toml` feature: menus in TOML files, loaded and merged at runtime (`catalog::MenuCatalog`, `MenuDefinition`), with ids for the buttons (`ButtonIds`), `remove` / `change` by id, values from the program by name, and the program's actions setting buttons' state (`Actions`) ([Menus from TOML files](#menus-from-toml-files)).
+- `values`: `Variables` (the program's values by name) and `Bindings` (which parts of a menu take them); `settings_fields`: `SettingsField` / `SettingsGroup`, every setting by path.
+- `PieButton::visible` / `with_visible`: hidden buttons keep their place but are not drawn or picked.
+- `button_at` / `button_at_mut` (a button by path), `PieButton::children_mut` / `cluster_item_mut`.
+- `PieMenu::check_tree` (every level of a tree), `PieMenu::fan_out_problems` (could this sub-pie open as a fan-out), and the `mnemonic` module's `fold_char` / `is_mnemonic_letter`.
+- `PieMenu::set_open_fan_out(Option<usize>)`: open (or close) a fan-out from code as if the pointer had reached its button, for previews and editors. It has no effect unless the menu is open; a real pointer elsewhere in the parent closes the fan again at once, while `show_with_pointer(.., None, ..)` leaves it open.
+- Pie Designer, a crate of its own in this repository (`egui_pie_menu_designer`): the editors and the app ([Examples and Pie Designer](#examples-and-pie-designer)). The demo of v0.36.1 is now part of it; the core has two short examples instead.
+
+## Acknowledgements
+
+Inspired by [Blender](https://www.blender.org/)'s pie menus. Built on [egui](https://github.com/emilk/egui).
 
 ## License
 
