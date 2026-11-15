@@ -77,7 +77,11 @@ impl PieMenu {
     /// for hover picking and the centre highlight.
     pub(crate) fn layout_vec(&self, dir: &PieDirection, size: Vec2, radius: f32, sf: f32) -> Vec2 {
         let v = Self::direction_vec(dir, sf);
-        let diagonal = v.x.abs() > 0.5 && v.y.abs() > 0.5;
+        // By direction, not by vector: the full diamond's diagonals are exactly (0.5, 0.5).
+        let diagonal = matches!(
+            dir,
+            PieDirection::NorthEast | PieDirection::SouthEast | PieDirection::SouthWest | PieDirection::NorthWest
+        );
         let (Some(t), true) = (self.settings.layout.intercardinal_height, diagonal && radius > 0.0) else {
             return v;
         };
@@ -328,10 +332,26 @@ mod tests {
             for sf in [1.0, -1.0, 0.5] {
                 let m = menu(Some(0.4), sf);
                 let r = m.settings.layout.radius;
+                // An unmoved corner is also on the shape, so check it actually moved.
+                assert!(ne_corner(&m).y > ne_corner(&menu(None, sf)).y + 1.0, "sf {sf}: diagonal did not move");
                 let c = ne_corner(&m) / r;
                 let on_shape = PieMenu::curve_vec((-c.y).atan2(c.x), sf);
                 assert!((Vec2::new(c.x, -c.y) - on_shape).length() < 1e-3, "sf {sf}: {c:?} vs {on_shape:?}");
             }
+        }
+
+        #[test]
+        fn applies_at_every_shape_factor_including_the_full_diamond() {
+            let ne_y = |height: Option<f32>, sf: f32| {
+                let m = menu(height, sf);
+                m.button_offset(&PieDirection::NorthEast, SIZE, m.settings.layout.radius, sf).y
+            };
+            for sf in [-1.0, -0.5, 0.0, 1.0] {
+                let (lowered, plain) = (ne_y(Some(0.3), sf), ne_y(None, sf));
+                assert!(lowered.abs() < plain.abs(), "sf {sf}: {lowered} vs {plain}");
+            }
+            let (full, almost) = (ne_y(Some(0.3), -1.0), ne_y(Some(0.3), -0.99));
+            assert!((full - almost).abs() < 1.0, "{full} vs {almost}");
         }
 
         #[test]
