@@ -1362,18 +1362,21 @@ impl PieMenu {
             );
         }
 
-        // Keys: an open fan has the keyboard to itself.
+        // Keys: an open fan has the keyboard to itself. Decided now, acted on once this
+        // frame's buttons are drawn: the level then changes without a frame that shows no
+        // buttons (and `button_centers` is this level's when a sub-pie is centred on one).
+        let mut key_event = None;
         if keys_for_menu {
             match &fan {
                 Some(fan) => {
                     if let Some((child, _)) = self.key_pick(ctx, fan.children, false) {
-                        return LevelEvent::FanPick(fan.trigger, child);
+                        key_event = Some(LevelEvent::FanPick(fan.trigger, child));
                     }
                 }
                 None => {
                     match self.key_pick(ctx, buttons, true) {
-                        Some((idx, Some(item))) => return LevelEvent::ClusterPick(idx, item),
-                        Some((idx, None)) => return LevelEvent::Pick(idx),
+                        Some((idx, Some(item))) => key_event = Some(LevelEvent::ClusterPick(idx, item)),
+                        Some((idx, None)) => key_event = Some(LevelEvent::Pick(idx)),
                         None => {}
                     }
                 }
@@ -1420,7 +1423,11 @@ impl PieMenu {
                 if self.fan_suppressed.is_some() && !(reached && level_pick == self.fan_suppressed) {
                     self.fan_suppressed = None; // the pointer has left that button
                 }
-                match level_pick.filter(|&i| reached && self.fan_suppressed != Some(i) && self.opens_fan(&buttons[i])) {
+                // Nothing new starts while a key pick is pending.
+                let opening = level_pick.filter(|&i| {
+                    key_event.is_none() && reached && self.fan_suppressed != Some(i) && self.opens_fan(&buttons[i])
+                });
+                match opening {
                     Some(i) => {
                         let since = match self.fan_pending {
                             Some((j, since)) if j == i => since,
@@ -1456,6 +1463,7 @@ impl PieMenu {
         let mut timer_pick = None;
         if let Some(delay) = self.settings.sub_pies.hover_delay
             && self.fan.is_none()
+            && key_event.is_none()
         {
             let in_sub_pie = !self.path.is_empty();
             let navigates = |b: &PieButton| {
@@ -1651,6 +1659,9 @@ impl PieMenu {
             }
         }
 
+        if let Some(event) = key_event {
+            return event;
+        }
         if let Some(i) = timer_pick {
             return LevelEvent::Pick(i);
         }

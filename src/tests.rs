@@ -1133,6 +1133,49 @@ mod fan_out_tests {
         assert_eq!(rig.menu.selected_path(), &[0, 2]);
     }
 
+    /// A key pick changes the level only after this frame's buttons are drawn: no blank frame.
+    #[test]
+    fn a_key_pick_frame_still_draws_its_buttons() {
+        let nested = vec![PieButton::new(PieDirection::North)
+            .with_label("Sub")
+            .with_children(vec![PieButton::new(PieDirection::South).with_label("Leaf")])];
+        let mut rig = Rig::new(nested);
+        let (resp, drawn) = rig.frame(None, true, &[Key::Num8]);
+        assert_eq!(resp, PieMenuResponse::None);
+        assert_eq!(rig.menu.path(), &[0]);
+        assert_eq!(paths(&drawn), [vec![0]], "the root's button is drawn in the frame that leaves it");
+        let (_, drawn) = rig.frame(None, true, &[]);
+        assert_eq!(paths(&drawn), [vec![0, 0]]);
+
+        // Inside an open fan: the selecting frame draws the parent's and the fan's buttons.
+        let mut rig = Rig::new(buttons());
+        rig.frame(None, true, &[Key::Num6]);
+        rig.frame(None, true, &[]);
+        let (resp, drawn) = rig.frame(None, true, &[Key::Num8]);
+        assert_eq!(resp, PieMenuResponse::Selected(0));
+        assert!(!drawn.is_empty());
+    }
+
+    /// With `SubPieCenter::Button`, a sub-pie opened by key on the first frame of a level
+    /// is centred on that level's button, not on where the previous level had one.
+    #[test]
+    fn key_opened_sub_pie_centres_on_this_levels_button() {
+        let leaf = || PieButton::new(PieDirection::South).with_label("Leaf");
+        let nested = vec![PieButton::new(PieDirection::North)
+            .with_label("A")
+            .with_children(vec![PieButton::new(PieDirection::East).with_label("B").with_children(vec![leaf()])])];
+        let mut rig = Rig::new(nested);
+        rig.menu.settings.sub_pies.center = SubPieCenter::Button;
+        rig.frame(None, true, &[Key::Num8]); // into A, at the root's button
+        let root_button = rig.menu.position;
+        assert_eq!(root_button, rig.menu.button_centers[0]);
+        rig.frame(None, true, &[Key::Num6]); // first frame of A's level: straight into B
+        assert_eq!(rig.menu.path(), &[0, 0]);
+        let b = rig.menu.button_centers[0];
+        assert_ne!(b, root_button);
+        assert_eq!(rig.menu.position, b, "centred on B as drawn in A's level");
+    }
+
     #[test]
     fn key_opened_fan_closes_when_pointing_at_another_parent_button_or_on_backspace() {
         let mut rig = Rig::new(buttons());
