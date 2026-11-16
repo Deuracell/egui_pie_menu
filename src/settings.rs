@@ -156,71 +156,84 @@ pub struct PieMenuCenterIndicatorSettings {
     pub tooth: PieMenuToothSettings,
 }
 
-/// A tooth that grows out of the rim of the center indicator toward the pointer.
+/// A tooth that grows out of the circle of the center indicator toward the pointer.
 ///
-/// It starts as a short, wide, round bump and, as the pointer travels from the dead zone
-/// to the layout radius, grows longer and narrower and sharpens into a point. Its base is
-/// the circle's own arc, so nothing is drawn inside the circle (unless [`dig`](Self::dig)
-/// is set). The outline can never cross itself, whatever the values.
+/// The tooth is made of circular arcs only. Each side is one main arc, tangent to the circle's
+/// edge, that ends at the *reference point*: the tip on the axis `length` away from the circle,
+/// where the two arcs meet when there is no fillet. The arcs are as curved as `bend` says, from a
+/// straight line (`0`) to the sharpest bend that still takes a fillet (`1`), so they can never
+/// cross. Given the length and the bend, the arc's radius and the angle at which it meets the
+/// circle follow in closed form (they are results, not settings). A fillet of radius
+/// [`tip_radius`](Self::tip_radius) rounds the tip: it eats length, so the visible tip is below the
+/// reference point. A *root*, a line with no thickness of its own, follows the circle's edge back
+/// from each foot.
 ///
-/// The shape is a profile from the base to the tip: at a fraction `s` of the length the
-/// half-width is `(1 - s^q)^(1/q)` of the base half-width. `q` is 2 for a round dome, 1 for
-/// a straight-sided triangle and below 1 for concave sides (a thorn). It moves from
-/// [`start_roundness`](Self::start_roundness) to [`end_sharpness`](Self::end_sharpness) as
-/// the pointer travels. The default is the "thorn" look.
+/// As the pointer travels from the dead zone to the layout radius the length, bend and root go
+/// from their `start_` value to their end value together, and the tip fillet follows later (see
+/// [`sharpen_easing`](Self::sharpen_easing)). At the start the tip is a big round fillet, so the
+/// tooth begins as a rounded wedge that follows the circle, and the point arrives last. The full
+/// shape is reached at 90 % of the travel.
+///
+/// It is filled with [`PieMenuCenterIndicatorSettings::highlight_fill_color`] and outlined, root
+/// included, with [`PieMenuCenterIndicatorSettings::highlight_stroke`].
 ///
 /// ```
 /// use egui_pie_menu::{HighlightShape, PieMenu};
 /// let mut menu = PieMenu::new();
 /// menu.settings.center_indicator.highlight_shape = HighlightShape::TOOTH;
 /// menu.settings.center_indicator.tooth.length = 40.0;
+/// menu.settings.center_indicator.tooth.bend = 0.0; // straight sides
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
 pub struct PieMenuToothSettings {
-    /// How far the tip reaches beyond the circle at full travel, in points.
+    /// Distance from the circle's edge to the reference point at full travel, in points: the very
+    /// edge of the tooth with no fillet. Never more than three quarters of the layout radius.
     pub length: f32,
-    /// Length at the first sign of growth, in points.
+    /// The length at the first sign of growth.
     pub start_length: f32,
-    /// Base width at the first sign of growth, as an angle in radians around the circle.
-    pub start_width: f32,
-    /// Base width at full travel, in radians.
-    pub end_width: f32,
-    /// Shape exponent at the first sign of growth. 2 is a round dome, 1 a triangle.
-    pub start_roundness: f32,
-    /// Shape exponent at full travel. Below 1 is a concave, sharp point; 2 is round.
-    pub end_sharpness: f32,
-    /// Moves the base outward (positive) or inward (negative), in points. The base sits on
-    /// the outer edge of the background circle's stroke at 0.
-    pub inset: f32,
-    /// Curves the base inward into the circle, making a crescent, in points. 0 follows
-    /// the circle exactly. Limited to half the base radius.
-    pub dig: f32,
-    /// Response curve of the length. Above 1 grows quickly at first.
+    /// How curved the main arcs are at full travel, from `0.0` (straight lines) to `1.0` (the
+    /// sharpest bend that still takes a fillet). The scale is worked out from the length and the
+    /// circle: it is at most 85 % of the curvature at which the two arcs would just touch, and lower
+    /// when the tip angle would otherwise be too small for a fillet.
+    pub bend: f32,
+    /// The bend at the first sign of growth.
+    pub start_bend: f32,
+    /// Radius of the fillet that rounds the tip at full travel, in points. `0.0` is none. It eats
+    /// length: the visible tip ends below the reference point.
+    pub tip_radius: f32,
+    /// The fillet radius at the first sign of growth. A big value starts the tooth round.
+    pub start_tip_radius: f32,
+    /// How far back around the circle the root follows its edge from each foot at full travel, in
+    /// radians. `0.0` is no root.
+    pub root: f32,
+    /// The root at the first sign of growth, in radians.
+    pub start_root: f32,
+    /// Taper the root's line to a point. Otherwise it keeps the outline's width.
+    pub root_taper: bool,
+    /// Response curve of the length, bend and root. Above 1 grows quickly at first.
     pub length_easing: f32,
-    /// Response curve of the width change.
-    pub width_easing: f32,
-    /// Response curve of the change from round to sharp.
-    pub sharpness_easing: f32,
-    /// Also stroke the base, where the tooth meets the circle. Otherwise the outline
-    /// follows only the sides and the tip.
+    /// Response curve of the tip fillet. Above 1 it stays round for longer, so the point comes late.
+    pub sharpen_easing: f32,
+    /// Also stroke the base, where the tooth meets the circle. Otherwise the outline follows only
+    /// the sides and the tip.
     pub outline_base: bool,
 }
 
 impl Default for PieMenuToothSettings {
     fn default() -> Self {
         Self {
-            length: 54.0,
-            start_length: 5.0,
-            start_width: 80.0_f32.to_radians(),
-            end_width: 24.0_f32.to_radians(),
-            start_roundness: 2.0,
-            end_sharpness: 0.4,
-            inset: 0.0,
-            dig: 0.0,
-            length_easing: 1.2,
-            width_easing: 1.0,
-            sharpness_easing: 1.3,
+            length: 46.0,
+            start_length: 8.0,
+            bend: 1.0,
+            start_bend: 0.0,
+            tip_radius: 2.5,
+            start_tip_radius: 14.0,
+            root: 25.0_f32.to_radians(),
+            start_root: 0.0,
+            root_taper: false,
+            length_easing: 1.8,
+            sharpen_easing: 2.0,
             outline_base: false,
         }
     }

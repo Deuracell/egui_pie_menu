@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn bindable_fields() {
         let bindable: Vec<SettingsField> = SettingsField::ALL.into_iter().filter(|f| f.is_bindable()).collect();
-        assert_eq!(bindable.len(), 10 + 30);
+        assert_eq!(bindable.len(), 10 + 29);
         assert!(SettingsField::LayoutRadius.is_bindable() && SettingsField::LayoutRadius.is_number());
         assert!(!SettingsField::ShowBehavior.is_bindable() && !SettingsField::TitleShow.is_bindable());
         assert!(SettingsField::SlideFade.is_duration() && SettingsField::SlideFade.is_optional_value());

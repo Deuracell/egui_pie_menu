@@ -48,6 +48,7 @@ pub mod values;
 #[cfg(feature = "toml")]
 pub mod catalog;
 mod highlight_shapes;
+mod tooth;
 mod layout;
 pub mod mnemonic;
 #[cfg(test)]
@@ -1592,20 +1593,21 @@ impl PieMenu {
                 let base_radius = indicator
                     .background_radius
                     .map_or(highlight_radius, |r| r + indicator.background_stroke.width / 2.0);
-                if let Some(outline) = highlight_shapes::tooth_outline(
+                if let Some(outline) = tooth::tooth_outline(
                     center,
                     base_radius,
                     base_angle,
                     progress,
                     tooth,
-                    (radius * 0.75 - base_radius - tooth.inset).max(0.0),
+                    (radius * 0.75 - base_radius).max(0.0),
                 ) {
-                    highlight_shapes::paint_tooth(
+                    tooth::paint_tooth(
                         &painter,
                         &outline,
                         indicator.highlight_fill_color,
                         indicator.highlight_stroke,
                         tooth.outline_base,
+                        tooth.root_taper,
                     );
                 }
             }

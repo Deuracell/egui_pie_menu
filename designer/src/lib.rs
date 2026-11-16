@@ -132,17 +132,17 @@ fn settings_entries(s: &PieMenuSettings) -> Vec<(String, String)> {
     e!("center_indicator.highlight_angle", format!("{:?}", c.highlight_angle));
     e!("center_indicator.highlight_circle_radius", format!("{:?}", c.highlight_circle_radius));
     e!("center_indicator.highlight_snapping", c.highlight_snapping.to_string());
-    e!("center_indicator.tooth.length", format!("{:?}", c.tooth.length));
     e!("center_indicator.tooth.start_length", format!("{:?}", c.tooth.start_length));
-    e!("center_indicator.tooth.start_width", format!("{:?}", c.tooth.start_width));
-    e!("center_indicator.tooth.end_width", format!("{:?}", c.tooth.end_width));
-    e!("center_indicator.tooth.start_roundness", format!("{:?}", c.tooth.start_roundness));
-    e!("center_indicator.tooth.end_sharpness", format!("{:?}", c.tooth.end_sharpness));
-    e!("center_indicator.tooth.inset", format!("{:?}", c.tooth.inset));
-    e!("center_indicator.tooth.dig", format!("{:?}", c.tooth.dig));
+    e!("center_indicator.tooth.length", format!("{:?}", c.tooth.length));
+    e!("center_indicator.tooth.start_bend", format!("{:?}", c.tooth.start_bend));
+    e!("center_indicator.tooth.bend", format!("{:?}", c.tooth.bend));
+    e!("center_indicator.tooth.start_tip_radius", format!("{:?}", c.tooth.start_tip_radius));
+    e!("center_indicator.tooth.tip_radius", format!("{:?}", c.tooth.tip_radius));
+    e!("center_indicator.tooth.start_root", format!("{:?}", c.tooth.start_root));
+    e!("center_indicator.tooth.root", format!("{:?}", c.tooth.root));
+    e!("center_indicator.tooth.root_taper", c.tooth.root_taper.to_string());
     e!("center_indicator.tooth.length_easing", format!("{:?}", c.tooth.length_easing));
-    e!("center_indicator.tooth.width_easing", format!("{:?}", c.tooth.width_easing));
-    e!("center_indicator.tooth.sharpness_easing", format!("{:?}", c.tooth.sharpness_easing));
+    e!("center_indicator.tooth.sharpen_easing", format!("{:?}", c.tooth.sharpen_easing));
     e!("center_indicator.tooth.outline_base", c.tooth.outline_base.to_string());
 
     let t = &s.title;

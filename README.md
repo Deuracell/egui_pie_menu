@@ -866,31 +866,34 @@ menu.settings.center_indicator.highlight_shape = HighlightShape { arc: true, cir
 
 ### Tooth
 
-A tooth grows out of the center circle toward the pointer: round at first, then longer, narrower and sharper the farther the pointer travels from the dead zone to the layout radius. Its base is the circle's own arc, so nothing is drawn inside the circle. Switch it on with `HighlightShape::tooth` (alone, or combined with `arc`, `slice` and `circle`) and shape it with `center_indicator.tooth`. It takes its fill from `highlight_fill_color` and its outline from `highlight_stroke`, and follows `highlight_snapping`, the fade and the dimming like the rest of the highlight.
+A tooth grows out of the center circle toward the pointer as it travels from the dead zone to the layout radius: first a rounded wedge that follows the circle, then longer and sharper, with the point arriving last. It is made of circular arcs only, all tangent to the circle, and its outline cannot cross itself. Switch it on with `HighlightShape::tooth` (alone, or combined with `arc`, `slice` and `circle`) and shape it with `center_indicator.tooth`. It takes its fill from `highlight_fill_color` and its outline, the root included, from `highlight_stroke`, and follows `highlight_snapping`, the fade and the dimming like the rest of the highlight.
 
 ```rust
 use egui_pie_menu::{HighlightShape, PieMenuToothSettings};
 
-menu.settings.center_indicator.highlight_shape = HighlightShape::TOOTH; // just the tooth, the default "thorn" look
+menu.settings.center_indicator.highlight_shape = HighlightShape::TOOTH; // just the tooth
 menu.settings.center_indicator.highlight_shape = HighlightShape { tooth: true, ..HighlightShape::SLICE }; // wedge + tooth
 menu.settings.center_indicator.tooth = PieMenuToothSettings {
     length: 40.0,
-    end_sharpness: 1.0, // a straight-sided cone instead of a concave thorn
-    outline_base: true, // also stroke where the tooth meets the circle
+    bend: 0.0,          // straight sides
+    root_taper: true,   // the root line thins to a point
     ..Default::default()
 };
 ```
 
+How it is built: each side is one main arc that is tangent to the circle's edge and ends at the *reference point*, the tip on the axis `length` away from the circle where the two arcs would meet. The arcs are as curved as `bend` says, from a straight line (`0.0`) to the sharpest bend that still takes a fillet (`1.0`, at most 85 % of the curvature at which the two arcs would just touch), so they never cross. The arc's radius and the angle at which it meets the circle follow from the length and the bend. A fillet of radius `tip_radius` rounds the tip; it eats length, so the visible tip ends below the reference point. A *root*, a line with no thickness of its own, follows the circle's edge back from each foot by `root`; it is drawn with the outline's width, or tapered to a point.
+
 | Field | Meaning |
 |---|---|
-| `length`, `start_length` | how far the tip reaches beyond the circle at full travel and at first growth (points) |
-| `start_width`, `end_width` | base width as an angle in radians, at first growth and at full travel |
-| `start_roundness`, `end_sharpness` | shape exponent: 2 round dome, 1 straight triangle, below 1 concave (a thorn, down to 0.4) |
-| `inset`, `dig` | move the base outward or inward; `dig` curves it into the circle (a crescent) |
-| `length_easing`, `width_easing`, `sharpness_easing` | response curves; above 1 reacts quickly at first |
-| `outline_base` | also stroke the base, not just the sides and the tip |
+| `length`, `start_length` | circle's edge to the reference point at full travel and at first growth (points) |
+| `bend`, `start_bend` | `0.0` straight line to `1.0` the sharpest bend that still takes a fillet |
+| `tip_radius`, `start_tip_radius` | tip fillet radius; a big start value begins the tooth round; `0.0` is none |
+| `root`, `start_root` | how far back around the circle the root follows it, each side (radians); `0.0` is none |
+| `root_taper` | taper the root's line to a point (off: it keeps the outline's width) |
+| `length_easing`, `sharpen_easing` | response curves; above 1 grows quickly at first, and keeps the tip round for longer |
+| `outline_base` | also stroke the base, not just the sides, the tip and the roots |
 
-The outline cannot cross itself for any values (the tests check thousands of random settings). The tip is kept within three quarters of the layout radius from the circle. The demo has a "Tooth" section to try all of this.
+The full shape is reached at 90 % of the travel. The length is kept within three quarters of the layout radius from the circle. The outline is tested on hundreds of thousands of random settings. Pie Designer has the fields in its Centre indicator section.
 
 ## Right-to-left and non-Latin scripts
 

@@ -67,28 +67,28 @@ pub enum SettingsField {
     CenterHighlightCircleRadius,
     /// `center_indicator.highlight_snapping`
     CenterHighlightSnapping,
-    /// `center_indicator.tooth.length`
-    CenterToothLength,
     /// `center_indicator.tooth.start_length`
     CenterToothStartLength,
-    /// `center_indicator.tooth.start_width`
-    CenterToothStartWidth,
-    /// `center_indicator.tooth.end_width`
-    CenterToothEndWidth,
-    /// `center_indicator.tooth.start_roundness`
-    CenterToothStartRoundness,
-    /// `center_indicator.tooth.end_sharpness`
-    CenterToothEndSharpness,
-    /// `center_indicator.tooth.inset`
-    CenterToothInset,
-    /// `center_indicator.tooth.dig`
-    CenterToothDig,
+    /// `center_indicator.tooth.length`
+    CenterToothLength,
+    /// `center_indicator.tooth.start_bend`
+    CenterToothStartBend,
+    /// `center_indicator.tooth.bend`
+    CenterToothBend,
+    /// `center_indicator.tooth.start_tip_radius`
+    CenterToothStartTipRadius,
+    /// `center_indicator.tooth.tip_radius`
+    CenterToothTipRadius,
+    /// `center_indicator.tooth.start_root`
+    CenterToothStartRoot,
+    /// `center_indicator.tooth.root`
+    CenterToothRoot,
+    /// `center_indicator.tooth.root_taper`
+    CenterToothRootTaper,
     /// `center_indicator.tooth.length_easing`
     CenterToothLengthEasing,
-    /// `center_indicator.tooth.width_easing`
-    CenterToothWidthEasing,
-    /// `center_indicator.tooth.sharpness_easing`
-    CenterToothSharpnessEasing,
+    /// `center_indicator.tooth.sharpen_easing`
+    CenterToothSharpenEasing,
     /// `center_indicator.tooth.outline_base`
     CenterToothOutlineBase,
     /// `title.show`
@@ -168,17 +168,17 @@ impl SettingsField {
         SettingsField::CenterHighlightAngle,
         SettingsField::CenterHighlightCircleRadius,
         SettingsField::CenterHighlightSnapping,
-        SettingsField::CenterToothLength,
         SettingsField::CenterToothStartLength,
-        SettingsField::CenterToothStartWidth,
-        SettingsField::CenterToothEndWidth,
-        SettingsField::CenterToothStartRoundness,
-        SettingsField::CenterToothEndSharpness,
-        SettingsField::CenterToothInset,
-        SettingsField::CenterToothDig,
+        SettingsField::CenterToothLength,
+        SettingsField::CenterToothStartBend,
+        SettingsField::CenterToothBend,
+        SettingsField::CenterToothStartTipRadius,
+        SettingsField::CenterToothTipRadius,
+        SettingsField::CenterToothStartRoot,
+        SettingsField::CenterToothRoot,
+        SettingsField::CenterToothRootTaper,
         SettingsField::CenterToothLengthEasing,
-        SettingsField::CenterToothWidthEasing,
-        SettingsField::CenterToothSharpnessEasing,
+        SettingsField::CenterToothSharpenEasing,
         SettingsField::CenterToothOutlineBase,
         SettingsField::TitleShow,
         SettingsField::TitleBackgroundColor,
@@ -236,17 +236,17 @@ impl SettingsField {
             F::CenterHighlightAngle => "center_indicator.highlight_angle",
             F::CenterHighlightCircleRadius => "center_indicator.highlight_circle_radius",
             F::CenterHighlightSnapping => "center_indicator.highlight_snapping",
-            F::CenterToothLength => "center_indicator.tooth.length",
             F::CenterToothStartLength => "center_indicator.tooth.start_length",
-            F::CenterToothStartWidth => "center_indicator.tooth.start_width",
-            F::CenterToothEndWidth => "center_indicator.tooth.end_width",
-            F::CenterToothStartRoundness => "center_indicator.tooth.start_roundness",
-            F::CenterToothEndSharpness => "center_indicator.tooth.end_sharpness",
-            F::CenterToothInset => "center_indicator.tooth.inset",
-            F::CenterToothDig => "center_indicator.tooth.dig",
+            F::CenterToothLength => "center_indicator.tooth.length",
+            F::CenterToothStartBend => "center_indicator.tooth.start_bend",
+            F::CenterToothBend => "center_indicator.tooth.bend",
+            F::CenterToothStartTipRadius => "center_indicator.tooth.start_tip_radius",
+            F::CenterToothTipRadius => "center_indicator.tooth.tip_radius",
+            F::CenterToothStartRoot => "center_indicator.tooth.start_root",
+            F::CenterToothRoot => "center_indicator.tooth.root",
+            F::CenterToothRootTaper => "center_indicator.tooth.root_taper",
             F::CenterToothLengthEasing => "center_indicator.tooth.length_easing",
-            F::CenterToothWidthEasing => "center_indicator.tooth.width_easing",
-            F::CenterToothSharpnessEasing => "center_indicator.tooth.sharpness_easing",
+            F::CenterToothSharpenEasing => "center_indicator.tooth.sharpen_easing",
             F::CenterToothOutlineBase => "center_indicator.tooth.outline_base",
             F::TitleShow => "title.show",
             F::TitleBackgroundColor => "title.background_color",
@@ -288,17 +288,17 @@ impl SettingsField {
             F::DoubleTapWindow => matches!(s.show_behavior, ShowBehavior::OnMovement { .. }),
             F::SlideStartRadius | F::SlideStartShapeFactor | F::SlideFade => s.animations.reveal == RevealAnimation::SlideOut,
             F::HintColor | F::HintSpacing | F::HintSide | F::HintDigits => s.input.use_number_keys,
-            F::CenterToothLength
-            | F::CenterToothStartLength
-            | F::CenterToothStartWidth
-            | F::CenterToothEndWidth
-            | F::CenterToothStartRoundness
-            | F::CenterToothEndSharpness
-            | F::CenterToothInset
-            | F::CenterToothDig
+            F::CenterToothStartLength
+            | F::CenterToothLength
+            | F::CenterToothStartBend
+            | F::CenterToothBend
+            | F::CenterToothStartTipRadius
+            | F::CenterToothTipRadius
+            | F::CenterToothStartRoot
+            | F::CenterToothRoot
+            | F::CenterToothRootTaper
             | F::CenterToothLengthEasing
-            | F::CenterToothWidthEasing
-            | F::CenterToothSharpnessEasing
+            | F::CenterToothSharpenEasing
             | F::CenterToothOutlineBase => s.center_indicator.highlight_shape.tooth,
             _ => true,
         }
@@ -337,17 +337,17 @@ pub fn field_label(field: SettingsField) -> &'static str {
         F::CenterHighlightAngle => "Highlight angle",
         F::CenterHighlightCircleRadius => "Highlight dot radius",
         F::CenterHighlightSnapping => "Highlight snaps to button",
-        F::CenterToothLength => "Tooth length",
         F::CenterToothStartLength => "Tooth start length",
-        F::CenterToothStartWidth => "Tooth start width",
-        F::CenterToothEndWidth => "Tooth end width",
-        F::CenterToothStartRoundness => "Tooth start roundness",
-        F::CenterToothEndSharpness => "Tooth end sharpness",
-        F::CenterToothInset => "Tooth base inset",
-        F::CenterToothDig => "Tooth base dig",
-        F::CenterToothLengthEasing => "Tooth length easing",
-        F::CenterToothWidthEasing => "Tooth width easing",
-        F::CenterToothSharpnessEasing => "Tooth sharpening",
+        F::CenterToothLength => "Tooth length",
+        F::CenterToothStartBend => "Tooth start bend",
+        F::CenterToothBend => "Tooth bend",
+        F::CenterToothStartTipRadius => "Tooth start fillet",
+        F::CenterToothTipRadius => "Tooth fillet",
+        F::CenterToothStartRoot => "Tooth start root",
+        F::CenterToothRoot => "Tooth root",
+        F::CenterToothRootTaper => "Tooth root taper",
+        F::CenterToothLengthEasing => "Tooth rise easing",
+        F::CenterToothSharpenEasing => "Tooth sharpen easing",
         F::CenterToothOutlineBase => "Tooth outlines base",
         F::TitleShow => "Show title",
         F::TitleBackgroundColor => "Title background",
@@ -455,17 +455,17 @@ impl SettingsGroup {
                 F::CenterHighlightAngle,
                 F::CenterHighlightCircleRadius,
                 F::CenterHighlightSnapping,
-                F::CenterToothLength,
                 F::CenterToothStartLength,
-                F::CenterToothStartWidth,
-                F::CenterToothEndWidth,
-                F::CenterToothStartRoundness,
-                F::CenterToothEndSharpness,
-                F::CenterToothInset,
-                F::CenterToothDig,
+                F::CenterToothLength,
+                F::CenterToothStartBend,
+                F::CenterToothBend,
+                F::CenterToothStartTipRadius,
+                F::CenterToothTipRadius,
+                F::CenterToothStartRoot,
+                F::CenterToothRoot,
+                F::CenterToothRootTaper,
                 F::CenterToothLengthEasing,
-                F::CenterToothWidthEasing,
-                F::CenterToothSharpnessEasing,
+                F::CenterToothSharpenEasing,
                 F::CenterToothOutlineBase,
             ],
             SettingsGroup::Title => {

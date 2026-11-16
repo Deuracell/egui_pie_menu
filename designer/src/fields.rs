@@ -570,35 +570,37 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
         F::CenterHighlightSnapping => {
             bool_row(ui, field, &mut s.center_indicator.highlight_snapping, d.center_indicator.highlight_snapping)
         }
+        F::CenterToothStartLength => f32_row(ui, field, &mut s.center_indicator.tooth.start_length, d.center_indicator.tooth.start_length, 0.0..=100.0, 0.5, " px"),
         F::CenterToothLength => f32_row(ui, field, &mut s.center_indicator.tooth.length, d.center_indicator.tooth.length, 5.0..=100.0, 0.5, " px"),
-        F::CenterToothStartLength => f32_row(ui, field, &mut s.center_indicator.tooth.start_length, d.center_indicator.tooth.start_length, 0.0..=30.0, 0.2, " px"),
-        F::CenterToothStartWidth => row(ui, field, |ui| {
+        F::CenterToothStartBend => f32_row(ui, field, &mut s.center_indicator.tooth.start_bend, d.center_indicator.tooth.start_bend, 0.0..=1.0, 0.01, ""),
+        F::CenterToothBend => f32_row(ui, field, &mut s.center_indicator.tooth.bend, d.center_indicator.tooth.bend, 0.0..=1.0, 0.01, ""),
+        F::CenterToothStartTipRadius => f32_row(ui, field, &mut s.center_indicator.tooth.start_tip_radius, d.center_indicator.tooth.start_tip_radius, 0.0..=40.0, 0.2, " px"),
+        F::CenterToothTipRadius => f32_row(ui, field, &mut s.center_indicator.tooth.tip_radius, d.center_indicator.tooth.tip_radius, 0.0..=20.0, 0.1, " px"),
+        F::CenterToothStartRoot => row(ui, field, |ui| {
             // Radians in the settings, degrees on screen; written back only when edited.
-            let angle = &mut s.center_indicator.tooth.start_width;
+            let angle = &mut s.center_indicator.tooth.start_root;
             let mut degrees = angle.to_degrees();
-            let changed = drag_f32(ui, &mut degrees, 10.0..=150.0, 0.5, "\u{b0}");
+            let w = control_width(ui);
+            let changed = drag_w(ui, &mut degrees, 0.0..=120.0, 0.5, "\u{b0}", w);
             if changed {
                 *angle = degrees.to_radians();
             }
-            changed | reset(ui, angle, &d.center_indicator.tooth.start_width)
+            changed | reset(ui, angle, &d.center_indicator.tooth.start_root)
         }),
-        F::CenterToothEndWidth => row(ui, field, |ui| {
+        F::CenterToothRoot => row(ui, field, |ui| {
             // Radians in the settings, degrees on screen; written back only when edited.
-            let angle = &mut s.center_indicator.tooth.end_width;
+            let angle = &mut s.center_indicator.tooth.root;
             let mut degrees = angle.to_degrees();
-            let changed = drag_f32(ui, &mut degrees, 10.0..=150.0, 0.5, "\u{b0}");
+            let w = control_width(ui);
+            let changed = drag_w(ui, &mut degrees, 0.0..=120.0, 0.5, "\u{b0}", w);
             if changed {
                 *angle = degrees.to_radians();
             }
-            changed | reset(ui, angle, &d.center_indicator.tooth.end_width)
+            changed | reset(ui, angle, &d.center_indicator.tooth.root)
         }),
-        F::CenterToothStartRoundness => f32_row(ui, field, &mut s.center_indicator.tooth.start_roundness, d.center_indicator.tooth.start_roundness, 1.0..=3.0, 0.02, ""),
-        F::CenterToothEndSharpness => f32_row(ui, field, &mut s.center_indicator.tooth.end_sharpness, d.center_indicator.tooth.end_sharpness, 0.4..=2.0, 0.02, ""),
-        F::CenterToothInset => f32_row(ui, field, &mut s.center_indicator.tooth.inset, d.center_indicator.tooth.inset, -6.0..=6.0, 0.1, " px"),
-        F::CenterToothDig => f32_row(ui, field, &mut s.center_indicator.tooth.dig, d.center_indicator.tooth.dig, 0.0..=12.0, 0.1, " px"),
+        F::CenterToothRootTaper => bool_row(ui, field, &mut s.center_indicator.tooth.root_taper, d.center_indicator.tooth.root_taper),
         F::CenterToothLengthEasing => f32_row(ui, field, &mut s.center_indicator.tooth.length_easing, d.center_indicator.tooth.length_easing, 0.5..=3.0, 0.02, ""),
-        F::CenterToothWidthEasing => f32_row(ui, field, &mut s.center_indicator.tooth.width_easing, d.center_indicator.tooth.width_easing, 0.5..=3.0, 0.02, ""),
-        F::CenterToothSharpnessEasing => f32_row(ui, field, &mut s.center_indicator.tooth.sharpness_easing, d.center_indicator.tooth.sharpness_easing, 0.5..=3.0, 0.02, ""),
+        F::CenterToothSharpenEasing => f32_row(ui, field, &mut s.center_indicator.tooth.sharpen_easing, d.center_indicator.tooth.sharpen_easing, 1.0..=4.0, 0.02, ""),
         F::CenterToothOutlineBase => bool_row(ui, field, &mut s.center_indicator.tooth.outline_base, d.center_indicator.tooth.outline_base),
         F::TitleShow => bool_row(ui, field, &mut s.title.show, d.title.show),
         F::TitleBackgroundColor => color_row(ui, field, &mut s.title.background_color, d.title.background_color),

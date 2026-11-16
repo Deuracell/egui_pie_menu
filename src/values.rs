@@ -417,7 +417,7 @@ fn from_ms(n: f32) -> std::time::Duration {
     std::time::Duration::from_secs_f32(n.max(0.0) / 1000.0)
 }
 
-const NUMBER_SLOTS: [NumberSlot; 30] = {
+const NUMBER_SLOTS: [NumberSlot; 29] = {
     use SettingsField as F;
     [
         (F::HintSpacing, |s| Some(s.number_hints.spacing), |s, n| s.number_hints.spacing = n),
@@ -434,17 +434,16 @@ const NUMBER_SLOTS: [NumberSlot; 30] = {
             |s| Some(s.center_indicator.highlight_circle_radius),
             |s, n| s.center_indicator.highlight_circle_radius = n,
         ),
-        (F::CenterToothLength, |s| Some(s.center_indicator.tooth.length), |s, n| s.center_indicator.tooth.length = n),
         (F::CenterToothStartLength, |s| Some(s.center_indicator.tooth.start_length), |s, n| s.center_indicator.tooth.start_length = n),
-        (F::CenterToothStartWidth, |s| Some(s.center_indicator.tooth.start_width), |s, n| s.center_indicator.tooth.start_width = n),
-        (F::CenterToothEndWidth, |s| Some(s.center_indicator.tooth.end_width), |s, n| s.center_indicator.tooth.end_width = n),
-        (F::CenterToothStartRoundness, |s| Some(s.center_indicator.tooth.start_roundness), |s, n| s.center_indicator.tooth.start_roundness = n),
-        (F::CenterToothEndSharpness, |s| Some(s.center_indicator.tooth.end_sharpness), |s, n| s.center_indicator.tooth.end_sharpness = n),
-        (F::CenterToothInset, |s| Some(s.center_indicator.tooth.inset), |s, n| s.center_indicator.tooth.inset = n),
-        (F::CenterToothDig, |s| Some(s.center_indicator.tooth.dig), |s, n| s.center_indicator.tooth.dig = n),
+        (F::CenterToothLength, |s| Some(s.center_indicator.tooth.length), |s, n| s.center_indicator.tooth.length = n),
+        (F::CenterToothStartBend, |s| Some(s.center_indicator.tooth.start_bend), |s, n| s.center_indicator.tooth.start_bend = n),
+        (F::CenterToothBend, |s| Some(s.center_indicator.tooth.bend), |s, n| s.center_indicator.tooth.bend = n),
+        (F::CenterToothStartTipRadius, |s| Some(s.center_indicator.tooth.start_tip_radius), |s, n| s.center_indicator.tooth.start_tip_radius = n),
+        (F::CenterToothTipRadius, |s| Some(s.center_indicator.tooth.tip_radius), |s, n| s.center_indicator.tooth.tip_radius = n),
+        (F::CenterToothStartRoot, |s| Some(s.center_indicator.tooth.start_root), |s, n| s.center_indicator.tooth.start_root = n),
+        (F::CenterToothRoot, |s| Some(s.center_indicator.tooth.root), |s, n| s.center_indicator.tooth.root = n),
         (F::CenterToothLengthEasing, |s| Some(s.center_indicator.tooth.length_easing), |s, n| s.center_indicator.tooth.length_easing = n),
-        (F::CenterToothWidthEasing, |s| Some(s.center_indicator.tooth.width_easing), |s, n| s.center_indicator.tooth.width_easing = n),
-        (F::CenterToothSharpnessEasing, |s| Some(s.center_indicator.tooth.sharpness_easing), |s, n| s.center_indicator.tooth.sharpness_easing = n),
+        (F::CenterToothSharpenEasing, |s| Some(s.center_indicator.tooth.sharpen_easing), |s, n| s.center_indicator.tooth.sharpen_easing = n),
         (F::SlideStartRadius, |s| Some(s.animations.slide_start_radius), |s, n| s.animations.slide_start_radius = n),
         (F::SlideStartShapeFactor, |s| s.animations.slide_start_shape_factor, |s, n| s.animations.slide_start_shape_factor = Some(n)),
         (F::FanOutRadius, |s| s.sub_pies.fan_out.radius, |s, n| s.sub_pies.fan_out.radius = Some(n)),
