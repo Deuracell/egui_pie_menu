@@ -516,13 +516,7 @@ impl Applied<'_> {
                 self.out.changed = true;
             }
             Intent::Style(style) => {
-                let removed = set_sub_pie_style(self.buttons, self.settings, &path, style)?;
-                for i in removed.iter().rev() {
-                    let mut child = path.clone();
-                    child.push(*i);
-                    self.stashes.removed(&child);
-                    self.out.edits.push(TreeEdit::Removed(child));
-                }
+                set_sub_pie_style(self.buttons, self.settings, &path, style)?;
                 self.out.changed = true;
             }
             Intent::Enabled(on) => {
@@ -666,7 +660,11 @@ fn level_contents(
     let level = level_at(buttons, parent_path).unwrap_or(&[]);
     let kind = level_kind(buttons, settings, parent_path);
     ui.label(match kind {
-        LevelKind::Fan(_) => format!("{} of 5 fan-out buttons", level.len()),
+        LevelKind::Fan(opener) => {
+            let hidden = level.iter().filter(|b| b.hidden_in_fan_out(opener)).count();
+            let shown = format!("{} of 5 fan-out buttons", level.len() - hidden);
+            if hidden > 0 { format!("{shown}, and a back button for when it breaks out") } else { shown }
+        }
         _ => format!("{} of 8 buttons", level.len()),
     });
     for (i, child) in level.iter().enumerate() {
@@ -759,6 +757,11 @@ fn button_sections(
                 }
             });
         });
+        if let LevelKind::Fan(opener) = level_kind(buttons, settings, parent)
+            && button.hidden_in_fan_out(opener)
+        {
+            ui.label(RichText::new("Faces the parent: left out of the fan-out, shown once it breaks out into a sub-pie.").small().weak());
+        }
         if let PieButtonKind::SubPie { style, .. } = &button.kind {
             ui.horizontal(|ui| {
                 ui.label("Opens as");
@@ -1499,12 +1502,13 @@ mod tests {
         let (_, out) = apply(&mut t, &mut sel, Intent::Kind(KindChoice::Action));
         assert_eq!(out.edits, [TreeEdit::Dropped(vec![2])]);
         assert!(t[2].children().is_empty());
-        // Becoming a fan-out drops the back child facing the parent, reported as removals.
+        // Becoming a fan-out keeps the back child facing the parent: no removals.
         let mut t = vec![new_sub_pie_for(PieDirection::East, false, SubPieStyle::Replace)];
         let mut sel = Selection::button([0]);
         let (r, out) = apply(&mut t, &mut sel, Intent::Style(Some(SubPieStyle::FanOut)));
         assert_eq!(r, Ok(()));
-        assert_eq!(out.edits, [TreeEdit::Removed(vec![0, 5])]);
+        assert_eq!(out.edits, []);
+        assert_eq!(t[0].children().len(), 6);
         // Refusals come with the reason and change nothing.
         let mut t = tree();
         let mut sel = Selection::button([1, 1]);

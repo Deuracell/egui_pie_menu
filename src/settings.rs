@@ -313,7 +313,8 @@ pub enum SubPieStyle {
     Replace,
     /// The sub-pie fans out around the button that opens it while the parent stays
     /// visible (greyed out). It holds up to five buttons: the three directions facing
-    /// the parent are blocked ([`PieDirection::fan_out_slots`]), and its buttons cannot
+    /// the parent are blocked ([`PieDirection::fan_out_slots`]; a back button there is
+    /// left out until the fan breaks out, [`crate::PieButton::hidden_in_fan_out`]), and its buttons cannot
     /// have sub-pies of their own. It opens when the pointer reaches its button
     /// ([`PieMenuFanOutSettings::delay`]) and closes when the pointer returns to the
     /// parent. While open it has the keyboard: number keys and mnemonics reach only it.
@@ -747,13 +748,34 @@ impl Default for PieMenuSettings {
 }
 
 impl PieMenuSettings {
-    /// A Blender-style feel, built only from settings documented as Blender-style; every
-    /// other setting is the [`Default`]. It sets exactly three things:
+    /// A Blender-style look and feel: the values found by matching Blender's own pie menus
+    /// in Pie Designer (issue #25). Everything not listed is the [`Default`].
     ///
+    /// Behaviour:
     /// - `input.select_on_primary_click = false`: selection happens by releasing the key
     ///   that opened the menu; primary clicks are ignored (also on the centre of a sub-pie).
-    /// - `text_color = Some(Color32::WHITE)`: white labels, hovered or not.
-    /// - `number_hints.color = Some(Color32::WHITE)`: white number hints, hovered or not.
+    /// - `input.auto_mnemonics = true`: every label gets an underlined key.
+    ///
+    /// Layout:
+    /// - `layout.radius = 125.0`, `layout.intercardinal_height = Some(0.63)`: a wide ring
+    ///   with the diagonal buttons pulled in towards the East-West axis.
+    ///
+    /// Centre: a dark ring with a blue arc, no fill.
+    /// - `center_indicator.background_stroke`: 6 px, `#181818`;
+    ///   `center_indicator.background_fill_color`: transparent.
+    /// - `center_indicator.highlight_shape`: the arc only;
+    ///   `center_indicator.highlight_stroke`: 6 px, `#4772b3`;
+    ///   `center_indicator.highlight_circle_radius = 3.0`.
+    ///
+    /// Text:
+    /// - `text_color = Some(#c6c6c6)`: light grey labels, hovered or not.
+    /// - `number_hints.color = Some(#5e5e5e)`, `number_hints.spacing = 25.0`: dim digits,
+    ///   set well apart from the label.
+    /// - `title.padding`: 5 px, 25 px below (the title sits clear of the ring).
+    ///
+    /// The buttons themselves are drawn by your render closure, so their look is yours to
+    /// match: Blender's are dark (`#181818`), light up when hovered, show a toggle that is
+    /// on by its colour rather than a checkbox, and may colour an icon apart from its text.
     ///
     /// It is an ordinary value, so it composes with the other builders:
     ///
@@ -768,8 +790,19 @@ impl PieMenuSettings {
     pub fn blender_like() -> Self {
         let mut settings = Self::default();
         settings.input.select_on_primary_click = false;
-        settings.text_color = Some(Color32::WHITE);
-        settings.number_hints.color = Some(Color32::WHITE);
+        settings.input.auto_mnemonics = true;
+        settings.layout.radius = 125.0;
+        settings.layout.intercardinal_height = Some(0.63);
+        let indicator = &mut settings.center_indicator;
+        indicator.background_stroke = Stroke::new(6.0, Color32::from_rgb(24, 24, 24));
+        indicator.background_fill_color = Color32::TRANSPARENT;
+        indicator.highlight_shape = HighlightShape { arc: true, slice: false, circle: false, tooth: false };
+        indicator.highlight_stroke = Stroke::new(6.0, Color32::from_rgb(71, 114, 179));
+        indicator.highlight_circle_radius = 3.0;
+        settings.title.padding = egui::Margin { left: 5, right: 5, top: 5, bottom: 25 };
+        settings.number_hints.color = Some(Color32::from_rgb(94, 94, 94));
+        settings.number_hints.spacing = 25.0;
+        settings.text_color = Some(Color32::from_rgb(198, 198, 198));
         settings
     }
 }

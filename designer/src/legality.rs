@@ -77,9 +77,9 @@ pub(crate) fn level_kind(buttons: &[PieButton], settings: &PieMenuSettings, pare
     }
 }
 
-fn level_candidates(kind: LevelKind) -> Vec<PieDirection> {
+fn level_candidates(kind: LevelKind, back: bool) -> Vec<PieDirection> {
     match kind {
-        LevelKind::Fan(opener) => opener.fan_out_slots().to_vec(),
+        LevelKind::Fan(opener) if !back => opener.fan_out_slots().to_vec(),
         _ => PieDirection::ALL.to_vec(),
     }
 }
@@ -141,23 +141,26 @@ pub(crate) fn problem_button_paths(problems: &[(Vec<usize>, ButtonProblem)]) -> 
 // ---------------------------------------------------------------------------------------
 
 /// The directions the button at `path` may take: the ones no sibling uses, plus its own; in a
-/// fan-out only the five [`PieDirection::fan_out_slots`]. (The inspector asks per direction
-/// through [`direction_block_reason`].)
+/// fan-out only the five [`PieDirection::fan_out_slots`], except for a back button, which may
+/// also face the parent (it is hidden there until the fan breaks out). (The inspector asks
+/// per direction through [`direction_block_reason`].)
 #[cfg(test)]
 pub(crate) fn allowed_directions(buttons: &[PieButton], settings: &PieMenuSettings, path: &[usize]) -> Vec<PieDirection> {
     let Some((own, parent)) = path.split_last() else { return Vec::new() };
     let Some(level) = level_at(buttons, parent) else { return Vec::new() };
     let own_dir = level.get(*own).map(|b| b.direction);
-    level_candidates(level_kind(buttons, settings, parent))
+    let back = level.get(*own).is_some_and(|b| b.is_back());
+    level_candidates(level_kind(buttons, settings, parent), back)
         .into_iter()
         .filter(|d| Some(*d) == own_dir || level.iter().all(|b| b.direction != *d))
         .collect()
 }
 
-/// The directions of the level at `parent_path` that nothing occupies (and a fan-out allows).
-pub(crate) fn free_directions(buttons: &[PieButton], settings: &PieMenuSettings, parent_path: &[usize]) -> Vec<PieDirection> {
+/// The directions of the level at `parent_path` that nothing occupies and a button may take
+/// there: in a fan-out the five slots, for a back button (`back`) the ones facing the parent too.
+pub(crate) fn free_directions(buttons: &[PieButton], settings: &PieMenuSettings, parent_path: &[usize], back: bool) -> Vec<PieDirection> {
     let Some(level) = level_at(buttons, parent_path) else { return Vec::new() };
-    level_candidates(level_kind(buttons, settings, parent_path))
+    level_candidates(level_kind(buttons, settings, parent_path), back)
         .into_iter()
         .filter(|d| level.iter().all(|b| b.direction != *d))
         .collect()
@@ -174,6 +177,7 @@ pub(crate) fn direction_block_reason(
     let level = level_at(buttons, parent)?;
     if let LevelKind::Fan(opener) = level_kind(buttons, settings, parent)
         && opener.blocks_fan_out(to)
+        && !level.get(*own).is_some_and(|b| b.is_back())
     {
         return Some("faces the parent".to_string());
     }
@@ -186,7 +190,7 @@ pub(crate) fn direction_block_reason(
 
 /// Moves the button at `path` to `to`. A fan-out button takes its children along: they turn by
 /// the same step, so they keep their place relative to it. Refuses a direction that is taken
-/// or (in a fan-out) faces the parent.
+/// or (in a fan-out, unless it is a back button) faces the parent.
 pub(crate) fn set_direction(
     buttons: &mut Vec<PieButton>,
     settings: &PieMenuSettings,
@@ -213,7 +217,8 @@ pub(crate) fn set_direction(
 // ---------------------------------------------------------------------------------------
 
 /// The kinds the button at `path` may be converted to (its current kind always included): in a
-/// fan-out only Action and Back; at the root no Back (unless it already is one).
+/// fan-out only Action and Back, and facing the parent only Back; at the root no Back (unless
+/// it already is one).
 pub(crate) fn allowed_kinds(buttons: &[PieButton], settings: &PieMenuSettings, path: &[usize]) -> Vec<KindChoice> {
     let Some((_, parent)) = path.split_last() else { return Vec::new() };
     let Some(button) = button_at(buttons, path) else { return Vec::new() };
@@ -223,7 +228,11 @@ pub(crate) fn allowed_kinds(buttons: &[PieButton], settings: &PieMenuSettings, p
         .filter(|k| {
             *k == current
                 || match level_kind(buttons, settings, parent) {
-                    LevelKind::Fan(_) => matches!(k, KindChoice::Action | KindChoice::Back),
+                    LevelKind::Fan(opener) => match k {
+                        KindChoice::Action => !opener.blocks_fan_out(button.direction),
+                        KindChoice::Back => true,
+                        _ => false,
+                    },
                     LevelKind::Root => *k != KindChoice::Back,
                     LevelKind::Replace => true,
                 }
@@ -232,7 +241,7 @@ pub(crate) fn allowed_kinds(buttons: &[PieButton], settings: &PieMenuSettings, p
 }
 
 /// A ready-made sub-pie at `dir`: five children "Item 1".."Item 5" in the five fan-out slots
-/// (valid for both styles) and, for a replace-style one, a back button opposite `dir`. A fan
+/// and a back button opposite `dir` (valid for both styles). A fan
 /// is `with_fan_out`; a replace-style one follows the menu (`None`) unless the menu's own style
 /// is a fan-out, when it is pinned to [`SubPieStyle::Replace`].
 pub(crate) fn new_sub_pie_for(dir: PieDirection, fan: bool, menu_style: SubPieStyle) -> PieButton {
@@ -327,18 +336,23 @@ impl AddKind {
 
 /// The kinds that can be added to the level at `parent_path`: none when it has no free
 /// direction (8 buttons, 5 in a fan-out); in a fan-out only a plain or back button; a back
-/// button only below the root and only if the level has none yet.
+/// button only below the root and only if the level has none yet (in a full fan-out it can
+/// still go in a direction facing the parent, where it is hidden until the fan breaks out).
 pub(crate) fn addable_kinds(buttons: &[PieButton], settings: &PieMenuSettings, parent_path: &[usize]) -> Vec<AddKind> {
     let Some(level) = level_at(buttons, parent_path) else { return Vec::new() };
-    if free_directions(buttons, settings, parent_path).is_empty() {
-        return Vec::new();
-    }
     let kind = level_kind(buttons, settings, parent_path);
-    let mut out = vec![AddKind::Action];
-    if kind != LevelKind::Root && !level.iter().any(|b| b.is_back()) {
+    let mut out = Vec::new();
+    let room = !free_directions(buttons, settings, parent_path, false).is_empty();
+    if room {
+        out.push(AddKind::Action);
+    }
+    if kind != LevelKind::Root
+        && !level.iter().any(|b| b.is_back())
+        && !free_directions(buttons, settings, parent_path, true).is_empty()
+    {
         out.push(AddKind::Back);
     }
-    if !matches!(kind, LevelKind::Fan(_)) {
+    if room && !matches!(kind, LevelKind::Fan(_)) {
         out.extend([AddKind::SubPie, AddKind::FanOut, AddKind::Cluster]);
     }
     out
@@ -356,7 +370,7 @@ pub(crate) fn add_button(
     if !addable_kinds(buttons, settings, parent_path).contains(&kind) {
         return None;
     }
-    let free = free_directions(buttons, settings, parent_path);
+    let free = free_directions(buttons, settings, parent_path, kind == AddKind::Back);
     let mut dir = *free.first()?;
     if kind == AddKind::Back
         && let Some(parent) = button_at(buttons, parent_path)
@@ -619,71 +633,61 @@ pub(crate) fn set_enabled(
 // Sub-pie style
 // ---------------------------------------------------------------------------------------
 
-/// What turning a sub-pie into a fan-out needs: the Back children facing the parent are
-/// dropped (a fan closes by itself); anything else that does not fit makes it impossible.
-/// Returns the indices (ascending) of the children to drop, or why it cannot be.
-pub(crate) fn fan_out_plan(button: &PieButton) -> Result<Vec<usize>, String> {
+/// Whether a sub-pie can become a fan-out, with the reason when it cannot: a fan-out holds
+/// plain buttons only, none facing the parent. A back button may face it: the fan leaves it
+/// out and it appears when the fan breaks out ([`PieButton::hidden_in_fan_out`]).
+pub(crate) fn fan_out_plan(button: &PieButton) -> Result<(), String> {
     let children = button.children();
-    let mut remove = Vec::new();
-    for (i, child) in children.iter().enumerate() {
+    for child in children {
         if matches!(child.kind, PieButtonKind::SubPie { .. } | PieButtonKind::Cluster(_)) {
             return Err(format!("{} is a sub-pie or cluster; a fan-out holds plain buttons only", name_of(&child.label)));
         }
-        if button.direction.blocks_fan_out(child.direction) {
-            if child.is_back() {
-                remove.push(i);
-            } else {
-                return Err(format!("{} faces the parent; move it first", name_of(&child.label)));
-            }
+        if button.direction.blocks_fan_out(child.direction) && !child.is_back() {
+            return Err(format!("{} faces the parent; move it first", name_of(&child.label)));
         }
     }
-    if remove.len() == children.len() {
-        return Err("no button would be left".to_string());
+    if children.iter().all(|c| c.hidden_in_fan_out(button.direction)) {
+        return Err("the fan would show no button".to_string());
     }
-    Ok(remove)
+    Ok(())
 }
 
 /// Whether the sub-pie `button` may take `style` (`None`: follow the menu), with the reason
 /// when it may not.
 pub(crate) fn style_availability(button: &PieButton, settings: &PieMenuSettings, style: Option<SubPieStyle>) -> Result<(), String> {
     if style.unwrap_or(settings.sub_pies.style) == SubPieStyle::FanOut {
-        fan_out_plan(button).map(|_| ())
+        fan_out_plan(button)
     } else {
         Ok(())
     }
 }
 
-/// Sets the style of the sub-pie at `path`. Becoming a fan-out drops its Back children facing
-/// the parent ([`fan_out_plan`]); their indices (ascending, in the old numbering) are returned
-/// so side tables can follow. Refuses with the reason when it cannot.
+/// Sets the style of the sub-pie at `path` (its children are kept as they are). Refuses with
+/// the reason when it cannot become a fan-out ([`fan_out_plan`]).
 pub(crate) fn set_sub_pie_style(
     buttons: &mut Vec<PieButton>,
     settings: &PieMenuSettings,
     path: &[usize],
     style: Option<SubPieStyle>,
-) -> Result<Vec<usize>, String> {
+) -> Result<(), String> {
     let button = button_at_mut(buttons, path).ok_or("no such button")?;
     if !matches!(button.kind, PieButtonKind::SubPie { .. }) {
         return Err("not a sub-pie".to_string());
     }
-    let remove = if style.unwrap_or(settings.sub_pies.style) == SubPieStyle::FanOut {
-        fan_out_plan(button)?
-    } else {
-        Vec::new()
-    };
-    if let PieButtonKind::SubPie { children, style: own } = &mut button.kind {
-        for i in remove.iter().rev() {
-            children.remove(*i);
-        }
+    if style.unwrap_or(settings.sub_pies.style) == SubPieStyle::FanOut {
+        fan_out_plan(button)?;
+    }
+    if let PieButtonKind::SubPie { style: own, .. } = &mut button.kind {
         *own = style;
     }
-    Ok(remove)
+    Ok(())
 }
 
 /// Sets the menu-wide [`PieMenuSubPieSettings::style`] and keeps `buttons` legal. Going to a fan-out, every sub-pie that
 /// follows the menu but cannot be a fan-out (children facing the parent, nested sub-pies) is
-/// pinned to [`SubPieStyle::Replace`] so the tree stays legal; the notice says which. `None`
-/// when nothing was pinned.
+/// pinned to [`SubPieStyle::Replace`] so the tree stays legal; the notice says which, and how
+/// to let it follow the menu again. `None` when nothing was pinned. (A back button facing the
+/// parent is no obstacle: the fan leaves it out until it breaks out.)
 pub fn set_menu_sub_pie_style(
     settings: &mut PieMenuSettings,
     buttons: &mut [PieButton],
@@ -714,7 +718,8 @@ pub fn set_menu_sub_pie_style(
     pin(&menu, buttons, &mut pinned);
     (!pinned.is_empty()).then(|| {
         format!(
-            "{} cannot open as a fan-out (children facing the parent or nested) and stay{} replace-style: {}",
+            "{} cannot open as a fan-out (children facing the parent or nested) and stay{} replace-style: {}. \
+             Once that is fixed, set its Style back to \"Menu default\" in the inspector.",
             if pinned.len() == 1 { "1 sub-pie" } else { "Some sub-pies" },
             if pinned.len() == 1 { "s" } else { "" },
             pinned.join(", ")
@@ -780,12 +785,24 @@ mod tests {
         let t = tree();
         let root = allowed_directions(&t, &s, &[0]);
         assert_eq!(root, [PieDirection::North, PieDirection::NorthEast, PieDirection::SouthEast, PieDirection::SouthWest, PieDirection::NorthWest]);
-        assert_eq!(free_directions(&t, &s, &[]), [PieDirection::NorthEast, PieDirection::SouthEast, PieDirection::SouthWest, PieDirection::NorthWest]);
+        assert_eq!(free_directions(&t, &s, &[], false), [PieDirection::NorthEast, PieDirection::SouthEast, PieDirection::SouthWest, PieDirection::NorthWest]);
         // Fan child "A" (East, opener East): slots N, NE, E, SE, S; NE and S are used.
         let fan = allowed_directions(&t, &s, &[1, 1]);
         assert_eq!(fan, [PieDirection::North, PieDirection::East, PieDirection::SouthEast]);
-        assert_eq!(free_directions(&t, &s, &[1]), [PieDirection::North, PieDirection::SouthEast]);
+        assert_eq!(free_directions(&t, &s, &[1], false), [PieDirection::North, PieDirection::SouthEast]);
         assert_eq!(direction_block_reason(&t, &s, &[1, 1], PieDirection::West).as_deref(), Some("faces the parent"));
+        // A back button may also face the parent: the fan leaves it out until it breaks out.
+        assert_eq!(
+            free_directions(&t, &s, &[1], true),
+            [PieDirection::North, PieDirection::SouthEast, PieDirection::SouthWest, PieDirection::West, PieDirection::NorthWest]
+        );
+        let mut with_back = vec![PieButton::new(PieDirection::East).with_fan_out(vec![PieButton::new(PieDirection::East)])];
+        let back = add_button(&mut with_back, &s, &[0], AddKind::Back).expect("a back button fits");
+        assert_eq!(with_back[0].children()[back].direction, PieDirection::West, "opposite the opener");
+        assert_eq!(tree_problems(&s, &with_back), vec![]);
+        assert_eq!(direction_block_reason(&with_back, &s, &[0, back], PieDirection::NorthWest), None);
+        assert_eq!(direction_block_reason(&with_back, &s, &[0, 0], PieDirection::NorthWest).as_deref(), Some("faces the parent"));
+        assert!(!allowed_kinds(&with_back, &s, &[0, back]).contains(&KindChoice::Action), "a plain button cannot face the parent");
         assert_eq!(direction_block_reason(&t, &s, &[1, 1], PieDirection::South).as_deref(), Some("taken by \"B\""));
         assert_eq!(direction_block_reason(&t, &s, &[1, 1], PieDirection::North), None);
         // A level under a replace sub-pie is free of the fan restriction.
@@ -849,7 +866,10 @@ mod tests {
                         assert_eq!(kids.len(), 6);
                         assert!(kids[5].is_back() && kids[5].direction == dir.opposite());
                     }
-                    SubPieStyle::FanOut => assert_eq!(kids.len(), 5),
+                    SubPieStyle::FanOut => {
+                        assert_eq!(kids.len(), 6);
+                        assert!(kids[5].hidden_in_fan_out(dir), "left out of the fan until it breaks out");
+                    }
                 }
             }
         }
@@ -875,13 +895,13 @@ mod tests {
         convert_kind_in(&mut c, KindChoice::Action, &s, &mut stash);
         convert_kind_in(&mut c, KindChoice::Cluster, &s, &mut stash);
         assert_eq!(format!("{:?}", c.cluster_items()), items);
-        // A stash that became illegal (the menu is a fan-out now, the children have a back
-        // button facing the parent) is replaced by a fresh sub-pie.
+        // A stash that became illegal (the menu is a fan-out now, the children hold a
+        // sub-pie of their own) is replaced by a fresh sub-pie.
         let mut b = tree()[2].clone().with_sub_pie_style(None);
         let mut stash = Stash::default();
         convert_kind_in(&mut b, KindChoice::Action, &s, &mut stash);
         convert_kind_in(&mut b, KindChoice::SubPie, &fan_settings(), &mut stash);
-        assert_eq!(b.children().len(), 5);
+        assert_eq!(labels(b.children()), ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5", "Back"]);
         assert_eq!(tree_problems(&fan_settings(), std::slice::from_ref(&b)), vec![]);
     }
 
@@ -918,18 +938,25 @@ mod tests {
         assert_eq!(addable_kinds(&t, &s, &[1]), [AddKind::Action]);
         let mut fan = vec![PieButton::new(PieDirection::East).with_fan_out(vec![PieButton::new(PieDirection::East)])];
         assert_eq!(addable_kinds(&fan, &s, &[0]), [AddKind::Action, AddKind::Back]);
-        // Back is allowed in a fan, in a free slot (the opposite one is blocked).
+        // Back is allowed in a fan, opposite the opener: left out of the fan, there once it
+        // breaks out.
         let at = add_button(&mut fan, &s, &[0], AddKind::Back).unwrap();
-        assert_eq!(fan[0].children()[at].direction, PieDirection::North);
+        assert_eq!(fan[0].children()[at].direction, PieDirection::West);
         assert!(fan[0].children()[at].is_back());
         assert_eq!(tree_problems(&s, &fan), vec![]);
-        // Full levels offer nothing: 8 at the root, 5 in a fan.
+        // A fan with its five slots taken still has room for one.
+        let mut five = vec![new_sub_pie_for(PieDirection::East, true, SubPieStyle::Replace)];
+        assert!(remove_button(&mut five, &[0, 5]));
+        assert_eq!(addable_kinds(&five, &s, &[0]), [AddKind::Back]);
+        assert!(add_button(&mut five, &s, &[0], AddKind::Back).is_some());
+        assert_eq!(addable_kinds(&five, &s, &[0]), []);
+        // Full levels offer nothing: 8 at the root; 5 in a fan, but for its back button.
         let mut full: Vec<PieButton> = PieDirection::ALL.iter().map(|d| PieButton::new(*d)).collect();
         assert_eq!(addable_kinds(&full, &s, &[]), []);
         assert_eq!(add_button(&mut full, &s, &[], AddKind::Action), None);
         let slots = PieDirection::East.fan_out_slots();
         let full_fan = vec![PieButton::new(PieDirection::East).with_fan_out(slots.iter().map(|d| PieButton::new(*d)).collect())];
-        assert_eq!(addable_kinds(&full_fan, &s, &[0]), []);
+        assert_eq!(addable_kinds(&full_fan, &s, &[0]), [AddKind::Back]);
         // A back button added to a replace level prefers the direction opposite its sub-pie.
         let mut level = vec![PieButton::new(PieDirection::East).with_children(vec![PieButton::new(PieDirection::North)])];
         add_button(&mut level, &s, &[0], AddKind::Back).unwrap();
@@ -1009,16 +1036,17 @@ mod tests {
     #[test]
     fn style_change_to_a_fan_out() {
         let s = PieMenuSettings::default();
-        // New sub-pies carry a Back opposite the opener: it is dropped, the rest fits.
+        // New sub-pies carry a Back opposite the opener: it stays (the fan leaves it out
+        // until it breaks out), and the rest fits.
         let mut t = vec![new_sub_pie_for(PieDirection::East, false, SubPieStyle::Replace)];
         assert_eq!(style_availability(&t[0], &s, Some(SubPieStyle::FanOut)), Ok(()));
-        let removed = set_sub_pie_style(&mut t, &s, &[0], Some(SubPieStyle::FanOut)).unwrap();
-        assert_eq!(removed, [5]);
-        assert_eq!(t[0].children().len(), 5);
+        assert_eq!(set_sub_pie_style(&mut t, &s, &[0], Some(SubPieStyle::FanOut)), Ok(()));
+        assert_eq!(t[0].children().len(), 6);
+        assert!(t[0].children()[5].hidden_in_fan_out(PieDirection::East));
         assert_eq!(tree_problems(&s, &t), vec![]);
-        // Fan-out back to replace or the menu default: always fine, nothing dropped.
-        assert_eq!(set_sub_pie_style(&mut t, &s, &[0], Some(SubPieStyle::Replace)), Ok(vec![]));
-        assert_eq!(set_sub_pie_style(&mut t, &s, &[0], None), Ok(vec![]));
+        // Fan-out back to replace or the menu default: always fine.
+        assert_eq!(set_sub_pie_style(&mut t, &s, &[0], Some(SubPieStyle::Replace)), Ok(()));
+        assert_eq!(set_sub_pie_style(&mut t, &s, &[0], None), Ok(()));
         // A nested sub-pie child, or a plain child facing the parent, blocks it with a reason.
         let nested = [PieButton::new(PieDirection::East).with_children(vec![
             PieButton::new(PieDirection::East).with_label("In").with_children(vec![PieButton::new(PieDirection::North)]),
@@ -1032,7 +1060,7 @@ mod tests {
         let mut copy = facing.clone();
         assert!(set_sub_pie_style(&mut copy, &s, &[0], Some(SubPieStyle::FanOut)).is_err());
         assert_eq!(format!("{copy:?}"), format!("{facing:?}"));
-        // Only back buttons would be left: refused.
+        // The fan would show nothing (its only child is the hidden back button): refused.
         let only_back = [PieButton::new(PieDirection::East).with_children(vec![PieButton::back(PieDirection::West)])];
         assert!(fan_out_plan(&only_back[0]).is_err());
         // "Menu default" counts as a fan-out when the menu is one.
@@ -1044,15 +1072,15 @@ mod tests {
     fn menu_wide_fan_out_style_pins_what_cannot_fan_out() {
         let mut s = PieMenuSettings::default();
         let mut t = vec![
-            new_sub_pie_for(PieDirection::East, false, SubPieStyle::Replace), // has a Back opposite: blocked
+            new_sub_pie_for(PieDirection::East, false, SubPieStyle::Replace), // its Back opposite is no obstacle
             PieButton::new(PieDirection::North).with_label("Plain").with_children(vec![PieButton::new(PieDirection::North)]),
             PieButton::new(PieDirection::South).with_label("Nested").with_children(vec![
                 PieButton::new(PieDirection::South).with_label("Inner").with_children(vec![PieButton::new(PieDirection::South)]),
             ]),
         ];
         let notice = set_menu_sub_pie_style(&mut s, &mut t, SubPieStyle::FanOut).expect("something is pinned");
-        assert!(notice.contains("Sub-pie") || notice.contains("\"Sub-pie\""), "{notice}");
-        assert_eq!(effective_style(&t[0], &s), Some(SubPieStyle::Replace));
+        assert!(notice.contains("\"Nested\"") && !notice.contains("\"Sub-pie\""), "{notice}");
+        assert_eq!(effective_style(&t[0], &s), Some(SubPieStyle::FanOut));
         assert_eq!(effective_style(&t[1], &s), Some(SubPieStyle::FanOut));
         assert_eq!(effective_style(&t[2], &s), Some(SubPieStyle::Replace), "its child is a sub-pie");
         assert_eq!(effective_style(&t[2].children()[0], &s), Some(SubPieStyle::FanOut));

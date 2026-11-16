@@ -102,11 +102,22 @@ let menu = PieMenu::new().with_settings(PieMenuSettings { mirror_horizontal: tru
 
 ### The `blender_like()` preset
 
-`PieMenuSettings::blender_like()` is a ready-made starting point for a Blender-style feel. It changes exactly three things from the default:
+`PieMenuSettings::blender_like()` is a ready-made starting point for a Blender-style look and feel, with the values found by matching Blender's own pie menus in Pie Designer:
 
-- `input.select_on_primary_click = false`: a selection happens by releasing the key that opened the menu, and primary clicks are ignored.
-- `text_color = Some(Color32::WHITE)`: white labels, hovered or not.
-- `number_hints.color = Some(Color32::WHITE)`: white number hints, hovered or not.
+| Setting | Value | Effect |
+|---|---|---|
+| `input.select_on_primary_click` | `false` | A selection happens by releasing the key that opened the menu; primary clicks are ignored |
+| `input.auto_mnemonics` | `true` | Every label gets an underlined key |
+| `layout.radius` | `125.0` | A wide ring |
+| `layout.intercardinal_height` | `Some(0.63)` | The diagonal buttons are pulled in towards the East-West axis |
+| `center_indicator.background_stroke` / `background_fill_color` | 6 px `#181818` / transparent | A dark ring, no fill |
+| `center_indicator.highlight_shape` | arc only | |
+| `center_indicator.highlight_stroke` / `highlight_circle_radius` | 6 px `#4772b3` / `3.0` | A blue arc on the ring |
+| `text_color` | `#c6c6c6` | Light grey labels, hovered or not |
+| `number_hints.color` / `spacing` | `#5e5e5e` / `25.0` | Dim digits, set well apart from the label |
+| `title.padding` | 5 px, 25 px below | The title sits clear of the ring |
+
+The buttons are drawn by your render closure, so their look is yours to match. Blender's are dark (`#181818`) and light up when hovered; a toggle that is on is shown by the button's colour, not a checkbox; an icon can have a colour of its own; and Blender's window background (`#3f3f3f`) is lighter than egui's dark theme, which the dark ring is tuned against.
 
 Everything else is the default, and the result is an ordinary value you can keep changing:
 
@@ -443,6 +454,7 @@ menu.settings.sub_pies.fan_out.opener_action = FanOpenerAction::BreakOut; // sel
 ```
 
 - A fan holds up to five buttons. The three directions facing the parent (`dir.opposite()` and its two neighbours) are blocked: `check_buttons` reports a child there as `BlockedDirection`, and a child that is a sub-pie or cluster of its own as `NestedInFanOut`, both wrapped in `InFanOut { parent, problem }`.
+- A back button is the exception: it may face the parent (the natural place for one, opposite the opening direction). The fan leaves it out, neither drawn nor reachable by key (`child.hidden_in_fan_out(dir)`), and it appears in its place once the fan breaks out into a sub-pie. So one list of children serves both styles.
 - It opens when the pointer reaches its button (as far out as the ring of buttons) or when the button is selected by number key, mnemonic, click or release. It closes when the pointer comes back in towards the centre.
 - While it is open it has the keyboard: number keys and mnemonics reach only the fan's buttons. The parent's centre and its other buttons are greyed out, and those buttons cannot be highlighted.
 - The fan's highlighted button moves outward and its content grows slightly (see "Hover emphasis").

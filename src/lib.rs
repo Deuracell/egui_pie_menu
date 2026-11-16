@@ -130,7 +130,10 @@ struct LevelDraw<'a> {
 struct Fan<'a> {
     /// Index of the button that opened it, in the level being shown.
     trigger: usize,
-    children: &'a [PieButton],
+    /// Its buttons. Owned when a back button facing the parent is left out of the fan
+    /// (see [`PieButton::hidden_in_fan_out`]): that one is marked invisible here, so the
+    /// indices stay those of the opening button's children.
+    children: std::borrow::Cow<'a, [PieButton]>,
     center: Pos2,
     radius: f32,
     /// The opening button's rect: the pointer on it selects nothing in the fan.
@@ -351,7 +354,7 @@ impl PieMenu {
     }
 
     /// The problems `children` would have as the fan-out of a button at `direction`
-    /// (children in the directions facing the parent, sub-pies or clusters among them, two
+    /// (children other than a back button in the directions facing the parent, sub-pies or clusters among them, two
     /// in one direction, a mnemonic used twice): empty if the sub-pie can open as a fan-out.
     pub fn fan_out_problems(&self, direction: PieDirection, children: &[PieButton]) -> Vec<ButtonProblem> {
         fan_out_problems(direction, children, &self.mnemonics(children))
@@ -1361,14 +1364,19 @@ impl PieMenu {
         let mut fan_ring = ring;
         let fan: Option<Fan> = self.fan.map(|trigger| {
             let button = &buttons[trigger];
-            let children = button.children();
+            let mut children = std::borrow::Cow::Borrowed(button.children());
+            if children.iter().any(|c| c.visible && c.hidden_in_fan_out(button.direction)) {
+                for child in children.to_mut().iter_mut().filter(|c| c.hidden_in_fan_out(button.direction)) {
+                    child.visible = false;
+                }
+            }
             fan_ring = self.fan_ring_id(&self.path, trigger);
             self.ensure_ring_sizes(fan_ring, children.len());
             let size = self.ring_sizes[&ring][trigger];
             let button_center = center + self.button_offset(&Self::eff(&button.direction, mirror), size, radius, shape_factor);
             let fan_radius = self.settings.sub_pies.fan_out.radius.unwrap_or(radius);
             self.fan_display_radius = fan_radius;
-            let fan_center = self.clamp_center(button_center, children, &self.ring_sizes[&fan_ring], fan_radius, screen_rect);
+            let fan_center = self.clamp_center(button_center, &children, &self.ring_sizes[&fan_ring], fan_radius, screen_rect);
             self.fan_display_center = fan_center;
             Fan {
                 trigger,
@@ -1425,7 +1433,7 @@ impl PieMenu {
         if keys_for_menu {
             match &fan {
                 Some(fan) => {
-                    if let Some((child, _)) = self.key_pick(ctx, fan.children, false) {
+                    if let Some((child, _)) = self.key_pick(ctx, &fan.children, false) {
                         return LevelEvent::FanPick(fan.trigger, child);
                     }
                 }
@@ -1448,7 +1456,7 @@ impl PieMenu {
                 // parent (the blocked sector: three of the eight 45° slices).
                 self.hovered_index = Some(fan.trigger);
                 self.hover_since = None;
-                let fan_dirs = self.layout_dirs(fan.children, &self.ring_sizes[&fan_ring], fan.radius);
+                let fan_dirs = self.layout_dirs(&fan.children, &self.ring_sizes[&fan_ring], fan.radius);
                 self.fan_hover = current_mouse_pos.and_then(|p| {
                     let v = p - fan.center;
                     let angle = v.y.atan2(v.x);
@@ -1457,7 +1465,7 @@ impl PieMenu {
                     // on a child (one pushed into that sector by `layout.intercardinal_height`).
                     let nearest_child = fan_dirs
                         .iter()
-                        .zip(fan.children)
+                        .zip(fan.children.iter())
                         .filter(|(_, child)| child.live())
                         .map(|(d, _)| Self::angle_diff(angle, d.y.atan2(d.x)))
                         .fold(f32::MAX, f32::min);
@@ -1466,7 +1474,7 @@ impl PieMenu {
                     if fan.trigger_rect.contains(p) || v.length() <= dead_zone || blocked {
                         return None;
                     }
-                    Self::pick_button(fan.children, v, &fan_dirs)
+                    Self::pick_button(&fan.children, v, &fan_dirs)
                 });
             }
             None => {
@@ -1714,7 +1722,7 @@ impl PieMenu {
                 ctx,
                 now,
                 &LevelDraw {
-                    buttons: fan.children,
+                    buttons: &fan.children,
                     center: fan.center,
                     radius: fan.radius,
                     shown_at: Some(shown_at),

@@ -1290,15 +1290,49 @@ fn demo_px(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::Ra
     changed
 }
 
-/// A button with an optional number hint before or after its label (`true` = after),
-/// so the button grows to fit the digit.
-fn hint_button(label: impl Into<egui::WidgetText>, hint: Option<(RichText, bool)>, gap: f32) -> egui::Button<'static> {
+/// The gap between a sub-pie or back marker and its neighbour (the label or the number),
+/// and between a checkbox or icon and the label, at scale 1.
+const PART_GAP: f32 = 6.0;
+
+/// A fixed gap between two parts of a button's row (`n` tells the gaps of one row apart).
+fn gap_atom(n: u8, width: f32) -> egui::Atom<'static> {
+    egui::Atom::custom(egui::Id::new(("pie_button_gap", n)), Vec2::new(width, 0.0))
+}
+
+/// An `egui::Button` with the label, the number hint on its side (`hint`: the text and
+/// whether it goes on the right) and the marker at its end (`marker`: the text and whether it
+/// goes on the left). Every gap is explicit and appears once: `hint_gap`
+/// (`number_hints.spacing`) only between the label and the number, `PART_GAP` only next to
+/// the marker.
+fn hint_button(
+    label: impl Into<egui::WidgetText>,
+    hint: Option<(RichText, bool)>,
+    hint_gap: f32,
+    marker: Option<(RichText, bool)>,
+    scale: f32,
+) -> egui::Button<'static> {
     let label: egui::WidgetText = label.into();
-    match hint {
-        Some((h, true))  => egui::Button::new((label, h)).gap(gap),
-        Some((h, false)) => egui::Button::new((h, label)).gap(gap),
-        None             => egui::Button::new(label),
+    let mut atoms = egui::Atoms::new(());
+    if let Some((m, true)) = &marker {
+        atoms.push_right(m.clone());
+        atoms.push_right(gap_atom(0, PART_GAP * scale));
+        atoms.push_right(egui::Atom::grow());
     }
+    if let Some((h, false)) = &hint {
+        atoms.push_right(h.clone());
+        atoms.push_right(gap_atom(1, hint_gap));
+    }
+    atoms.push_right(label);
+    if let Some((h, true)) = &hint {
+        atoms.push_right(gap_atom(2, hint_gap));
+        atoms.push_right(h.clone());
+    }
+    if let Some((m, false)) = &marker {
+        atoms.push_right(egui::Atom::grow());
+        atoms.push_right(gap_atom(3, PART_GAP * scale));
+        atoms.push_right(m.clone());
+    }
+    egui::Button::new(atoms).gap(0.0)
 }
 
 // ── Configure mode ──────────────────────────────────────────────────────────
@@ -1604,11 +1638,9 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
     if !prefix.is_empty() {
         label = label.prefix(prefix);
     }
-    // In the label's colour, set apart from the text by a little space.
-    let far_marker = (!marker.is_empty()).then(|| {
-        let text = if marker_left { format!("{marker}  ") } else { format!("  {marker}") };
-        RichText::new(text).color(text_color)
-    });
+    // In the label's colour. The space that sets it apart is the row's (`PART_GAP`).
+    let far_marker = (!marker.is_empty()).then(|| RichText::new(marker).color(text_color));
+    let part_gap = PART_GAP * b.scale();
     let text: egui::WidgetText = label.into();
     // A painted or image icon, about the text height; `b.scale()` keeps it crisp under hover
     // emphasis.
@@ -1618,73 +1650,59 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
     let hint_gap = look.hint_gap;
     let images = look.images;
 
-    let resp = if is_checkbox(b.button, &d) {
-        // Display only: the toggle happens on Selected. Both kinds get the same fixed height
-        // ("Button height"): no vertical padding, content centred in a row of exactly that height.
+    let resp = if is_checkbox(b.button, &d) || graphic {
+        // A checkbox row (display only: the toggle happens on Selected) or a painted / image
+        // icon: laid out by hand, with the same look and fixed height ("Button height") as a
+        // button: no vertical padding, content centred in a row of exactly that height.
+        // Every gap is explicit and appears once: `hint_gap` only between the label and the
+        // number, `part_gap` next to the marker and between the box, the icon and the label.
+        let checkbox = is_checkbox(b.button, &d);
         egui::Frame::new()
             .fill(bg)
             .stroke(stroke)
             .corner_radius(6.0)
             .inner_margin(Vec2::new(pad_x, 0.0))
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = hint_gap;
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.allocate_ui_with_layout(Vec2::new(0.0, button_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.set_min_height(button_h);
                     if marker_left && let Some(m) = &far_marker {
                         ui.label(m.clone());
+                        ui.add_space(part_gap);
                     }
                     if let Some((h, false)) = &hint {
                         ui.label(h.clone());
+                        ui.add_space(hint_gap);
                     }
                     let mut display = d.checked;
+                    // Right-to-left: the box and the icon go right of the text.
                     if b.rtl {
-                        // Right-to-left: the box goes right of its text.
                         ui.label(text);
-                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
-                        ui.add(egui::Checkbox::without_text(&mut display));
+                        if graphic {
+                            ui.add_space(part_gap);
+                            add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                        }
+                        if checkbox {
+                            ui.add_space(part_gap);
+                            ui.add(egui::Checkbox::without_text(&mut display));
+                        }
                     } else {
-                        ui.add(egui::Checkbox::without_text(&mut display));
-                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                        if checkbox {
+                            ui.add(egui::Checkbox::without_text(&mut display));
+                            ui.add_space(part_gap);
+                        }
+                        if graphic {
+                            add_icon(ui, d.icon_kind, images, icon_size, icon_color);
+                            ui.add_space(part_gap);
+                        }
                         ui.label(text);
                     }
                     if let Some((h, true)) = &hint {
+                        ui.add_space(hint_gap);
                         ui.label(h.clone());
                     }
                     if !marker_left && let Some(m) = &far_marker {
-                        ui.label(m.clone());
-                    }
-                });
-            })
-            .response
-    } else if graphic {
-        // A painted or image icon: same look and height as a button, laid out by hand (the
-        // icon before the label, after it when mirrored).
-        egui::Frame::new()
-            .fill(bg)
-            .stroke(stroke)
-            .corner_radius(6.0)
-            .inner_margin(Vec2::new(pad_x, 0.0))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = hint_gap.max(4.0 * b.scale());
-                ui.allocate_ui_with_layout(Vec2::new(0.0, button_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.set_min_height(button_h);
-                    if marker_left && let Some(m) = &far_marker {
-                        ui.label(m.clone());
-                    }
-                    if let Some((h, false)) = &hint {
-                        ui.label(h.clone());
-                    }
-                    if b.rtl {
-                        ui.label(text);
-                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
-                    } else {
-                        add_icon(ui, d.icon_kind, images, icon_size, icon_color);
-                        ui.label(text);
-                    }
-                    if let Some((h, true)) = &hint {
-                        ui.label(h.clone());
-                    }
-                    if !marker_left && let Some(m) = &far_marker {
+                        ui.add_space(part_gap);
                         ui.label(m.clone());
                     }
                 });
@@ -1692,15 +1710,11 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
             .response
     } else {
         ui.spacing_mut().button_padding = Vec2::new(pad_x, 0.0);
-        let mut button = hint_button(text, hint, hint_gap)
+        let button = hint_button(text, hint, hint_gap, far_marker.map(|m| (m, marker_left)), b.scale())
             .fill(bg)
             .stroke(stroke)
             .corner_radius(6.0)
             .min_size(Vec2::new(0.0, button_h));
-        if let Some(m) = far_marker {
-            // egui lays text out left to right: the marker goes on its own side.
-            button = if marker_left { button.left_text(m) } else { button.right_text(m) };
-        }
         ui.add(button)
     };
     let rect = resp.rect;
@@ -2420,11 +2434,14 @@ mod tests {
         s.input.auto_mnemonics = true;
         assert!(tree_problems(&s, &buttons).is_empty(), "{:?}", tree_problems(&s, &buttons));
         assert_eq!(buttons.len(), 8);
-        // Fan-out as the menu-wide style: the library pins what cannot fan out.
+        // Fan-out as the menu-wide style: Paste Special fans out as it is. Its back button
+        // faces the parent, so the fan leaves it out until it breaks out (#33).
         let mut fan = buttons.clone();
         let notice = egui_pie_menu_designer::set_menu_sub_pie_style(&mut s, &mut fan, SubPieStyle::FanOut);
-        assert!(notice.is_some_and(|n| n.contains("Paste Special")), "the back button faces the parent");
+        assert_eq!(notice, None, "nothing is pinned to replace style");
         assert!(tree_problems(&s, &fan).is_empty());
+        assert!(PieMenu::new().with_settings(s.clone()).opens_fan(&fan[1]));
+        assert!(fan[1].children().iter().any(|c| c.hidden_in_fan_out(fan[1].direction)));
         // Every button of the tree has a decoration.
         fn walk(level: &[PieButton], decor: &DecorMap, path: &mut Vec<usize>) {
             for (i, b) in level.iter().enumerate() {
@@ -2774,6 +2791,37 @@ mod tests {
         assert!(hit.len() >= 4, "clicks on the checkbox button select it: {} hits", hit.len());
     }
 
+    /// #32: `number_hints.spacing` is the gap between the label and the number, once, on every
+    /// kind of button: not also between a checkbox and its text, or between the number and a
+    /// sub-pie marker.
+    #[test]
+    fn the_hint_spacing_widens_every_kind_of_button_by_exactly_itself() {
+        let widths = |spacing: f32| {
+            let ctx = egui::Context::default();
+            let mut demo = Demo::new(&ctx);
+            demo.mode = Mode::Configure;
+            demo.show_hints = true;
+            demo.menu.settings.number_hints.spacing = spacing;
+            // A painted icon on Redo: the third way a button is laid out.
+            demo.decor.get_mut(&vec![2]).expect("Redo").icon_kind = IconKind::Vector(VectorIcon::Copy);
+            let viewport = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 600.0));
+            for _ in 0..5 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let ctx = ui.ctx().clone();
+                    demo.configure_canvas(&ctx, ui, viewport);
+                });
+                out.textures_delta.clear();
+            }
+            let id = demo.previews[&vec![]].id;
+            // Copy (plain), Paste Special (sub-pie marker), Redo (icon), Word wrap (checkbox).
+            [0usize, 1, 2, 7].map(|i| ctx.memory(|m| m.area_rect(id.with(i))).expect("drawn").width())
+        };
+        let (none, wide) = (widths(0.0), widths(20.0));
+        for (k, name) in ["plain", "sub-pie", "icon", "checkbox"].into_iter().enumerate() {
+            assert!((wide[k] - none[k] - 20.0).abs() < 0.01, "{name}: {} -> {}", none[k], wide[k]);
+        }
+    }
+
     /// A cluster: a click on one of its items selects that item, a click on its frame the button.
     #[test]
     fn clicking_a_preview_cluster_selects_item_or_button() {
@@ -2831,12 +2879,23 @@ mod tests {
         // No change of style: nothing happens.
         demo.follow_menu_style(SubPieStyle::Replace);
         assert!(demo.notice.is_none());
-        // The combo box sets the field; the demo then follows.
+        // The combo box sets the field; the demo then follows. The default tree fans out
+        // as it is: no notice, nothing pinned.
         demo.menu.settings.sub_pies.style = SubPieStyle::FanOut;
         demo.follow_menu_style(SubPieStyle::Replace);
-        let notice = demo.notice.clone().expect("Paste Special cannot fan out: its back button faces the parent");
-        assert!(notice.contains("Paste Special"), "{notice}");
-        assert!(matches!(&demo.buttons[1].kind, PieButtonKind::SubPie { style: Some(SubPieStyle::Replace), .. }));
+        assert!(demo.notice.is_none(), "{:?}", demo.notice);
+        assert!(matches!(&demo.buttons[1].kind, PieButtonKind::SubPie { style: None, .. }));
+        assert!(tree_problems(&demo.menu.settings, &demo.buttons).is_empty());
+        // A sub-pie holding a sub-pie of its own cannot fan out: pinned, with the notice.
+        demo.menu.settings.sub_pies.style = SubPieStyle::Replace;
+        demo.buttons[0] = PieButton::new(PieDirection::North).with_label("Nested").with_children(vec![
+            PieButton::new(PieDirection::North).with_label("Inner").with_children(vec![PieButton::new(PieDirection::North)]),
+        ]);
+        demo.menu.settings.sub_pies.style = SubPieStyle::FanOut;
+        demo.follow_menu_style(SubPieStyle::Replace);
+        let notice = demo.notice.clone().expect("Nested cannot fan out");
+        assert!(notice.contains("Nested") && !notice.contains("Paste Special"), "{notice}");
+        assert!(matches!(&demo.buttons[0].kind, PieButtonKind::SubPie { style: Some(SubPieStyle::Replace), .. }));
         assert!(tree_problems(&demo.menu.settings, &demo.buttons).is_empty());
         // Back to replace: the pins stay, no new notice.
         demo.notice = None;

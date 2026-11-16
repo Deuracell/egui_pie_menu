@@ -572,7 +572,8 @@ pub fn first_free_direction(buttons: &[PieButton]) -> Option<PieDirection> {
 }
 
 /// A ready-made sub-pie at `dir`: five children "Item 1".."Item 5" in the five fan-out slots
-/// (valid for both styles) and, for a replace-style sub-pie, a back button opposite `dir`.
+/// and a back button opposite `dir`, valid for both styles (a fan-out leaves the back button
+/// out until it breaks out into a sub-pie).
 fn new_sub_pie(dir: PieDirection, fan: bool) -> PieButton {
     let mut children: Vec<PieButton> = dir
         .fan_out_slots()
@@ -580,10 +581,10 @@ fn new_sub_pie(dir: PieDirection, fan: bool) -> PieButton {
         .enumerate()
         .map(|(n, slot)| PieButton::new(*slot).with_label(format!("Item {}", n + 1)))
         .collect();
+    children.push(PieButton::back(dir.opposite()));
     if fan {
         PieButton::new(dir).with_label("Fan-out").with_fan_out(children)
     } else {
-        children.push(PieButton::back(dir.opposite()));
         PieButton::new(dir).with_label("Sub-pie").with_children(children)
     }
 }
@@ -1323,13 +1324,10 @@ let menu = PieMenu::new()\n    .with_title(\"Edit\")\n    .configure(|s| {\n    
                     }
                     _ => panic!("not a sub-pie"),
                 }
-                if fan {
-                    assert_eq!(kids.len(), 5);
-                } else {
-                    assert_eq!(kids.len(), 6);
-                    assert!(kids[5].is_back());
-                    assert_eq!(kids[5].direction, dir.opposite());
-                }
+                // The back button: a fan leaves it out until it breaks out.
+                assert_eq!(kids.len(), 6);
+                assert!(kids[5].is_back());
+                assert_eq!(kids[5].direction, dir.opposite());
                 assert_eq!(menu.check_buttons(&[b]), vec![], "{dir:?} fan={fan}");
             }
         }
@@ -1358,6 +1356,7 @@ let menu = PieMenu::new()\n    .with_title(\"Edit\")\n    .configure(|s| {\n    
                 PieButton::new(PieDirection::East).with_label("Item 3"),
                 PieButton::new(PieDirection::SouthEast).with_label("Item 4"),
                 PieButton::new(PieDirection::South).with_label("Item 5"),
+                PieButton::back(PieDirection::West),
             ]),]
         );
     }

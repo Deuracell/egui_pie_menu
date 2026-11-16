@@ -39,7 +39,7 @@ Right-click anywhere in the window (or hold Space) to open the menu. The app has
 
 The library part of this crate is a set of embeddable pieces, with no window of its own. Put them in your own side panels, tune the menu live, and copy the generated code into your project.
 
-The buttons editor is a tree plus an inspector. Everything it offers is legal: a direction that is taken (or, in a fan-out, faces the parent) is greyed out with the reason, a fan-out holds only plain and back buttons, "Remove" is hidden where it would leave an empty menu, sub-pie or cluster, and a mnemonic key or cluster item number that another button holds is refused. Turning a button into another kind keeps what it dropped aside, and converting back restores it; turning a replace-style sub-pie into a fan-out drops its back buttons that face the parent.
+The buttons editor is a tree plus an inspector. Everything it offers is legal: a direction that is taken (or, in a fan-out, faces the parent; a back button may, and is left out of the fan until it breaks out into a sub-pie) is greyed out with the reason, a fan-out holds only plain and back buttons, "Remove" is hidden where it would leave an empty menu, sub-pie or cluster, and a mnemonic key or cluster item number that another button holds is refused. Turning a button into another kind keeps what it dropped aside, and converting back restores it; turning a replace-style sub-pie into a fan-out drops its back buttons that face the parent.
 
 | Piece | What it does |
 |---|---|

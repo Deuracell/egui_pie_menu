@@ -241,6 +241,15 @@ impl PieButton {
         self.enabled && self.visible
     }
 
+    /// Whether this button, as a child of a fan-out whose opening button points in
+    /// direction `opener`, is left out of the fan: a back button in one of the three
+    /// directions facing the parent pie. A fan closes by itself, so it has no use for one
+    /// there; the button is neither drawn nor reachable until the fan breaks out into a
+    /// sub-pie ([`crate::FanOpenerAction::BreakOut`]), where it appears in its place.
+    pub fn hidden_in_fan_out(&self, opener: PieDirection) -> bool {
+        self.is_back() && opener.blocks_fan_out(self.direction)
+    }
+
     /// Enables or disables this button. See [`PieButton::enabled`].
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
@@ -334,7 +343,8 @@ pub enum ButtonProblem {
     /// Two enabled buttons have the same mnemonic key.
     DuplicateMnemonic { first: usize, second: usize, key: char },
     /// A fan-out child sits in one of the three directions facing the parent pie
-    /// (see [`PieDirection::fan_out_slots`]).
+    /// (see [`PieDirection::fan_out_slots`]). Not reported for a back button, which is
+    /// hidden there until the fan breaks out ([`PieButton::hidden_in_fan_out`]).
     BlockedDirection { button: usize, direction: PieDirection },
     /// A fan-out child is a sub-pie or cluster of its own: a fan-out holds plain buttons only.
     NestedInFanOut { button: usize },
@@ -403,7 +413,7 @@ pub(crate) fn fan_out_problems(
 ) -> Vec<ButtonProblem> {
     let mut problems = button_problems(children, mnemonics);
     for (i, child) in children.iter().enumerate() {
-        if parent.blocks_fan_out(child.direction) {
+        if parent.blocks_fan_out(child.direction) && !child.is_back() {
             problems.push(ButtonProblem::BlockedDirection { button: i, direction: child.direction });
         }
         if matches!(child.kind, PieButtonKind::SubPie { .. } | PieButtonKind::Cluster(_)) {

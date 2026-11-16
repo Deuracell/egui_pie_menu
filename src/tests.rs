@@ -179,17 +179,37 @@ mod open_state_tests {
     }
 
     #[test]
-    fn blender_like_differs_from_the_default_in_exactly_three_fields() {
+    fn blender_like_differs_from_the_default_in_exactly_the_documented_fields() {
         let b = PieMenuSettings::blender_like();
         let d = PieMenuSettings::default();
         assert!(!b.input.select_on_primary_click && d.input.select_on_primary_click);
-        assert_eq!(b.text_color, Some(Color32::WHITE));
-        assert_eq!(b.number_hints.color, Some(Color32::WHITE));
-        // Undoing those three gives the default again, compared through Debug.
+        assert!(b.input.auto_mnemonics && !d.input.auto_mnemonics);
+        assert_eq!((b.layout.radius, b.layout.intercardinal_height), (125.0, Some(0.63)));
+        let c = &b.center_indicator;
+        assert_eq!(c.background_stroke, Stroke::new(6.0, Color32::from_rgb(24, 24, 24)));
+        assert_eq!(c.background_fill_color, Color32::TRANSPARENT);
+        assert_eq!(c.highlight_shape, HighlightShape { arc: true, slice: false, circle: false, tooth: false });
+        assert_eq!(c.highlight_stroke, Stroke::new(6.0, Color32::from_rgb(71, 114, 179)));
+        assert_eq!(c.highlight_circle_radius, 3.0);
+        assert_eq!(b.title.padding, egui::Margin { left: 5, right: 5, top: 5, bottom: 25 });
+        assert_eq!(b.number_hints.color, Some(Color32::from_rgb(94, 94, 94)));
+        assert_eq!(b.number_hints.spacing, 25.0);
+        assert_eq!(b.text_color, Some(Color32::from_rgb(198, 198, 198)));
+        // Undoing those gives the default again, compared through Debug.
         let mut undone = b;
-        undone.input.select_on_primary_click = true;
-        undone.text_color = None;
-        undone.number_hints.color = None;
+        undone.input.select_on_primary_click = d.input.select_on_primary_click;
+        undone.input.auto_mnemonics = d.input.auto_mnemonics;
+        undone.layout.radius = d.layout.radius;
+        undone.layout.intercardinal_height = d.layout.intercardinal_height;
+        undone.center_indicator.background_stroke = d.center_indicator.background_stroke;
+        undone.center_indicator.background_fill_color = d.center_indicator.background_fill_color;
+        undone.center_indicator.highlight_shape = d.center_indicator.highlight_shape;
+        undone.center_indicator.highlight_stroke = d.center_indicator.highlight_stroke;
+        undone.center_indicator.highlight_circle_radius = d.center_indicator.highlight_circle_radius;
+        undone.title.padding = d.title.padding;
+        undone.number_hints.color = d.number_hints.color;
+        undone.number_hints.spacing = d.number_hints.spacing;
+        undone.text_color = d.text_color;
         assert_eq!(format!("{undone:?}"), format!("{d:?}"));
     }
 
@@ -1627,6 +1647,37 @@ mod fan_out_tests {
     }
 
     #[test]
+    fn a_back_button_facing_the_parent_is_hidden_in_the_fan_and_shown_after_breaking_out() {
+        let at_ring = Pos2::new(505.0, 300.0);
+        let mut b = buttons();
+        let mut children = b[0].children().to_vec();
+        children.push(PieButton::back(PieDirection::West)); // straight back at the parent
+        b[0] = PieButton::new(PieDirection::East).with_label("More").with_fan_out(children);
+        assert!(b[0].children()[3].hidden_in_fan_out(PieDirection::East));
+        assert!(!b[0].children()[0].hidden_in_fan_out(PieDirection::East), "only a back button");
+        assert!(!PieButton::back(PieDirection::North).hidden_in_fan_out(PieDirection::East), "only facing the parent");
+        let mut rig = Rig::new(b);
+        assert!(rig.menu.check_buttons(&rig.buttons).is_empty(), "not a blocked direction");
+
+        // In the fan it is not drawn, and its number key (4, West) does nothing.
+        let drawn = rig.point(at_ring);
+        assert_eq!(rig.menu.open_fan_out(), Some((0, None)));
+        assert_eq!(paths(&drawn), [vec![0], vec![1], vec![0, 0], vec![0, 1], vec![0, 2]]);
+        let (resp, drawn) = rig.frame(Some(at_ring), true, &[Key::Num4]);
+        assert_eq!(resp, PieMenuResponse::None);
+        assert!(rig.menu.open_fan_out().is_some() && rig.menu.path().is_empty());
+        assert!(!paths(&drawn).contains(&vec![0, 3]));
+
+        // Broken out, it is a button of the sub-pie: drawn, and its key goes back.
+        assert_eq!(rig.frame(Some(at_ring), false, &[]).0, PieMenuResponse::None);
+        assert_eq!(rig.menu.path(), &[0]);
+        let (_, drawn) = rig.frame(Some(at_ring), false, &[]);
+        assert_eq!(paths(&drawn), [vec![0, 0], vec![0, 1], vec![0, 2], vec![0, 3]]);
+        assert_eq!(rig.frame(Some(at_ring), false, &[Key::Num4]).0, PieMenuResponse::None);
+        assert!(rig.menu.path().is_empty(), "the back button went back");
+    }
+
+    #[test]
     fn clicking_the_opener_breaks_the_fan_out_by_default() {
         let at_ring = Pos2::new(505.0, 300.0);
         let mut rig = Rig::new(buttons());
@@ -1967,6 +2018,12 @@ mod fan_out_tests {
         );
         assert_eq!(problems[1].buttons(), [1]);
         assert_eq!(problems[1].to_string(), "in the fan-out of button 1: button 1 is in direction West, which faces the parent pie");
+        // A back button there is not a problem: it is hidden until the fan breaks out.
+        let with_back = vec![PieButton::new(PieDirection::East).with_fan_out(vec![
+            PieButton::new(PieDirection::North),
+            PieButton::back(PieDirection::West),
+        ])];
+        assert!(m.check_buttons(&with_back).is_empty());
         // The same children under a replace-style button are an ordinary level: no fan problems.
         let replace = vec![level[1].clone().with_sub_pie_style(Some(SubPieStyle::Replace))];
         assert!(m.check_buttons(&replace).is_empty());
