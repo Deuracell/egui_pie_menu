@@ -592,8 +592,10 @@ impl MarkerIcons {
     }
 
     /// The marker to draw on `button` (which sits in its own direction, mirrored when `rtl`),
-    /// and whether it goes on the left edge.
-    fn placed(&self, button: &PieButton, opens_sub_pie: bool, rtl: bool) -> (String, bool) {
+    /// whether it goes on the left edge, and the angle to turn the glyph by (radians,
+    /// clockwise): a known arrow on a diagonal button is the horizontal one turned by 45°,
+    /// so it points along the diagonal.
+    fn placed(&self, button: &PieButton, opens_sub_pie: bool, rtl: bool) -> (String, bool, f32) {
         use PieDirection::*;
         let marker = self.marker(button, opens_sub_pie);
         // Which way is outwards on screen? (dx, dy) with y pointing down.
@@ -613,12 +615,12 @@ impl MarkerIcons {
         let outer_left = if dx != 0 { dx < 0 } else { rtl };
         let on_left = outer_left == (self.placement == MarkerPlacement::FarEnd);
         if !self.point_outwards || marker.is_empty() {
-            return (marker.to_string(), on_left);
+            return (marker.to_string(), on_left, 0.0);
         }
         // Right, left, up, down.
         const FAMILIES: [[&str; 4]; 3] = [["▶", "◀", "▲", "▼"], ["▷", "◁", "△", "▽"], ["→", "←", "↑", "↓"]];
         let Some(family) = FAMILIES.iter().find(|f| f.contains(&marker)) else {
-            return (marker.to_string(), on_left);
+            return (marker.to_string(), on_left, 0.0);
         };
         // A back marker points at the centre, the others away from it.
         let (dx, dy) = if button.is_back() { (-dx, -dy) } else { (dx, dy) };
@@ -631,7 +633,10 @@ impl MarkerIcons {
         } else {
             3
         };
-        (family[i].to_string(), on_left)
+        // On a diagonal: the right arrow turns down (clockwise) for a lower button and up
+        // for an upper one; the left arrow the other way round.
+        let angle = (dx * dy) as f32 * std::f32::consts::FRAC_PI_4;
+        (family[i].to_string(), on_left, angle)
     }
 }
 
@@ -1299,22 +1304,58 @@ fn gap_atom(n: u8, width: f32) -> egui::Atom<'static> {
     egui::Atom::custom(egui::Id::new(("pie_button_gap", n)), Vec2::new(width, 0.0))
 }
 
+/// The id of the marker's slot in a button made by [`hint_button`].
+fn marker_atom_id() -> egui::Id {
+    egui::Id::new("pie_button_marker")
+}
+
+/// A sub-pie or back marker, laid out: painted by [`Marker::paint`] so it can be turned.
+struct Marker {
+    galley: std::sync::Arc<egui::Galley>,
+    color: Color32,
+    /// Radians, clockwise, about the glyph's centre.
+    angle: f32,
+    /// At the left end of the button (otherwise the right).
+    left: bool,
+}
+
+impl Marker {
+    fn size(&self) -> Vec2 {
+        self.galley.size()
+    }
+
+    /// Paints the glyph centred in `rect`, turned about its centre.
+    fn paint(&self, painter: &egui::Painter, rect: Rect) {
+        let pos = rect.center() - self.size() / 2.0;
+        let shape = egui::epaint::TextShape::new(pos, self.galley.clone(), self.color)
+            .with_angle_and_anchor(self.angle, egui::Align2::CENTER_CENTER);
+        painter.add(shape);
+    }
+
+    /// Takes the marker's place in a hand-laid row and paints it there.
+    fn show(&self, ui: &mut egui::Ui) {
+        let (rect, _) = ui.allocate_exact_size(self.size(), egui::Sense::hover());
+        self.paint(ui.painter(), rect);
+    }
+}
+
 /// An `egui::Button` with the label, the number hint on its side (`hint`: the text and
-/// whether it goes on the right) and the marker at its end (`marker`: the text and whether it
-/// goes on the left). Every gap is explicit and appears once: `hint_gap`
+/// whether it goes on the right) and a slot for the marker at its end (`marker`: its size
+/// and whether it goes on the left; the caller paints it in the rect of
+/// [`marker_atom_id`]). Every gap is explicit and appears once: `hint_gap`
 /// (`number_hints.spacing`) only between the label and the number, `PART_GAP` only next to
 /// the marker.
 fn hint_button(
     label: impl Into<egui::WidgetText>,
     hint: Option<(RichText, bool)>,
     hint_gap: f32,
-    marker: Option<(RichText, bool)>,
+    marker: Option<(Vec2, bool)>,
     scale: f32,
 ) -> egui::Button<'static> {
     let label: egui::WidgetText = label.into();
     let mut atoms = egui::Atoms::new(());
-    if let Some((m, true)) = &marker {
-        atoms.push_right(m.clone());
+    if let Some((size, true)) = marker {
+        atoms.push_right(egui::Atom::custom(marker_atom_id(), size));
         atoms.push_right(gap_atom(0, PART_GAP * scale));
         atoms.push_right(egui::Atom::grow());
     }
@@ -1327,10 +1368,10 @@ fn hint_button(
         atoms.push_right(gap_atom(2, hint_gap));
         atoms.push_right(h.clone());
     }
-    if let Some((m, false)) = &marker {
+    if let Some((size, false)) = marker {
         atoms.push_right(egui::Atom::grow());
         atoms.push_right(gap_atom(3, PART_GAP * scale));
-        atoms.push_right(m.clone());
+        atoms.push_right(egui::Atom::custom(marker_atom_id(), size));
     }
     egui::Button::new(atoms).gap(0.0)
 }
@@ -1630,7 +1671,7 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
     // Sub-pie and back buttons carry a marker (from the "Sub-pies" section) in a slot of its
     // own: at the far end, or before the icon. The icon is the button's own and never
     // replaces it.
-    let (marker, marker_left) = look.icons.placed(b.button, b.opens_sub_pie(), b.rtl);
+    let (marker, marker_left, marker_angle) = look.icons.placed(b.button, b.opens_sub_pie(), b.rtl);
     let mut prefix = String::new();
     if d.icon_kind == IconKind::Text && !d.icon.is_empty() {
         prefix += &format!("{}  ", d.icon);
@@ -1638,8 +1679,11 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
     if !prefix.is_empty() {
         label = label.prefix(prefix);
     }
-    // In the label's colour. The space that sets it apart is the row's (`PART_GAP`).
-    let far_marker = (!marker.is_empty()).then(|| RichText::new(marker).color(text_color));
+    // In the label's colour and font. The space that sets it apart is the row's (`PART_GAP`).
+    let far_marker = (!marker.is_empty()).then(|| {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        Marker { galley: ui.painter().layout_no_wrap(marker, font, text_color), color: text_color, angle: marker_angle, left: marker_left }
+    });
     let part_gap = PART_GAP * b.scale();
     let text: egui::WidgetText = label.into();
     // A painted or image icon, about the text height; `b.scale()` keeps it crisp under hover
@@ -1666,8 +1710,8 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.allocate_ui_with_layout(Vec2::new(0.0, button_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.set_min_height(button_h);
-                    if marker_left && let Some(m) = &far_marker {
-                        ui.label(m.clone());
+                    if let Some(m) = far_marker.as_ref().filter(|m| m.left) {
+                        m.show(ui);
                         ui.add_space(part_gap);
                     }
                     if let Some((h, false)) = &hint {
@@ -1701,21 +1745,25 @@ fn draw_button(ui: &mut egui::Ui, b: &ButtonView, path: &[usize], look: &Look, s
                         ui.add_space(hint_gap);
                         ui.label(h.clone());
                     }
-                    if !marker_left && let Some(m) = &far_marker {
+                    if let Some(m) = far_marker.as_ref().filter(|m| !m.left) {
                         ui.add_space(part_gap);
-                        ui.label(m.clone());
+                        m.show(ui);
                     }
                 });
             })
             .response
     } else {
         ui.spacing_mut().button_padding = Vec2::new(pad_x, 0.0);
-        let button = hint_button(text, hint, hint_gap, far_marker.map(|m| (m, marker_left)), b.scale())
+        let button = hint_button(text, hint, hint_gap, far_marker.as_ref().map(|m| (m.size(), m.left)), b.scale())
             .fill(bg)
             .stroke(stroke)
             .corner_radius(6.0)
             .min_size(Vec2::new(0.0, button_h));
-        ui.add(button)
+        let shown = button.atom_ui(ui);
+        if let (Some(m), Some(rect)) = (&far_marker, shown.rect(marker_atom_id())) {
+            m.paint(ui.painter(), rect);
+        }
+        shown.response
     };
     let rect = resp.rect;
     match select {
@@ -1974,7 +2022,7 @@ impl Demo {
                 });
             }
             DemoRow::PointMarkers => {
-                line(ui, "Rotate a ▶ ▷ → marker to point away from the centre on each button (a back marker points towards it).", &mut |ui| {
+                line(ui, "Turn a ▶ ▷ → marker to point away from the centre on each button, by 45° on the diagonal ones (a back marker points towards it).", &mut |ui| {
                     ui.add(egui::Checkbox::without_text(&mut self.icons.point_outwards)).changed()
                 });
             }
@@ -2789,6 +2837,67 @@ mod tests {
             }
         }
         assert!(hit.len() >= 4, "clicks on the checkbox button select it: {} hits", hit.len());
+    }
+
+    /// #27: a marker points outwards; on a diagonal button it is the horizontal arrow turned
+    /// by 45° (clockwise is positive, y points down).
+    #[test]
+    fn markers_point_outwards_and_turn_by_45_degrees_on_the_diagonals() {
+        use PieDirection::*;
+        let icons = MarkerIcons::default();
+        let q = std::f32::consts::FRAC_PI_4;
+        let sub = |d: PieDirection| PieButton::new(d).with_children(vec![PieButton::new(North)]);
+        let cases = [
+            (North, "▲", 0.0), (NorthEast, "▶", -q), (East, "▶", 0.0), (SouthEast, "▶", q),
+            (South, "▼", 0.0), (SouthWest, "◀", -q), (West, "◀", 0.0), (NorthWest, "◀", q),
+        ];
+        for (d, glyph, angle) in cases {
+            let (m, _, a) = icons.placed(&sub(d), true, false);
+            assert_eq!((m.as_str(), a), (glyph, angle), "{d:?}");
+            // A back marker points the opposite way: at the centre.
+            let (m, _, a) = icons.placed(&PieButton::back(d.opposite()), false, false);
+            assert_eq!((m.as_str(), a), (glyph, angle), "back at {:?}", d.opposite());
+        }
+        // Mirrored: NE is drawn up-left.
+        assert_eq!(icons.placed(&sub(NorthEast), true, true), ("◀".to_string(), true, q));
+        // Not a known arrow, or the option off: as typed, unturned.
+        let star = MarkerIcons { sub_pie: "★".into(), ..MarkerIcons::default() };
+        assert_eq!(star.placed(&sub(SouthEast), true, false), ("★".to_string(), false, 0.0));
+        let fixed = MarkerIcons { point_outwards: false, ..MarkerIcons::default() };
+        assert_eq!(fixed.placed(&sub(SouthEast), true, false), ("▶".to_string(), false, 0.0));
+    }
+
+    /// The turned marker is painted where its slot is: at the outer end of its button.
+    #[test]
+    fn a_turned_marker_stays_in_its_slot_at_the_outer_end() {
+        let ctx = egui::Context::default();
+        let mut demo = Demo::new(&ctx);
+        demo.mode = Mode::Configure;
+        let viewport = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let mut shapes = Vec::new();
+        for _ in 0..5 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let ctx = ui.ctx().clone();
+                demo.configure_canvas(&ctx, ui, viewport);
+            });
+            out.textures_delta.clear();
+            shapes = std::mem::take(&mut out.shapes);
+        }
+        // Paste Special (NE) is the only sub-pie of the root: one turned glyph, by -45°.
+        let turned: Vec<_> = shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.angle != 0.0 => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(turned.len(), 1);
+        let t = &turned[0];
+        assert_eq!(t.angle, -std::f32::consts::FRAC_PI_4);
+        let centre = t.pos + egui::emath::Rot2::from_angle(t.angle) * t.galley.rect.center().to_vec2();
+        let button = ctx.memory(|m| m.area_rect(demo.previews[&vec![]].id.with(1usize))).expect("drawn");
+        assert!(button.contains(centre), "{centre:?} in {button:?}");
+        assert!(button.right() - centre.x < 20.0 && (centre.y - button.center().y).abs() < 2.0, "{centre:?} in {button:?}");
     }
 
     /// #32: `number_hints.spacing` is the gap between the label and the number, once, on every
