@@ -2,7 +2,7 @@ use eframe::egui;
 use egui::{Color32, Rect, RichText, Vec2};
 use egui_pie_menu_designer::{
     BindTarget, Bindings, Selection, Variables, button_tree_marked, SettingsField, SettingsGroup, TreeEdit, binding_details, binding_toggle, button_inspector_bound,
-    field_editor_bound, field_label, control_width, setting_row, preview_target, relevant_fields, selection_kind,
+    field_editor_bound, field_label, field_short_label, control_width, radio, reset, row_line, setting_row, sub_group_header, preview_target, relevant_fields, selection_kind,
     set_menu_sub_pie_style,
 };
 use egui_pie_menu::catalog::{MenuCatalog, MenuDefinition};
@@ -1197,6 +1197,32 @@ impl DemoRow {
         }
     }
 
+    /// The sub-group of its section the row is shown under, like `SettingsField::sub_group`.
+    fn sub_group(self) -> Option<&'static str> {
+        match self {
+            DemoRow::ShowHints => Some("Number hints"),
+            DemoRow::MarkerPosition | DemoRow::SubPieMarker | DemoRow::BackMarker | DemoRow::PointMarkers => Some("Markers"),
+            _ => None,
+        }
+    }
+
+    /// The name shown on the row, under its section and sub-group headers (`name` without
+    /// the words those say).
+    fn short_name(self) -> &'static str {
+        match self {
+            DemoRow::MenuTitle => "Text",
+            DemoRow::ShowHints => "Show",
+            DemoRow::ButtonHeight => "Height",
+            DemoRow::SubPieLook => "Sub-pie look",
+            DemoRow::SampleIcons => "Sample icons",
+            DemoRow::MarkerPosition => "Position",
+            DemoRow::SubPieMarker => "Sub-pie",
+            DemoRow::BackMarker => "Back",
+            DemoRow::PointMarkers => "Point outwards",
+            DemoRow::Language => "Language",
+        }
+    }
+
     /// Extra words the search matches besides the name.
     fn keywords(self) -> &'static str {
         match self {
@@ -1234,11 +1260,30 @@ enum Row {
     Demo(DemoRow),
 }
 
-/// The rows of one section: the fields that apply (see `SettingsGroup::relevant_fields`),
-/// then the demo's own rows of that group.
+impl Row {
+    /// The sub-group of its section the row is shown under (`None`: directly in the section).
+    fn sub_group(self) -> Option<&'static str> {
+        match self {
+            Row::Field(f) => f.sub_group(),
+            Row::Demo(r) => r.sub_group(),
+        }
+    }
+}
+
+/// The rows of one section: the fields that apply (see `SettingsGroup::relevant_fields`)
+/// and the demo's own rows of that group. The rows directly in the section come first, then
+/// each sub-group's together (a field's and a demo row's of the same name share one), in
+/// the order the sub-groups first appear.
 fn group_rows(group: SettingsGroup, settings: &PieMenuSettings) -> Vec<Row> {
     let mut rows: Vec<Row> = group.relevant_fields(settings).into_iter().map(Row::Field).collect();
     rows.extend(DemoRow::ALL.into_iter().filter(|r| r.group() == group && r.is_relevant(settings)).map(Row::Demo));
+    let mut order: Vec<Option<&str>> = vec![None];
+    for row in &rows {
+        if !order.contains(&row.sub_group()) {
+            order.push(row.sub_group());
+        }
+    }
+    rows.sort_by_key(|row| order.iter().position(|g| *g == row.sub_group()));
     rows
 }
 
@@ -1247,8 +1292,8 @@ fn group_rows(group: SettingsGroup, settings: &PieMenuSettings) -> Vec<Row> {
 fn row_matches(row: Row, query: &str) -> bool {
     let has = |text: &str| text.to_lowercase().contains(query);
     match row {
-        Row::Field(f) => has(field_label(f)) || has(f.path()),
-        Row::Demo(r) => has(r.name()) || has(r.keywords()),
+        Row::Field(f) => has(field_label(f)) || has(field_short_label(f)) || has(f.path()) || f.sub_group().is_some_and(has),
+        Row::Demo(r) => has(r.name()) || has(r.short_name()) || has(r.keywords()) || r.sub_group().is_some_and(has),
     }
 }
 
@@ -1284,11 +1329,7 @@ fn demo_px(ui: &mut egui::Ui, value: &mut f32, default: f32, range: std::ops::Ra
     let mut changed = ui
         .add_sized([w, h], egui::DragValue::new(value).range(range).speed(1.0).fixed_decimals(0).suffix(" px"))
         .changed();
-    ui.add_space((ui.available_width() - 24.0).max(0.0));
-    if ui.add_enabled(*value != default, egui::Button::new("\u{21ba}").small()).on_hover_text("Reset to default").clicked() {
-        *value = default;
-        changed = true;
-    }
+    changed |= reset(ui, value, &default);
     if changed {
         *value = value.round();
     }
@@ -1924,8 +1965,8 @@ impl Demo {
         // control filling the rest, the "demo" tag in the slot where a field has its bind toggle.
         let tagged = row.tagged();
         let line = |ui: &mut egui::Ui, hover: &str, body: &mut dyn FnMut(&mut egui::Ui) -> bool| {
-            ui.horizontal(|ui| {
-                setting_row(ui, row.name(), hover, body);
+            row_line(ui, |ui| {
+                setting_row(ui, row.short_name(), &format!("{}\n{hover}", row.name()), body);
                 if tagged {
                     demo_tag(ui);
                 }
@@ -1933,12 +1974,12 @@ impl Demo {
         };
         match row {
             DemoRow::MenuTitle => {
-                ui.horizontal(|ui| {
+                row_line(ui, |ui| {
                     let from_app = self.bindings.variable_for(&BindTarget::Title).is_some();
                     setting_row(
                         ui,
-                        row.name(),
-                        "Shown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.",
+                        row.short_name(),
+                        "Menu title\nShown in the centre of the root pie. Empty: no title. Sub-pies show their parent's label.",
                         |ui| {
                             let w = control_width(ui);
                             ui.add_enabled(!from_app, egui::TextEdit::singleline(&mut self.title).desired_width(w)).changed()
@@ -1950,7 +1991,7 @@ impl Demo {
             }
             DemoRow::ShowHints => {
                 line(ui, "Draw the number-key hints inside the demo's buttons (the library hands them to the render closure).", &mut |ui| {
-                    ui.add(egui::Checkbox::without_text(&mut self.show_hints)).changed()
+                    ui.add(egui::Checkbox::without_text(&mut self.show_hints)).changed() | reset(ui, &mut self.show_hints, &false)
                 });
             }
             DemoRow::ButtonHeight => {
@@ -1959,22 +2000,9 @@ impl Demo {
                 });
             }
             DemoRow::SubPieLook => {
-                line(ui, "How buttons that open a sub-pie are drawn, to tell them from actions. Uses ButtonView::opens_sub_pie.", &mut |ui| {
-                    let look_label = |l: SubPieLook| match l {
-                        SubPieLook::Same => "Same as the others",
-                        SubPieLook::Outlined => "Outlined, paler fill",
-                        SubPieLook::Dimmer => "Dimmer fill",
-                    };
-                    let w = control_width(ui);
-                    egui::ComboBox::from_id_salt("sub_pie_look")
-                        .width(w)
-                        .selected_text(look_label(self.sub_pie_look))
-                        .show_ui(ui, |ui| {
-                            for l in [SubPieLook::Same, SubPieLook::Outlined, SubPieLook::Dimmer] {
-                                ui.selectable_value(&mut self.sub_pie_look, l, look_label(l));
-                            }
-                        });
-                    false
+                line(ui, "How buttons that open a sub-pie are drawn, to tell them from actions: the same as the others, outlined with a paler fill, or with a dimmer fill. Uses ButtonView::opens_sub_pie.", &mut |ui| {
+                    let options = [(SubPieLook::Same, "Same"), (SubPieLook::Outlined, "Outline"), (SubPieLook::Dimmer, "Dim")];
+                    radio(ui, "sub_pie_look", &mut self.sub_pie_look, &options) | reset(ui, &mut self.sub_pie_look, &SubPieLook::default())
                 });
             }
             DemoRow::SampleIcons => {
@@ -1992,47 +2020,40 @@ impl Demo {
                 });
             }
             DemoRow::MarkerPosition => {
-                line(ui, "Where the sub-pie and back markers sit on their buttons. Separate from the button's icon, which never replaces them.", &mut |ui| {
-                    let place_label = |p: MarkerPlacement| match p {
-                        MarkerPlacement::FarEnd => "Outer end (away from the centre)",
-                        MarkerPlacement::Start => "Inner end, before the icon",
-                    };
-                    let w = control_width(ui);
-                    egui::ComboBox::from_id_salt("marker_placement")
-                        .width(w)
-                        .selected_text(place_label(self.icons.placement))
-                        .show_ui(ui, |ui| {
-                            for p in [MarkerPlacement::FarEnd, MarkerPlacement::Start] {
-                                ui.selectable_value(&mut self.icons.placement, p, place_label(p));
-                            }
-                        });
-                    false
+                line(ui, "Where the sub-pie and back markers sit on their buttons: at the outer end (away from the centre) or at the inner end, before the icon. Separate from the button's icon, which never replaces them.", &mut |ui| {
+                    let options = [(MarkerPlacement::FarEnd, "Outer end"), (MarkerPlacement::Start, "Inner end")];
+                    radio(ui, "marker_placement", &mut self.icons.placement, &options)
+                        | reset(ui, &mut self.icons.placement, &MarkerIcons::default().placement)
                 });
             }
             DemoRow::SubPieMarker => {
                 line(ui, "Drawn on a button that opens a sub-pie, whatever its icon. Empty: none.", &mut |ui| {
-                    let w = control_width(ui);
-                    ui.add(egui::TextEdit::singleline(&mut self.icons.sub_pie).desired_width(w)).changed()
+                    let size = [control_width(ui), ui.spacing().interact_size.y];
+                    ui.add_sized(size, egui::TextEdit::singleline(&mut self.icons.sub_pie)).changed()
+                        | reset(ui, &mut self.icons.sub_pie, &MarkerIcons::default().sub_pie)
                 });
             }
             DemoRow::BackMarker => {
                 line(ui, "Drawn on a back button, whatever its icon. Empty: none.", &mut |ui| {
-                    let w = control_width(ui);
-                    ui.add(egui::TextEdit::singleline(&mut self.icons.back).desired_width(w)).changed()
+                    let size = [control_width(ui), ui.spacing().interact_size.y];
+                    ui.add_sized(size, egui::TextEdit::singleline(&mut self.icons.back)).changed()
+                        | reset(ui, &mut self.icons.back, &MarkerIcons::default().back)
                 });
             }
             DemoRow::PointMarkers => {
                 line(ui, "Turn a ▶ ▷ → marker to point away from the centre on each button, by 45° on the diagonal ones (a back marker points towards it).", &mut |ui| {
                     ui.add(egui::Checkbox::without_text(&mut self.icons.point_outwards)).changed()
+                        | reset(ui, &mut self.icons.point_outwards, &MarkerIcons::default().point_outwards)
                 });
             }
             DemoRow::Language => {
                 let mut changed = false;
-                ui.horizontal(|ui| {
-                    setting_row(ui, row.name(), "Button labels, mirroring (RTL) and digit style of the sample menu.", |ui| {
+                row_line(ui, |ui| {
+                    setting_row(ui, row.short_name(), "Button labels, mirroring (RTL) and digit style of the sample menu.", |ui| {
                         let w = control_width(ui);
                         egui::ComboBox::from_id_salt("lang")
                             .width(w)
+                            .truncate()
                             .selected_text(LANGS[self.lang].name)
                             .show_ui(ui, |ui| {
                                 for (i, l) in LANGS.iter().enumerate() {
@@ -2077,7 +2098,14 @@ impl Demo {
                 .default_open(default_open)
                 .open((!query.is_empty()).then_some(true))
                 .show(ui, |ui| {
+                    let mut sub_group = None;
                     for row in rows {
+                        if row.sub_group() != sub_group {
+                            sub_group = row.sub_group();
+                            if let Some(name) = sub_group {
+                                sub_group_header(ui, name);
+                            }
+                        }
                         match row {
                             Row::Field(f) => {
                                 field_editor_bound(ui, &mut self.menu.settings, f, &mut self.bindings);
@@ -2193,7 +2221,7 @@ impl eframe::App for Demo {
         self.bindings.apply_title(&mut self.title);
         // The program's state, by action id: enabled / visible, and what it does not handle.
         self.unhandled = demo_actions(&self.history, self.share_plugin).apply(&self.ids, &mut self.buttons);
-        egui::Panel::left("settings").min_size(220.0).show(ui, |ui| {
+        egui::Panel::left("settings").default_size(360.0).min_size(260.0).show(ui, |ui| {
             ui.add_space(4.0);
             let query = self.search.trim().to_lowercase();
             // Two tabs; the one that is not showing carries the number of search hits.

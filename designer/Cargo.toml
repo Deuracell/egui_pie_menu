@@ -21,6 +21,9 @@ egui_pie_menu = { path = "..", version = "0.36.2", features = ["toml"] }
 egui = "0.36.2"
 eframe = "0.36.2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Joined toggle, radio and field groups for the settings rows. The crate has no release tag
+# yet, so it is pinned to a commit.
+egui-control-groups = { git = "https://github.com/Deuracell/egui_control_groups", rev = "70cb7f92c3a296bb219dd8aee16df88083e2b668" }
 
 # The web build (`trunk build`, see index.html): the page's entry point and file download.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

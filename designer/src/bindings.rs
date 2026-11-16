@@ -290,7 +290,7 @@ fn var_swatch(ui: &mut Ui, value: &VarValue) {
 pub(crate) fn bound_row(ui: &mut Ui, bindings: &mut Bindings, target: &BindTarget, editor: impl FnOnce(&mut Ui) -> bool) -> bool {
     let mut changed = false;
     let from_app = bindings.variable_for(target).is_some();
-    ui.horizontal(|ui| {
+    crate::fields::row_line(ui, |ui| {
         changed |= ui.add_enabled_ui(!from_app, editor).inner;
         changed |= binding_toggle(ui, bindings, target);
     });

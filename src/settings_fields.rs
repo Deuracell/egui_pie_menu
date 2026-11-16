@@ -374,6 +374,115 @@ pub fn field_label(field: SettingsField) -> &'static str {
     }
 }
 
+impl SettingsField {
+    /// The sub-group of its section the field belongs to (`None`: directly in the section),
+    /// as an editor shows it: a small header above the fields that share it, e.g.
+    /// "Number hints" in "Keys and hints". The fields of a sub-group are consecutive in
+    /// [`SettingsGroup::fields`], after the fields without one.
+    pub fn sub_group(self) -> Option<&'static str> {
+        use SettingsField as F;
+        match self {
+            F::DismissInputs | F::PinnedDismissInputs => Some("Dismiss inputs"),
+            F::HintColor | F::HintSpacing | F::HintSide | F::HintDigits => Some("Number hints"),
+            F::CenterBackgroundRadius | F::CenterBackgroundStroke | F::CenterBackgroundFillColor => Some("Circle"),
+            F::CenterHighlightRadius
+            | F::CenterHighlightShape
+            | F::CenterHighlightStroke
+            | F::CenterHighlightFillColor
+            | F::CenterHighlightAngle
+            | F::CenterHighlightCircleRadius
+            | F::CenterHighlightSnapping => Some("Highlight"),
+            F::CenterToothStartLength
+            | F::CenterToothLength
+            | F::CenterToothStartBend
+            | F::CenterToothBend
+            | F::CenterToothStartTipRadius
+            | F::CenterToothTipRadius
+            | F::CenterToothStartRoot
+            | F::CenterToothRoot
+            | F::CenterToothRootTaper
+            | F::CenterToothLengthEasing
+            | F::CenterToothSharpenEasing
+            | F::CenterToothOutlineBase => Some("Tooth"),
+            F::Reveal | F::RevealDuration | F::SlideStartRadius | F::SlideStartShapeFactor | F::SlideFade => Some("Reveal"),
+            F::HoverEmphasis | F::SubPieHoverEmphasis | F::HoverDuration => Some("Hover"),
+            F::FanOutDelay | F::FanOutRadius | F::FanOutOpenerAction => Some("Fan-out"),
+            _ => None,
+        }
+    }
+}
+
+/// The name of a field where its section and sub-group ([`SettingsField::sub_group`]) are
+/// already on screen: [`field_label`] without the words those headers say ("Radius" under
+/// "Ring", "Colour" under "Number hints"). Unique within the field's section and sub-group.
+pub fn field_short_label(field: SettingsField) -> &'static str {
+    use SettingsField as F;
+    match field {
+        F::ShowBehavior => "Show menu",
+        F::DoubleTapWindow => "Double-tap",
+        F::SelectOnPrimaryClick => "Click selects",
+        F::DismissInputs => "Menu",
+        F::PinnedDismissInputs => "Pinned menu",
+        F::BlockBackground => "Block background",
+        F::UseNumberKeys => "Number keys",
+        F::UseMnemonicKeys => "Mnemonic keys",
+        F::AutoMnemonics => "Auto mnemonics",
+        F::HintColor => "Colour",
+        F::HintSpacing => "Spacing",
+        F::HintSide => "Side",
+        F::HintDigits => "Digits",
+        F::LayoutRadius => "Radius",
+        F::LayoutShapeFactor => "Shape",
+        F::LayoutIntercardinalHeight => "Diagonal height",
+        F::LayoutDeadZoneRadius => "Dead zone",
+        F::LayoutScreenMargin => "Screen margin",
+        F::CenterBackgroundRadius => "Radius",
+        F::CenterBackgroundStroke => "Border",
+        F::CenterBackgroundFillColor => "Fill",
+        F::CenterHighlightRadius => "Radius",
+        F::CenterHighlightShape => "Shape",
+        F::CenterHighlightStroke => "Stroke",
+        F::CenterHighlightFillColor => "Fill",
+        F::CenterHighlightAngle => "Angle",
+        F::CenterHighlightCircleRadius => "Dot radius",
+        F::CenterHighlightSnapping => "Snap to button",
+        F::CenterToothStartLength => "Start length",
+        F::CenterToothLength => "Length",
+        F::CenterToothStartBend => "Start bend",
+        F::CenterToothBend => "Bend",
+        F::CenterToothStartTipRadius => "Start fillet",
+        F::CenterToothTipRadius => "Fillet",
+        F::CenterToothStartRoot => "Start root",
+        F::CenterToothRoot => "Root",
+        F::CenterToothRootTaper => "Root taper",
+        F::CenterToothLengthEasing => "Rise easing",
+        F::CenterToothSharpenEasing => "Sharpen easing",
+        F::CenterToothOutlineBase => "Outline base",
+        F::TitleShow => "Show",
+        F::TitleBackgroundColor => "Background",
+        F::TitleBackgroundStroke => "Border",
+        F::TitlePadding => "Padding",
+        F::TitleTextColor => "Text colour",
+        F::TitleTextFont => "Font",
+        F::TextColor => "Text colour",
+        F::Reveal => "Style",
+        F::RevealDuration => "Duration",
+        F::SlideStartRadius => "Start radius",
+        F::SlideStartShapeFactor => "Start shape",
+        F::SlideFade => "Fade",
+        F::HoverEmphasis => "Root pie",
+        F::SubPieHoverEmphasis => "Sub-pies",
+        F::HoverDuration => "Easing",
+        F::SubPieStyle => "Style",
+        F::SubPieCenter => "Centre",
+        F::SubPieHoverDelay => "Hover delay",
+        F::FanOutDelay => "Delay",
+        F::FanOutRadius => "Radius",
+        F::FanOutOpenerAction => "On opener",
+        F::MirrorHorizontal => "Mirror (RTL)",
+    }
+}
+
 /// The sections `settings_editor` is divided into. Every [`SettingsField`] is in exactly one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingsGroup {
@@ -426,7 +535,8 @@ impl SettingsGroup {
         }
     }
 
-    /// All fields of the section, whether or not they currently apply.
+    /// All fields of the section, whether or not they currently apply: first the ones
+    /// directly in it, then each sub-group's ([`SettingsField::sub_group`]) together.
     pub fn fields(self) -> &'static [SettingsField] {
         use SettingsField as F;
         match self {
@@ -434,9 +544,9 @@ impl SettingsGroup {
                 F::ShowBehavior,
                 F::DoubleTapWindow,
                 F::SelectOnPrimaryClick,
+                F::BlockBackground,
                 F::DismissInputs,
                 F::PinnedDismissInputs,
-                F::BlockBackground,
             ],
             SettingsGroup::KeysAndHints => {
                 &[F::UseNumberKeys, F::UseMnemonicKeys, F::AutoMnemonics, F::HintColor, F::HintSpacing, F::HintSide, F::HintDigits]

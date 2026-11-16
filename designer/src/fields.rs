@@ -8,6 +8,7 @@ use crate::bindings::binding_details;
 pub use egui_pie_menu::settings_fields::*;
 use egui_pie_menu::settings::*;
 use egui::{Color32, FontFamily, FontId, Margin, Stroke, Ui};
+use egui_control_groups::{FieldGroup, GroupStyle, RadioGroup, ToggleGroup};
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
@@ -17,17 +18,50 @@ use std::time::Duration;
 
 // The layout every row follows, so that everything lines up: the name in a column on the
 // left, the control filling the rest, the reset button at the right edge of the control and
-// a slot after it for the bind toggle (or the demo tag).
+// a slot after it for the bind toggle (or the demo tag). A row with more to show than fits
+// the control (a list, a second value) continues on rows of the same layout below it.
 
 /// Width of the slot after the control, for the bind toggle or the "demo" tag.
-const TRAILING_W: f32 = 34.0;
+const TRAILING_W: f32 = 30.0;
 /// Width kept for the reset button at the right edge of a control.
-const RESET_W: f32 = 24.0;
+const RESET_W: f32 = 22.0;
+/// The horizontal gap between the parts of a row (name, control, reset, trailing slot),
+/// about as tight as the gap between two rows. Rows set it themselves; a caller that adds
+/// to a row (the bind toggle, the "demo" tag) does so through [`row_line`].
+pub const ROW_GAP: f32 = 4.0;
+
+/// A horizontal line for one settings row and what follows it (bind toggle, tag), with the
+/// row's gap between its parts.
+pub fn row_line<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = ROW_GAP;
+        body(ui)
+    })
+    .inner
+}
 
 /// The width a control may fill on the current row: what is left of the control column
 /// after the reset button. Call it before adding the first widget of the control.
 pub fn control_width(ui: &Ui) -> f32 {
     (ui.available_width() - RESET_W - ui.spacing().item_spacing.x).max(40.0)
+}
+
+/// The header of a sub-group of a section ([`SettingsField::sub_group`]): its name and a
+/// rule to the right edge. The rows below it carry short names.
+pub fn sub_group_header(ui: &mut Ui, name: &str) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(name).strong());
+        let height = ui.spacing().interact_size.y;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(0.0), height), egui::Sense::hover());
+        ui.painter().hline(rect.x_range(), rect.center().y, ui.visuals().widgets.noninteractive.bg_stroke);
+    });
+}
+
+/// The look of the joined groups in a row: compact cells, so that a few short words fit
+/// the control column.
+fn group_style(ui: &Ui) -> GroupStyle {
+    GroupStyle::default().padding(egui::vec2(3.0, ui.spacing().button_padding.y))
 }
 
 /// `width` split into `n` equal parts with the item spacing between them.
@@ -54,10 +88,11 @@ pub fn setting_row(ui: &mut Ui, label: &str, hover: &str, body: impl FnOnce(&mut
 /// value on and off). Returns whether `label` or `body` reported a change.
 pub fn setting_row_with(ui: &mut Ui, label: impl FnOnce(&mut Ui) -> bool, body: impl FnOnce(&mut Ui) -> bool) -> bool {
     let height = ui.spacing().interact_size.y;
-    let gap = ui.spacing().item_spacing.x;
+    let gap = ROW_GAP;
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
         let total = ui.available_width();
-        let label_w = (total * 0.4).clamp(92.0, 180.0);
+        let label_w = (total * 0.36).clamp(90.0, 150.0);
         let cell_w = (total - label_w - TRAILING_W - 2.0 * gap).max(90.0);
         let mut changed = ui
             .allocate_ui_with_layout(egui::vec2(label_w, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -78,7 +113,7 @@ pub fn setting_row_with(ui: &mut Ui, label: impl FnOnce(&mut Ui) -> bool, body: 
 
 /// A small "reset to default" button at the right edge of the control, enabled while `value`
 /// differs from `default`. Puts `default` into `value` when clicked.
-fn reset<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, default: &T) -> bool {
+pub fn reset<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, default: &T) -> bool {
     let space = ui.available_width() - RESET_W;
     if space > 0.0 {
         ui.add_space(space);
@@ -97,9 +132,30 @@ fn reset<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, default: &T) -> bool 
     clicked
 }
 
-/// A labelled row for a field: its name (its path on hover), then the widgets of `body`.
+/// What a field's name shows on hover: its full name and its path in the settings.
+fn field_hover(field: SettingsField) -> String {
+    format!("{}\n{}", field_label(field), field.path())
+}
+
+/// A labelled row for a field: its short name (the full name and its path on hover), then
+/// the widgets of `body`.
 fn row(ui: &mut Ui, field: SettingsField, body: impl FnOnce(&mut Ui) -> bool) -> bool {
-    setting_row(ui, field_label(field), field.path(), body)
+    setting_row(ui, field_short_label(field), &field_hover(field), body)
+}
+
+/// A row below a field's own, for what did not fit its control: `name` (may be empty) in the
+/// name column, `body` in the control column.
+fn continued_row(ui: &mut Ui, name: &str, hover: &str, body: impl FnOnce(&mut Ui) -> bool) -> bool {
+    setting_row_with(
+        ui,
+        |ui| {
+            if !name.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(name).weak()).truncate()).on_hover_text(hover);
+            }
+            false
+        },
+        body,
+    )
 }
 
 /// A drag value for a float, `width` wide, with a unit suffix. Existing out-of-range values
@@ -155,24 +211,35 @@ fn bool_row(ui: &mut Ui, field: SettingsField, value: &mut bool, default: bool) 
     })
 }
 
-/// A combo box over `options` for any `Debug` enum, filling the control.
-fn enum_row<T: Copy + PartialEq + std::fmt::Debug>(
-    ui: &mut Ui,
-    field: SettingsField,
-    value: &mut T,
-    default: T,
-    options: &[T],
-) -> bool {
+/// A combo box over the named `options` of an enum, filling the control.
+fn enum_row<T: Copy + PartialEq>(ui: &mut Ui, field: SettingsField, value: &mut T, default: T, options: &[(T, &str)]) -> bool {
     row(ui, field, |ui| {
         let mut changed = false;
         let w = control_width(ui);
-        egui::ComboBox::from_id_salt(field).width(w).selected_text(format!("{value:?}")).show_ui(ui, |ui| {
-            for o in options {
-                changed |= ui.selectable_value(value, *o, format!("{o:?}")).changed();
+        let shown = options.iter().find(|(o, _)| o == value).map_or("?", |(_, name)| *name);
+        egui::ComboBox::from_id_salt(field).width(w).truncate().selected_text(shown).show_ui(ui, |ui| {
+            for (o, name) in options {
+                changed |= ui.selectable_value(value, *o, *name).changed();
             }
         });
         changed | reset(ui, value, &default)
     })
+}
+
+/// The named `options` of an enum side by side as one joined group, filling the control: for
+/// two or three options with short names.
+fn radio_row<T: Copy + PartialEq>(ui: &mut Ui, field: SettingsField, value: &mut T, default: T, options: &[(T, &str)]) -> bool {
+    row(ui, field, |ui| radio(ui, field, value, options) | reset(ui, value, &default))
+}
+
+/// The named `options` of a value as one joined group, `control_width` wide (the control of
+/// [`radio_row`]). Returns whether the value changed.
+pub fn radio<T: Copy + PartialEq>(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, value: &mut T, options: &[(T, &str)]) -> bool {
+    let before = *value;
+    let w = control_width(ui);
+    let style = group_style(ui);
+    ui.add(RadioGroup::new(salt, value).options(options.iter().copied()).width(w).style(style));
+    *value != before
 }
 
 /// A float row.
@@ -233,10 +300,10 @@ fn opt_row<T: Copy + PartialEq + Send + Sync + 'static>(
         |ui| {
             // The box, then the name truncated to the column (a checkbox's own text would not
             // truncate and would make the row wider than it was given).
-            let boxed = ui.add(egui::Checkbox::without_text(&mut on)).on_hover_text(field.path());
+            let boxed = ui.add(egui::Checkbox::without_text(&mut on)).on_hover_text(field_hover(field));
             let name = ui
-                .add(egui::Label::new(field_label(field)).truncate().sense(egui::Sense::click()))
-                .on_hover_text(field.path());
+                .add(egui::Label::new(field_short_label(field)).truncate().sense(egui::Sense::click()))
+                .on_hover_text(field_hover(field));
             if name.clicked() {
                 on = !on;
             }
@@ -293,16 +360,22 @@ fn stroke_row(ui: &mut Ui, field: SettingsField, stroke: &mut Stroke, default: S
 
 fn margin_row(ui: &mut Ui, field: SettingsField, m: &mut Margin, default: Margin) -> bool {
     row(ui, field, |ui| {
-        let mut changed = false;
-        let w = part(ui, control_width(ui), 4);
-        let height = ui.spacing().interact_size.y;
-        for (name, side) in [("left", &mut m.left), ("right", &mut m.right), ("top", &mut m.top), ("bottom", &mut m.bottom)] {
-            changed |= ui
-                .add_sized([w, height], egui::DragValue::new(side).range(0..=100).clamp_existing_to_range(false))
-                .on_hover_text(format!("{name} padding, in px"))
-                .changed();
-        }
-        changed | reset(ui, m, &default)
+        let before = *m;
+        let w = control_width(ui);
+        let style = group_style(ui);
+        // One joined group: click a side to type its value, drag across several to set them
+        // together.
+        ui.add(
+            FieldGroup::new(field)
+                .labeled("L", &mut m.left)
+                .labeled("R", &mut m.right)
+                .labeled("T", &mut m.top)
+                .labeled("B", &mut m.bottom)
+                .width(w)
+                .style(style),
+        )
+        .on_hover_text("Left, right, top and bottom padding, in px");
+        (*m != before) | reset(ui, m, &default)
     })
 }
 
@@ -317,11 +390,18 @@ fn font_row(ui: &mut Ui, field: SettingsField, f: &mut FontId, default: FontId) 
             FontFamily::Monospace => "Monospace".to_string(),
             FontFamily::Name(n) => format!("\"{}\"", &**n),
         };
-        let combo_w = full - size_w - ui.spacing().item_spacing.x;
-        egui::ComboBox::from_id_salt(field).width(combo_w).selected_text(shown).show_ui(ui, |ui| {
-            for (name, fam) in [("Proportional", FontFamily::Proportional), ("Monospace", FontFamily::Monospace)] {
-                changed |= ui.selectable_value(&mut f.family, fam, name).changed();
-            }
+        // What is left of the control once the size is placed.
+        let combo_w = control_width(ui);
+        // In a cell of its own: a truncating combo box takes all the width that is left,
+        // which here includes the reset button's.
+        let height = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(egui::vec2(combo_w, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_max_width(combo_w);
+            egui::ComboBox::from_id_salt(field).width(combo_w).truncate().selected_text(shown).show_ui(ui, |ui| {
+                for (name, fam) in [("Proportional", FontFamily::Proportional), ("Monospace", FontFamily::Monospace)] {
+                    changed |= ui.selectable_value(&mut f.family, fam, name).changed();
+                }
+            });
         });
         changed | reset(ui, f, &default)
     })
@@ -350,38 +430,54 @@ const DISMISS_KEYS: [egui::Key; 7] = [
 const DISMISS_POINTER: [egui::PointerButton; 3] =
     [egui::PointerButton::Primary, egui::PointerButton::Secondary, egui::PointerButton::Middle];
 
-/// The entries of a dismiss-input list with remove buttons, an "add" combo and a reset.
+fn dismiss_name(d: &PieMenuDismissInput) -> String {
+    match d {
+        PieMenuDismissInput::Key(k) => format!("{k:?} key"),
+        PieMenuDismissInput::PointerButton(b) => format!("{b:?} click"),
+    }
+}
+
+/// A dismiss-input list: the "add" combo and the reset on the field's own row, then one row
+/// per entry in the control column, each with a remove button where the reset is.
 fn dismiss_row(ui: &mut Ui, field: SettingsField, list: &mut Vec<PieMenuDismissInput>, default: &[PieMenuDismissInput]) -> bool {
-    let mut changed = false;
-    changed |= row(ui, field, |ui| reset(ui, list, &default.to_vec()));
-    let mut remove = None;
-    ui.indent(field, |ui| {
-        for (i, d) in list.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(match d {
-                    PieMenuDismissInput::Key(k) => format!("key {k:?}"),
-                    PieMenuDismissInput::PointerButton(b) => format!("click {b:?}"),
-                });
-                if ui.small_button("remove").clicked() {
-                    remove = Some(i);
-                }
-            });
-        }
-        egui::ComboBox::from_id_salt(field).selected_text("add...").show_ui(ui, |ui| {
-            for k in DISMISS_KEYS {
-                if ui.selectable_label(false, format!("key {k:?}")).clicked() {
-                    list.push(PieMenuDismissInput::Key(k));
-                    changed = true;
-                }
-            }
-            for b in DISMISS_POINTER {
-                if ui.selectable_label(false, format!("click {b:?}")).clicked() {
-                    list.push(PieMenuDismissInput::PointerButton(b));
-                    changed = true;
+    let mut changed = row(ui, field, |ui| {
+        let mut added = false;
+        let w = control_width(ui);
+        egui::ComboBox::from_id_salt(field).width(w).truncate().selected_text("Add\u{2026}").show_ui(ui, |ui| {
+            let keys = DISMISS_KEYS.into_iter().map(PieMenuDismissInput::Key);
+            let buttons = DISMISS_POINTER.into_iter().map(PieMenuDismissInput::PointerButton);
+            for input in keys.chain(buttons) {
+                // One of each: an input already in the list is not offered again.
+                if !list.contains(&input) && ui.selectable_label(false, dismiss_name(&input)).clicked() {
+                    list.push(input);
+                    added = true;
                 }
             }
         });
+        added | reset(ui, list, &default.to_vec())
     });
+    let mut remove = None;
+    for (i, d) in list.iter().enumerate() {
+        continued_row(ui, "", "", |ui| {
+            let w = control_width(ui);
+            let height = ui.spacing().interact_size.y;
+            // The entry: a read-only cell as wide as the other controls.
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, height), egui::Sense::hover());
+            let visuals = ui.visuals();
+            ui.painter().rect_filled(rect, visuals.widgets.inactive.corner_radius, visuals.extreme_bg_color);
+            ui.painter().text(
+                rect.left_center() + egui::vec2(ui.spacing().button_padding.x, 0.0),
+                egui::Align2::LEFT_CENTER,
+                dismiss_name(d),
+                egui::TextStyle::Body.resolve(ui.style()),
+                visuals.text_color(),
+            );
+            if ui.add_sized([RESET_W, height], egui::Button::new("\u{2716}").small()).on_hover_text("Remove").clicked() {
+                remove = Some(i);
+            }
+            false
+        });
+    }
     if let Some(i) = remove {
         list.remove(i);
         changed = true;
@@ -404,35 +500,29 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
     match field {
         F::ShowBehavior => {
             let memory = ui.id().with(("pie_last_threshold", field));
-            row(ui, field, |ui| {
-                let mut changed = false;
-                let shown = match s.show_behavior {
-                    ShowBehavior::Instant => "Instant",
-                    ShowBehavior::OnMovement { .. } => "On movement",
-                };
-                let full = control_width(ui);
-                let moves = matches!(s.show_behavior, ShowBehavior::OnMovement { .. });
-                let combo_w = if moves { part(ui, full, 2) } else { full };
-                egui::ComboBox::from_id_salt(field).width(combo_w).selected_text(shown).show_ui(ui, |ui| {
-                    let instant = matches!(s.show_behavior, ShowBehavior::Instant);
-                    if ui.selectable_label(instant, "Instant").clicked() && !instant {
-                        if let ShowBehavior::OnMovement { threshold } = s.show_behavior {
-                            ui.data_mut(|d| d.insert_temp(memory, threshold));
-                        }
-                        s.show_behavior = ShowBehavior::Instant;
-                        changed = true;
+            let mut changed = row(ui, field, |ui| {
+                let was_instant = matches!(s.show_behavior, ShowBehavior::Instant);
+                let mut instant = was_instant;
+                radio(ui, field, &mut instant, &[(true, "Instant"), (false, "On move")]);
+                if instant != was_instant {
+                    // The threshold comes back as it was when "On move" is chosen again.
+                    if let ShowBehavior::OnMovement { threshold } = s.show_behavior {
+                        ui.data_mut(|d| d.insert_temp(memory, threshold));
                     }
-                    if ui.selectable_label(!instant, "On movement").clicked() && instant {
-                        let threshold = ui.data(|d| d.get_temp::<f32>(memory)).unwrap_or(10.0);
-                        s.show_behavior = ShowBehavior::OnMovement { threshold };
-                        changed = true;
-                    }
-                });
-                if let ShowBehavior::OnMovement { threshold } = &mut s.show_behavior {
-                    changed |= drag_w(ui, threshold, 0.0..=50.0, 0.2, " px", full - combo_w - ui.spacing().item_spacing.x);
+                    s.show_behavior = if instant {
+                        ShowBehavior::Instant
+                    } else {
+                        ShowBehavior::OnMovement { threshold: ui.data(|d| d.get_temp::<f32>(memory)).unwrap_or(10.0) }
+                    };
                 }
-                changed | reset(ui, &mut s.show_behavior, &d.show_behavior)
-            })
+                (instant != was_instant) | reset(ui, &mut s.show_behavior, &d.show_behavior)
+            });
+            if let ShowBehavior::OnMovement { threshold } = &mut s.show_behavior {
+                changed |= continued_row(ui, "Threshold", "How far the pointer moves before the menu shows", |ui| {
+                    drag_f32(ui, threshold, 0.0..=50.0, 0.2, " px")
+                });
+            }
+            changed
         }
         F::DoubleTapWindow => {
             ms_row(ui, field, &mut s.input.double_tap_window, d.input.double_tap_window, 50..=1000)
@@ -461,14 +551,14 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
             field,
             &mut s.number_hints.side,
             d.number_hints.side,
-            &[HintSide::Trailing, HintSide::Outside, HintSide::Left, HintSide::Right],
+            &[(HintSide::Trailing, "Trailing"), (HintSide::Outside, "Outside"), (HintSide::Left, "Left"), (HintSide::Right, "Right")],
         ),
         F::HintDigits => enum_row(
             ui,
             field,
             &mut s.number_hints.digits,
             d.number_hints.digits,
-            &[HintDigits::Western, HintDigits::ArabicIndic, HintDigits::Persian],
+            &[(HintDigits::Western, "Western"), (HintDigits::ArabicIndic, "Arabic-Indic"), (HintDigits::Persian, "Persian")],
         ),
         F::LayoutRadius => f32_row(ui, field, &mut s.layout.radius, d.layout.radius, 20.0..=300.0, 0.5, " px"),
         F::LayoutShapeFactor => {
@@ -523,18 +613,24 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
             " px",
         ),
         F::CenterHighlightShape => {
-            // Four checkboxes do not fit the control column: the name and the reset button on
-            // the row, the checkboxes below it.
+            // The four parts as one joined group in the control: press one and drag across
+            // the others to switch several.
             let shape = &mut s.center_indicator.highlight_shape;
-            let mut changed = row(ui, field, |ui| reset(ui, shape, &d.center_indicator.highlight_shape));
-            ui.horizontal(|ui| {
-                ui.add_space(ui.spacing().indent);
-                changed |= ui.checkbox(&mut shape.arc, "arc").changed();
-                changed |= ui.checkbox(&mut shape.slice, "slice").changed();
-                changed |= ui.checkbox(&mut shape.circle, "dot").changed();
-                changed |= ui.checkbox(&mut shape.tooth, "tooth").changed();
-            });
-            changed
+            row(ui, field, |ui| {
+                let before = *shape;
+                let w = control_width(ui);
+                let style = group_style(ui);
+                ui.add(
+                    ToggleGroup::new(field)
+                        .cell("arc", &mut shape.arc)
+                        .cell("slice", &mut shape.slice)
+                        .cell("dot", &mut shape.circle)
+                        .cell("tooth", &mut shape.tooth)
+                        .width(w)
+                        .style(style),
+                );
+                (*shape != before) | reset(ui, shape, &d.center_indicator.highlight_shape)
+            })
         }
         F::CenterHighlightStroke => stroke_row(
             ui,
@@ -614,12 +710,12 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
                 color_w(ui, c, w)
             })
         }
-        F::Reveal => enum_row(
+        F::Reveal => radio_row(
             ui,
             field,
             &mut s.animations.reveal,
             d.animations.reveal,
-            &[RevealAnimation::None, RevealAnimation::Fade, RevealAnimation::SlideOut],
+            &[(RevealAnimation::None, "None"), (RevealAnimation::Fade, "Fade"), (RevealAnimation::SlideOut, "Slide")],
         ),
         F::RevealDuration => {
             ms_row(ui, field, &mut s.animations.reveal_duration, d.animations.reveal_duration, 0..=1000)
@@ -650,19 +746,19 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
             emphasis_row(ui, field, &mut s.animations.sub_pie_hover_emphasis, d.animations.sub_pie_hover_emphasis)
         }
         F::HoverDuration => ms_row(ui, field, &mut s.animations.hover_duration, d.animations.hover_duration, 0..=500),
-        F::SubPieStyle => enum_row(
+        F::SubPieStyle => radio_row(
             ui,
             field,
             &mut s.sub_pies.style,
             d.sub_pies.style,
-            &[SubPieStyle::Replace, SubPieStyle::FanOut],
+            &[(SubPieStyle::Replace, "Replace"), (SubPieStyle::FanOut, "Fan-out")],
         ),
-        F::SubPieCenter => enum_row(
+        F::SubPieCenter => radio_row(
             ui,
             field,
             &mut s.sub_pies.center,
             d.sub_pies.center,
-            &[SubPieCenter::Pointer, SubPieCenter::Parent, SubPieCenter::Button],
+            &[(SubPieCenter::Pointer, "Pointer"), (SubPieCenter::Parent, "Parent"), (SubPieCenter::Button, "Button")],
         ),
         F::SubPieHoverDelay => opt_row(
             ui,
@@ -683,12 +779,12 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
             0.5,
             " px",
         ),
-        F::FanOutOpenerAction => enum_row(
+        F::FanOutOpenerAction => radio_row(
             ui,
             field,
             &mut s.sub_pies.fan_out.opener_action,
             d.sub_pies.fan_out.opener_action,
-            &[FanOpenerAction::BreakOut, FanOpenerAction::Dismiss],
+            &[(FanOpenerAction::BreakOut, "Break out"), (FanOpenerAction::Dismiss, "Dismiss")],
         ),
         F::MirrorHorizontal => bool_row(ui, field, &mut s.mirror_horizontal, d.mirror_horizontal),
     }
@@ -697,9 +793,26 @@ pub fn field_editor(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsField) 
 /// The fields of one section that apply to `s` ([`SettingsGroup::relevant_fields`]), each drawn
 /// by [`field_editor`]. Returns `true` if anything changed.
 pub fn group_editor(ui: &mut Ui, s: &mut PieMenuSettings, group: SettingsGroup) -> bool {
+    group_editor_with(ui, s, group, field_editor)
+}
+
+/// The fields of a section that apply, under their sub-group headers, each drawn by `editor`.
+fn group_editor_with(
+    ui: &mut Ui,
+    s: &mut PieMenuSettings,
+    group: SettingsGroup,
+    mut editor: impl FnMut(&mut Ui, &mut PieMenuSettings, SettingsField) -> bool,
+) -> bool {
     let mut changed = false;
+    let mut sub_group = None;
     for field in group.relevant_fields(s) {
-        changed |= field_editor(ui, s, field);
+        if field.sub_group() != sub_group {
+            sub_group = field.sub_group();
+            if let Some(name) = sub_group {
+                sub_group_header(ui, name);
+            }
+        }
+        changed |= editor(ui, s, field);
     }
     changed
 }
@@ -717,11 +830,7 @@ pub fn field_editor_bound(ui: &mut Ui, s: &mut PieMenuSettings, field: SettingsF
 
 /// [`group_editor`] drawing its fields with [`field_editor_bound`].
 pub fn group_editor_bound(ui: &mut Ui, s: &mut PieMenuSettings, group: SettingsGroup, bindings: &mut Bindings) -> bool {
-    let mut changed = false;
-    for field in group.relevant_fields(s) {
-        changed |= field_editor_bound(ui, s, field, bindings);
-    }
-    changed
+    group_editor_with(ui, s, group, |ui, s, field| field_editor_bound(ui, s, field, bindings))
 }
 
 /// Controls for every field of [`PieMenuSettings`], one collapsing header per
@@ -776,6 +885,33 @@ mod tests {
         s.input.dismiss_inputs.clear();
         s.mirror_horizontal = true;
         s
+    }
+
+    /// #28: every section lists its plain fields first and then each sub-group's together,
+    /// and a short name is unique among the rows that share its headers.
+    #[test]
+    fn sub_groups_are_contiguous_and_short_names_unique_under_their_headers() {
+        for group in SettingsGroup::ALL {
+            let fields = group.fields();
+            let mut seen: Vec<Option<&str>> = Vec::new();
+            for f in fields {
+                let sub = f.sub_group();
+                if seen.last() != Some(&sub) {
+                    assert!(!seen.contains(&sub), "{group:?}: sub-group {sub:?} is split up at {f:?}");
+                    assert!(sub.is_some() || seen.is_empty(), "{group:?}: {f:?} has no sub-group but follows one");
+                    seen.push(sub);
+                }
+            }
+            let mut names = HashSet::new();
+            for f in fields {
+                assert!(!field_short_label(*f).is_empty());
+                assert!(names.insert((f.sub_group(), field_short_label(*f))), "{group:?}: two rows named {:?}", field_short_label(*f));
+            }
+        }
+        assert_eq!(SettingsField::HintColor.sub_group(), Some("Number hints"));
+        assert_eq!(field_short_label(SettingsField::HintColor), "Colour");
+        assert_eq!(field_label(SettingsField::HintColor), "Number hint colour", "the full name is kept for hovers and notes");
+        assert_eq!(SettingsField::LayoutRadius.sub_group(), None);
     }
 
     #[test]
